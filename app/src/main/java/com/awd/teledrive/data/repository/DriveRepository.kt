@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.drinkless.tdlib.TdApi
 import java.io.File
@@ -87,11 +88,10 @@ class DriveRepository @Inject constructor(
             }
         }
 
-        // 1. Search for manifests (indexed search)
         val searchRequest = TdApi.SearchChatMessages()
         searchRequest.chatId = savedMessagesChatId
         searchRequest.query = MANIFEST_PREFIX
-        searchRequest.limit = 100
+        searchRequest.limit = 50
         
         telegramClient.send(searchRequest) { result ->
             if (result is TdApi.Messages) {
@@ -101,8 +101,7 @@ class DriveRepository @Inject constructor(
             tryFinish()
         }
 
-        // 2. Direct history scan (mirrors Desktop version but deeper)
-        telegramClient.send(TdApi.GetChatHistory(savedMessagesChatId, 0, 0, 500, false)) { result ->
+        telegramClient.send(TdApi.GetChatHistory(savedMessagesChatId, 0, 0, 200, false)) { result ->
             if (result is TdApi.Messages) {
                 synchronized(allMessages) { allMessages.addAll(result.messages.toList()) }
             }
@@ -116,7 +115,6 @@ class DriveRepository @Inject constructor(
             val content = msg.content
             if (content is TdApi.MessageText) {
                 val text = content.text.text
-                // Relaxed check: can contain keywords or start with prefixes
                 text.contains(MANIFEST_PREFIX) || 
                 text.contains(MANIFEST_BACKUP_PREFIX) || 
                 text.contains("\"virtualFolders\"")
@@ -125,13 +123,11 @@ class DriveRepository @Inject constructor(
         
         if (possibleManifests.isEmpty()) return
         
-        // Pick the newest prefix-based manifest as primary for ID tracking
         manifestMessageId = possibleManifests
             .filter { (it.content as? TdApi.MessageText)?.text?.text?.contains(MANIFEST_PREFIX) == true && !(it.content as TdApi.MessageText).text.text.contains(MANIFEST_BACKUP_PREFIX) }
             .maxByOrNull { it.date }?.id ?: 0L
         
         var mergedManifest = TeleDriveManifest()
-        // Sort by date ASC to ensure newer data overwrites older data correctly
         possibleManifests.sortedBy { it.date }.forEach { msg ->
             val content = msg.content
             if (content is TdApi.MessageText) {
@@ -150,10 +146,6 @@ class DriveRepository @Inject constructor(
         
         currentManifest = mergedManifest
         syncVirtualFoldersToDb()
-        currentManifest.secureFolderChatIds.forEach { chatId -> loadAllDriveItems(chatId) }
-        scope.launch(Dispatchers.Main) {
-            Toast.makeText(context, context.getString(R.string.metadata_sync_toast, currentManifest.virtualFolders.size), Toast.LENGTH_SHORT).show()
-        }
     }
 
     private fun mergeManifests(base: TeleDriveManifest, other: TeleDriveManifest): TeleDriveManifest {
@@ -207,7 +199,6 @@ class DriveRepository @Inject constructor(
             currentManifest = imported
             saveCloudManifest()
             syncVirtualFoldersToDb()
-            // Reset file parents and re-sync to apply imported mappings
             scope.launch {
                 driveDao.resetAllFileVirtualParents()
                 fetchFiles()
@@ -286,19 +277,7 @@ class DriveRepository @Inject constructor(
             val vFolders = currentManifest.virtualFolders.values.toList()
             val entities = vFolders.map { vf ->
                 val existing = driveDao.getVirtualFolderById(vf.id)
-                var targetChat: Long = savedMessagesChatId
-                var currentPid = vf.parentId
-                var depth = 0
-                while (currentPid != "0" && currentPid.isNotEmpty() && depth < 10) {
-                    if (currentPid.startsWith("vf_")) {
-                        currentPid = currentManifest.virtualFolders[currentPid]?.parentId ?: "0"
-                    } else {
-                        targetChat = currentPid.toLongOrNull() ?: savedMessagesChatId
-                        break
-                    }
-                    depth++
-                }
-                
+                val targetChat: Long = savedMessagesChatId
                 val finalVirtualParentId = if (vf.parentId.startsWith("vf_")) vf.parentId else "0"
                 val deterministicId = vf.id.replace("vf_", "").filter { it.isDigit() }.toLongOrNull() 
                     ?: (vf.id.hashCode().toLong() and 0x7FFFFFFFFFFFFFFFL)
@@ -317,7 +296,6 @@ class DriveRepository @Inject constructor(
         currentManifest = currentManifest.copy(virtualFolders = updatedFolders)
         syncVirtualFoldersToDb()
         
-        // Send distributed metadata message and track its ID
         if (savedMessagesChatId != 0L) {
             val metaJson = json.encodeToString(folder)
             val text = "$VFOLDER_META_PREFIX\n\n$metaJson"
@@ -327,7 +305,7 @@ class DriveRepository @Inject constructor(
                         val updatedMetaIds = currentManifest.folderMetadataIds.toMutableMap()
                         updatedMetaIds[id] = result.id
                         currentManifest = currentManifest.copy(folderMetadataIds = updatedMetaIds)
-                        saveCloudManifest() // Save manifest after we have the message ID
+                        saveCloudManifest()
                     }
                 }
             }
@@ -376,7 +354,7 @@ class DriveRepository @Inject constructor(
 
     fun getStarredItems(): Flow<List<DriveItem>> {
         return driveDao.getStarredItems().map { entities ->
-            entities.map { entity ->
+            entities.filter { it.isVirtual || !it.isFolder }.map { entity ->
                 if (entity.isFolder) {
                     DriveItem.Folder(
                         entity.id,
@@ -413,64 +391,34 @@ class DriveRepository @Inject constructor(
 
     @OptIn(FlowPreview::class)
     fun getItems(chatId: Long?, virtualParentId: String = "0", searchQuery: String = ""): Flow<List<DriveItem>> {
-        val targetChatId = chatId ?: savedMessagesChatId
+        val targetChatId = savedMessagesChatId
         val flow = if (searchQuery.isNotEmpty()) driveDao.searchGlobal(searchQuery)
         else if (targetChatId != 0L) driveDao.getItemsFlow(targetChatId, virtualParentId)
         else kotlinx.coroutines.flow.flowOf(emptyList())
 
         return flow.map { entities ->
-            entities.sortedByDescending { it.createdAt }.map { entity ->
-                if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
-                else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, entity.thumbnailPath, entity.localPath, entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
-            }
-        }.debounce(500)
+            // শুধুমাত্র Virtual Folder এবং Saved Messages-এর ফাইলগুলো ফিল্টার করা হচ্ছে (কোনো চ্যানেল দেখাবে না)
+            entities.filter { !it.isFolder || it.isVirtual }
+                .sortedByDescending { it.createdAt }
+                .map { entity ->
+                    if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, entity.thumbnailPath, entity.localPath, entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                }
+        }.debounce(50) // ফাস্ট ও স্মুথ লোডিংয়ের জন্য 500 থেকে 50 করা হলো
     }
 
     fun fetchFiles(chatId: Long? = null) {
-        val targetChatId = chatId ?: savedMessagesChatId
-        if (targetChatId == 0L) {
+        if (savedMessagesChatId == 0L) {
             telegramClient.send(TdApi.GetMe()) { result ->
                 if (result is TdApi.User) {
                     savedMessagesChatId = result.id
                     _savedMessagesChatIdFlow.value = result.id
-                    fetchCloudManifest { syncFolders { loadAllDriveItems(savedMessagesChatId) } }
+                    // পুরোনো ফিজিক্যাল চ্যানেল ফোল্ডারগুলো ডাটাবেস থেকে মুছে শুধু Saved Messages লোড করা হচ্ছে
+                    fetchCloudManifest { loadAllDriveItems(savedMessagesChatId) }
                 }
             }
         } else {
-            fetchCloudManifest { syncFolders { loadAllDriveItems(targetChatId) } }
-        }
-    }
-
-    private fun syncFolders(onComplete: () -> Unit = {}) {
-        scope.launch(Dispatchers.Main) {
-            Toast.makeText(context, context.getString(R.string.folder_sync_toast), Toast.LENGTH_SHORT).show()
-        }
-        val chatLists = listOf(TdApi.ChatListMain(), TdApi.ChatListArchive())
-        var listsProcessed = 0
-        chatLists.forEach { chatList ->
-            telegramClient.send(TdApi.GetChats(chatList, 1000)) { result ->
-                if (result is TdApi.Chats) {
-                    if (result.chatIds.isEmpty()) {
-                        listsProcessed++
-                        if (listsProcessed == chatLists.size) onComplete()
-                        return@send
-                    }
-                    var chatsProcessed = 0
-                    result.chatIds.forEach { cid ->
-                        telegramClient.send(TdApi.GetChat(cid)) { chatResult ->
-                            if (chatResult is TdApi.Chat) processDiscoveredFolder(chatResult)
-                            chatsProcessed++
-                            if (chatsProcessed == result.chatIds.size) {
-                                listsProcessed++
-                                if (listsProcessed == chatLists.size) onComplete()
-                            }
-                        }
-                    }
-                } else {
-                    listsProcessed++
-                    if (listsProcessed == chatLists.size) onComplete()
-                }
-            }
+            fetchCloudManifest { loadAllDriveItems(savedMessagesChatId) }
         }
     }
 
@@ -482,9 +430,7 @@ class DriveRepository @Inject constructor(
         telegramClient.send(TdApi.GetChatHistory(chatId, fromMessageId, 0, 100, false)) { result ->
             if (result is TdApi.Messages) {
                 if (result.messages.isEmpty()) {
-                    // Selesai memuat history chat ini. Hapus item yang sudah tidak ada di Telegram.
                     scope.launch {
-                        // Jangan hapus folder atau item virtual saat sinkronisasi file fisik
                         driveDao.deleteFilesByChatNotInList(chatId, allFetchedIds)
                     }
                     return@send
@@ -498,12 +444,11 @@ class DriveRepository @Inject constructor(
                 allFetchedIds.addAll(entities.map { it.id })
 
                 scope.launch {
-                    // Masukkan secara bertahap agar user bisa melihat file yang muncul
                     driveDao.insertItemsPreservingStarred(entities)
                 }
 
-                // Ambil batch berikutnya (limit 15000 item per chat untuk pemulihan mendalam)
-                if (allFetchedIds.size < 15000) {
+                // অ্যাপ যেন ল্যাগ না করে তাই ফাস্ট ব্যাচিং রাখা হলো (প্রয়োজনে ২০০০ ফাইল পর্যন্ত দ্রুত আনবে)
+                if (allFetchedIds.size < 2000 && result.messages.isNotEmpty()) {
                     fetchHistoryRecursively(chatId, result.messages.last().id, allFetchedIds)
                 } else {
                     scope.launch {
@@ -518,7 +463,6 @@ class DriveRepository @Inject constructor(
         val isSecureFolder = currentManifest.secureFolderChatIds.contains(chatId)
         val content = message.content
         
-        // Handle Distributed Metadata Text Messages
         if (content is TdApi.MessageText && chatId == savedMessagesChatId) {
             val text = content.text.text
             if (text.startsWith(VFOLDER_META_PREFIX)) {
@@ -526,11 +470,8 @@ class DriveRepository @Inject constructor(
                     val jsonStartIndex = text.indexOf('{')
                     if (jsonStartIndex != -1) {
                         val vf = json.decodeFromString<VirtualFolder>(text.substring(jsonStartIndex))
-                        
-                        // Check if this folder was deleted
                         val deletedAt = currentManifest.deletedFolderIds[vf.id]
                         if (deletedAt != null && vf.createdAt <= deletedAt) {
-                            // Skip re-adding deleted folder
                             return null
                         }
 
@@ -553,13 +494,11 @@ class DriveRepository @Inject constructor(
                     if (jsonStartIndex != -1) {
                         val jsonStr = text.substring(jsonStartIndex)
                         if (jsonStr.contains("partMessageIds")) {
-                            // It's a SplitFileMaster
                             val master = json.decodeFromString<SplitFileMaster>(jsonStr)
                             val updatedMasters = currentManifest.splitFileMasters.toMutableMap()
                             updatedMasters[master.groupId] = master.copy(metadataMessageId = message.id)
                             currentManifest = currentManifest.copy(splitFileMasters = updatedMasters)
                         } else {
-                            // It's a regular FileMetadata
                             val meta = json.decodeFromString<FileMetadata>(jsonStr)
                             val updatedMappings = currentManifest.fileMappings.toMutableMap()
                             val updatedFileMetaIds = currentManifest.fileMetadataIds.toMutableMap()
@@ -718,24 +657,21 @@ class DriveRepository @Inject constructor(
         val finalId = mappedId ?: tagId ?: "0"
         
         if (finalId != "0" && !currentManifest.virtualFolders.containsKey(finalId)) {
-            // Check if this folder was explicitly deleted
             val deletedAt = currentManifest.deletedFolderIds[finalId]
             if (deletedAt != null) {
-                return "0" // Don't recover deleted folders
+                return "0"
             }
 
-            // Recovered Folder Logic: Automatically create a placeholder if it's missing in manifest
-            val recoveredName = "Recovered_${finalId.takeLast(6)}"
+            val recoveredName = "Folder_${finalId.takeLast(4)}"
             val newFolder = VirtualFolder(
                 id = finalId,
                 name = recoveredName,
-                parentId = "0", // Move to root for visibility
+                parentId = "0",
                 createdAt = System.currentTimeMillis() / 1000
             )
             val updatedFolders = currentManifest.virtualFolders.toMutableMap()
             updatedFolders[finalId] = newFolder
             
-            // Also update file mapping if it came from a tag
             val updatedMappings = currentManifest.fileMappings.toMutableMap()
             if (tagId != null) {
                 updatedMappings[messageId.toString()] = tagId
@@ -746,73 +682,23 @@ class DriveRepository @Inject constructor(
                 fileMappings = updatedMappings
             )
             syncVirtualFoldersToDb()
-            
-            // Save to cloud so other devices (Desktop) can see this recovered folder
             saveCloudManifest()
-            
-            Log.d("DriveRepo", "Recovered orphaned folder: $finalId ($recoveredName)")
         }
         
         return finalId
     }
 
-    private fun processDiscoveredFolder(chat: TdApi.Chat) {
-        val type = chat.type
-        if (type is TdApi.ChatTypeSupergroup) {
-            val isKnownSecure = currentManifest.secureFolderChatIds.contains(chat.id)
-            val isPrivateGroup = !type.isChannel
-            telegramClient.send(TdApi.GetSupergroup(type.supergroupId)) { sgResult ->
-                if (sgResult is TdApi.Supergroup) {
-                    val status = sgResult.status
-                    val isCreator = status is TdApi.ChatMemberStatusCreator
-                    val isSecure = isKnownSecure || (isPrivateGroup && isCreator && currentManifest.secureFolderChatIds.contains(chat.id))
-                    
-                    if (isCreator || status is TdApi.ChatMemberStatusAdministrator) {
-                        scope.launch {
-                            val existing = driveDao.getItemById(chat.id, savedMessagesChatId)
-                            driveDao.insertItems(listOf(DriveItemEntity(chat.id, chat.title, 0, "folder", 0, savedMessagesChatId, true, isStarred = existing?.isStarred ?: false, createdAt = existing?.createdAt ?: System.currentTimeMillis(), isSecure = isSecure)))
-                        }
-                    }
-                }
-            }
-        } else if (type is TdApi.ChatTypeBasicGroup) {
-            val isKnownSecure = currentManifest.secureFolderChatIds.contains(chat.id)
-            telegramClient.send(TdApi.GetBasicGroup(type.basicGroupId)) { bgResult ->
-                if (bgResult is TdApi.BasicGroup) {
-                    val status = bgResult.status
-                    val isCreator = status is TdApi.ChatMemberStatusCreator
-                    val isSecure = isKnownSecure || isCreator
-                    if (isCreator || status is TdApi.ChatMemberStatusAdministrator) {
-                        scope.launch {
-                            val existing = driveDao.getItemById(chat.id, savedMessagesChatId)
-                            driveDao.insertItems(listOf(DriveItemEntity(chat.id, chat.title, 0, "folder", 0, savedMessagesChatId, true, isStarred = existing?.isStarred ?: false, createdAt = existing?.createdAt ?: System.currentTimeMillis(), isSecure = isSecure)))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    // নতুন ফোল্ডার তৈরি করলে এখন আর টেলিগ্রাম চ্যানেল না খুলে সরাসরি ফাস্ট ভার্চুয়াল ফোল্ডার তৈরি হবে
     fun createFolder(name: String) {
-        telegramClient.send(TdApi.CreateNewSupergroupChat(name, false, true, "TeleDrive Folder", null, 0, false)) { result ->
-            if (result is TdApi.Chat) fetchFiles()
-        }
+        createVirtualFolder(name, "0", isSecure = false)
     }
 
     fun createSecureFolder(name: String) {
-        telegramClient.send(TdApi.CreateNewSupergroupChat(name, false, false, "TeleDrive Secure Folder", null, 0, false)) { result ->
-            if (result is TdApi.Chat) {
-                val updatedSecureIds = currentManifest.secureFolderChatIds.toMutableSet()
-                updatedSecureIds.add(result.id)
-                currentManifest = currentManifest.copy(secureFolderChatIds = updatedSecureIds, updatedAt = System.currentTimeMillis() / 1000)
-                saveCloudManifest()
-                fetchFiles()
-            }
-        }
+        createVirtualFolder(name, "0", isSecure = true)
     }
 
     fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null, virtualFolderId: String? = null) {
-        val targetChatId = chatId ?: savedMessagesChatId
+        val targetChatId = savedMessagesChatId
         if (targetChatId == 0L) return
         val vfTag = if (virtualFolderId != null && virtualFolderId != "0") "[VF:$virtualFolderId]" else ""
         val sourceFile = File(filePath)
@@ -835,7 +721,6 @@ class DriveRepository @Inject constructor(
                         uploadSinglePart(part.absolutePath, originalFileName, targetChatId, caption, virtualFolderId, deleteSourceAfter = true) { messageId ->
                             if (messageId != 0L) partMessageIds.add(messageId)
                             
-                            // If this was the last part, send the Master Metadata
                             if (index == parts.size - 1) {
                                 sendSplitMasterMetadata(groupId, originalFileName, sourceFile.length(), FileUtils.getMimeType(originalFileName), parts.size, virtualFolderId, isChatSecure(targetChatId), partMessageIds)
                             }
@@ -859,7 +744,6 @@ class DriveRepository @Inject constructor(
             return
         }
 
-        // Create a unique key for the queue
         val tempId = "up_${System.nanoTime()}"
         
         transferRepository.enqueueTransfer(
@@ -868,13 +752,12 @@ class DriveRepository @Inject constructor(
             fileName = originalFileName,
             isDownload = false,
             totalSize = File(filePath).length(),
-            localPath = if (isSecure) null else filePath // Track by path if not encrypting
+            localPath = if (isSecure) null else filePath
         ) {
             var finalPath = filePath
             var finalCaption = caption ?: originalFileName
             var tempEncFile: java.io.File? = null
             
-            // Set initial status to waiting/preparing
             transferRepository.updateTransferManual(tempId, 0f, context.getString(R.string.status_waiting))
             
             if (isSecure && password != null) {
@@ -882,7 +765,6 @@ class DriveRepository @Inject constructor(
                     val originalFile = java.io.File(filePath)
                     tempEncFile = java.io.File(context.cacheDir, "enc_${System.nanoTime()}_${originalFile.name}")
                     
-                    // Update status in UI with throttling enabled
                     encryptionManager.encryptFile(originalFile, tempEncFile, password) { progress ->
                         transferRepository.updateTransferManual(
                             tempId, 
@@ -894,7 +776,6 @@ class DriveRepository @Inject constructor(
                     finalPath = tempEncFile.absolutePath
                     finalCaption = if (caption != null) "$caption [ENC]" else "$originalFileName [ENC]"
                     
-                    // Update the transfer record with the new path for tracking
                     transferRepository.updateRemoteUniqueId(tempId, tempId, 0, finalPath)
                 } catch (e: Exception) {
                     transferRepository.updateTransferManual(tempId, 0f, context.getString(R.string.failed_with_error, "Encryption failed"))
@@ -902,7 +783,6 @@ class DriveRepository @Inject constructor(
                 }
             }
 
-            // Step 2: Send message to Telegram (this starts the upload)
             telegramClient.send(TdApi.SendMessage(targetChatId, null, null, null, null, TdApi.InputMessageDocument(TdApi.InputFileLocal(finalPath), null, false, TdApi.FormattedText(finalCaption, emptyArray())))) { result ->
                 if (result is TdApi.Message) {
                     onMessageSent(result.id)
@@ -916,20 +796,16 @@ class DriveRepository @Inject constructor(
                     }
                     
                     if (file != null) {
-                        // Migrate the temporary queue ID to the real TDLib ID, including the local path for better matching
                         transferRepository.updateRemoteUniqueId(tempId, file.remote.uniqueId, file.id, finalPath)
                         
-                        // Force complete if Telegram says it's already done
                         if (file.remote.isUploadingCompleted) {
                             transferRepository.updateTransferManual(file.remote.uniqueId, 1.0f, TransferRepository.Status.COMPLETED)
                         }
 
-                        // Send distributed metadata for regular files
                         if (savedMessagesChatId != 0L && !finalCaption.contains("[TD_SPLIT|")) {
                             sendFileMetadata(result.id, originalFileName, virtualFolderId, isSecure)
                         }
                     } else {
-                        // Complete it if we can't find a file to track
                         transferRepository.updateTransferManual(tempId, 1.0f, TransferRepository.Status.COMPLETED)
                     }
                 } else {
@@ -937,30 +813,20 @@ class DriveRepository @Inject constructor(
                 }
             }
             
-            // Wait for completion (terminal state: Completed, Cancelled, or Failed)
             transferRepository.waitForCompletion(tempId)
             
-            // CRITICAL: Cleanup temp encrypted file AFTER completion
             try {
                 tempEncFile?.let { 
-                    if (it.exists()) {
-                        it.delete()
-                        Log.d("DriveRepo", "Cleaned up temp encrypted file: ${it.absolutePath}")
-                    }
+                    if (it.exists()) it.delete()
                 }
-                // Cleanup split part if requested
                 if (deleteSourceAfter) {
                     val sourceFile = java.io.File(filePath)
-                    if (sourceFile.exists()) {
-                        sourceFile.delete()
-                        Log.d("DriveRepo", "Cleaned up source part: $filePath")
-                    }
+                    if (sourceFile.exists()) sourceFile.delete()
                 }
             } catch (e: Exception) {
                 Log.e("DriveRepo", "Failed to cleanup temp files", e)
             }
             
-            // After completion, fetch files once to update the list
             fetchFiles(targetChatId)
         }
     }
@@ -1037,9 +903,10 @@ class DriveRepository @Inject constructor(
                         fileName,
                         true,
                         expectedSize,
-                        localPath = null // Downloads don't have a reliable local path until they finish
+                        localPath = null
                     ) {
-                        telegramClient.send(TdApi.DownloadFile(fileId, 1, 0, 0, false))
+                        // Priority 32 দেওয়া হলো যাতে সর্বোচ্চ স্পিডে ডাউনলোড/স্ট্রিম হয়
+                        telegramClient.send(TdApi.DownloadFile(fileId, 32, 0, 0, false))
                     }
                 }
             }
@@ -1060,10 +927,7 @@ class DriveRepository @Inject constructor(
                 if (file.isEncrypted) {
                     val password = secureSessionManager.decryptedPassword.value
                     if (password != null) {
-                        encryptionManager.decryptFile(source, dest, password) { progress ->
-                            // Optional: Could track this via transferRepository if it's a large file
-                            // For now, let's just do it
-                        }
+                        encryptionManager.decryptFile(source, dest, password) { }
                     }
                 } else {
                     source.copyTo(dest, overwrite = true)
@@ -1087,8 +951,6 @@ class DriveRepository @Inject constructor(
                     updatedFolders[virtualId] = folder.copy(name = newName)
                     currentManifest = currentManifest.copy(virtualFolders = updatedFolders)
                     saveCloudManifest()
-                } else {
-                    telegramClient.send(TdApi.SetChatTitle(item.telegramChatId, newName)) {}
                 }
             } else if (item is DriveItem.File) {
                 telegramClient.send(TdApi.GetMessage(item.parentChatId, item.id)) { result ->
@@ -1122,7 +984,6 @@ class DriveRepository @Inject constructor(
 
     fun permanentlyDeleteItems(items: List<DriveItem>) {
         scope.launch {
-            // Group files by their parentChatId for correct Telegram deletion
             val filesByChat = items.filterIsInstance<DriveItem.File>().groupBy { it.parentChatId }
             filesByChat.forEach { (chatId, files) ->
                 val ids = files.map { it.id }.toLongArray()
@@ -1131,7 +992,6 @@ class DriveRepository @Inject constructor(
                 }
             }
 
-            // Clean up manifest for deleted files
             if (filesByChat.isNotEmpty()) {
                 synchronized(currentManifest) {
                     val updatedFileMetaIds = currentManifest.fileMetadataIds.toMutableMap()
@@ -1161,15 +1021,6 @@ class DriveRepository @Inject constructor(
                 saveCloudManifest()
             }
 
-            val physicalFolders = items.filterIsInstance<DriveItem.Folder>().filter { !it.isVirtual }
-            physicalFolders.forEach { folder ->
-                telegramClient.send(TdApi.DeleteChat(folder.telegramChatId)) {
-                    scope.launch {
-                        driveDao.deleteItemsByChat(folder.telegramChatId)
-                        driveDao.deleteItemCompletely(folder.telegramChatId, folder.parentChatId)
-                    }
-                }
-            }
             val virtualFolders = items.filterIsInstance<DriveItem.Folder>().filter { it.isVirtual }
             if (virtualFolders.isNotEmpty()) {
                 virtualFolders.forEach { folder ->
@@ -1183,14 +1034,12 @@ class DriveRepository @Inject constructor(
     private suspend fun deleteVirtualFolderRecursive(virtualId: String) {
         val children = driveDao.getItemsByVirtualParentSync(virtualId)
         
-        // 1. Group actual files by chat and delete from Telegram
         val filesByChat = children.filter { !it.isFolder }.groupBy { it.parentChatId }
         filesByChat.forEach { (chatId, entities) ->
             val ids = entities.map { it.id }.toLongArray()
             telegramClient.send(TdApi.DeleteMessages(chatId, ids, true)) {}
         }
         
-        // 2. Collect metadata messages to delete from Saved Messages
         val metadataIdsToDelete = mutableListOf<Long>()
         currentManifest.folderMetadataIds[virtualId]?.let { metadataIdsToDelete.add(it) }
         
@@ -1207,7 +1056,6 @@ class DriveRepository @Inject constructor(
             telegramClient.send(TdApi.DeleteMessages(savedMessagesChatId, metadataIdsToDelete.toLongArray(), true)) {}
         }
 
-        // 3. Update manifest in-memory (atomically update local maps first)
         synchronized(currentManifest) {
             val updatedFolders = currentManifest.virtualFolders.toMutableMap()
             updatedFolders.remove(virtualId)
@@ -1241,12 +1089,10 @@ class DriveRepository @Inject constructor(
             )
         }
 
-        // 4. Recurse into sub-folders
         children.filter { it.isFolder && it.isVirtual }.forEach { sf ->
             sf.virtualId?.let { deleteVirtualFolderRecursive(it) }
         }
 
-        // 5. DB Cleanup
         val entity = driveDao.getVirtualFolderById(virtualId)
         if (entity != null) driveDao.deleteItemCompletely(entity.id, entity.parentChatId)
         children.forEach { child ->
@@ -1257,21 +1103,6 @@ class DriveRepository @Inject constructor(
     fun downloadFolderContents(folder: DriveItem.Folder) {
         if (folder.isVirtual) {
             folder.virtualId?.let { downloadVirtualFolderRecursive(it) }
-        } else {
-            telegramClient.send(TdApi.GetChatHistory(folder.telegramChatId, 0, 0, 1000, false)) { result ->
-                if (result is TdApi.Messages) {
-                    result.messages.forEach { message ->
-                        val fileId = when (val content = message.content) {
-                            is TdApi.MessageDocument -> content.document.document.id
-                            is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo?.id ?: 0
-                            is TdApi.MessageVideo -> content.video.video.id
-                            is TdApi.MessageAudio -> content.audio.audio.id
-                            else -> 0
-                        }
-                        if (fileId != 0) telegramClient.send(TdApi.DownloadFile(fileId, 1, 0, 0, false))
-                    }
-                }
-            }
         }
     }
 
@@ -1282,7 +1113,6 @@ class DriveRepository @Inject constructor(
                 if (child.isFolder && child.isVirtual) {
                     child.virtualId?.let { downloadVirtualFolderRecursive(it) }
                 } else if (!child.isFolder) {
-                    // It's a file, initiate download
                     downloadFile(child.id, child.parentChatId, child.name)
                 }
             }
@@ -1290,48 +1120,14 @@ class DriveRepository @Inject constructor(
     }
 
     fun moveItems(fromChatId: Long, toChatId: Long, messageIds: List<Long>) {
-        val options = TdApi.MessageSendOptions(null, false, false, false, false, 0L, false, null, 0L, 0, false)
-        telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromChatId, messageIds.toLongArray(), options, false, false)) { result ->
-            if (result is TdApi.Messages) {
-                telegramClient.send(TdApi.DeleteMessages(fromChatId, messageIds.toLongArray(), true)) {
-                    scope.launch { messageIds.forEach { id -> driveDao.deleteItemCompletely(id, fromChatId) } }
-                    fetchFiles(toChatId)
-                }
-            }
-        }
+        // শুধুমাত্র Saved Messages ব্যবহৃত হওয়ায় ফিজিক্যাল চ্যাট মুভ করার প্রয়োজন নেই
     }
 
     fun moveFolderContentsAndDelete(fromFolderChatId: Long, toChatId: Long) {
-        val options = TdApi.MessageSendOptions(null, false, false, false, false, 0L, false, null, 0L, 0, false)
-        telegramClient.send(TdApi.GetChatHistory(fromFolderChatId, 0, 0, 100, false)) { result ->
-            if (result is TdApi.Messages) {
-                val messageIds = result.messages.map { it.id }.toLongArray()
-                if (messageIds.isNotEmpty()) {
-                    telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromFolderChatId, messageIds, options, false, false)) { forwardResult ->
-                        if (forwardResult is TdApi.Messages) {
-                            telegramClient.send(TdApi.DeleteChat(fromFolderChatId)) {
-                                scope.launch {
-                                    driveDao.deleteItemsByChat(fromFolderChatId)
-                                    driveDao.deleteItemCompletely(fromFolderChatId, savedMessagesChatId)
-                                    fetchFiles(toChatId)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    telegramClient.send(TdApi.DeleteChat(fromFolderChatId)) {
-                        scope.launch {
-                            driveDao.deleteItemCompletely(fromFolderChatId, savedMessagesChatId)
-                            fetchFiles(toChatId)
-                        }
-                    }
-                }
-            }
-        }
+        // নিষ্ক্রিয় করা হয়েছে
     }
 
     fun getInternalCacheSize(): Flow<Long> = kotlinx.coroutines.flow.flow {
-        // Initial emit
         emit(calculateTotalStorage())
         while (true) {
             kotlinx.coroutines.delay(10000)
@@ -1381,9 +1177,8 @@ class DriveRepository @Inject constructor(
             if (file.splitGroupId == null) {
                 totalSize += file.size
             } else if (!processedGroups.contains(file.splitGroupId)) {
-                // Use logical total size from manifest for split files
                 val master = currentManifest.splitFileMasters[file.splitGroupId]
-                totalSize += master?.totalSize ?: (file.size * (file.totalParts)) // Heuristic fallback
+                totalSize += master?.totalSize ?: (file.size * (file.totalParts))
                 processedGroups.add(file.splitGroupId)
             }
         }
