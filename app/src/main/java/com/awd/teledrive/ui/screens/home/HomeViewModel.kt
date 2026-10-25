@@ -86,10 +86,11 @@ class HomeViewModel @Inject constructor(
         val filter = arr[4] as FilterType
 
         driveRepository.getItems(folderId, virtualId, query).map { allItems ->
-            // Always hide secure items from the main drive view
+            // সিকিউর ফাইল এবং যেকোনো নন-ভার্চুয়াল চ্যানেল ফোল্ডার হাইড করা হলো
             val items = allItems.filter { item ->
                 !(item is DriveItem.Folder && item.isSecure) && 
-                !(item is DriveItem.File && item.isEncrypted)
+                !(item is DriveItem.File && item.isEncrypted) &&
+                !(item is DriveItem.Folder && !item.isVirtual)
             }
 
             val filteredByType = when (filter) {
@@ -100,26 +101,23 @@ class HomeViewModel @Inject constructor(
                 FilterType.DOCUMENTS -> items.filter { it is DriveItem.File && !it.mimeType.startsWith("image/") && !it.mimeType.startsWith("video/") && !it.mimeType.startsWith("audio/") }
             }
 
-            // Fix the infinite reordering glitch:
-            // 1. Keep folders always at the top
-            // 2. Sort consistently within folders and files
             val (folders, files) = filteredByType.partition { it is DriveItem.Folder }
             
             val sortedFolders = when (order) {
                 SortOrder.NAME -> folders.sortedBy { it.name }
-                else -> folders.sortedByDescending { it.id } // Consistent sort for folders
+                else -> folders.sortedByDescending { it.id }
             }
 
             val sortedFiles = when (order) {
                 SortOrder.NAME -> files.sortedBy { it.name }
-                SortOrder.DATE -> files // Already sorted by DATE in Repo
+                SortOrder.DATE -> files
                 SortOrder.SIZE -> files.sortedByDescending { (it as? DriveItem.File)?.size ?: 0L }
             }
 
             sortedFolders + sortedFiles
         }
     }.flatMapLatest { it }
-    .distinctUntilChanged() // Crucial to stop the glitch
+    .distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
@@ -143,55 +141,28 @@ class HomeViewModel @Inject constructor(
     }
 
     fun navigateToFolder(folderId: Long?, virtualId: String?, folderName: String?) {
-        _currentFolderId.value = folderId
+        _currentFolderId.value = null // সবসময় Saved Messages রুট থাকবে
         _currentVirtualFolderId.value = virtualId ?: "0"
         _currentFolderName.value = folderName
-        fetchItems()
     }
 
     fun navigateBack() {
         if (_currentVirtualFolderId.value != "0") {
             val parentId = driveRepository.getParentVirtualId(_currentVirtualFolderId.value)
             val parentName = if (parentId == "0") null else driveRepository.getVirtualFolderName(parentId)
-            navigateToFolder(_currentFolderId.value, parentId, parentName) 
-        } else if (_currentFolderId.value != null) {
-            navigateToFolder(null, "0", null)
+            navigateToFolder(null, parentId, parentName) 
         }
     }
 
     fun createFolder(name: String, isVirtual: Boolean = true, isSecure: Boolean = false) {
         viewModelScope.launch {
-            if (isSecure) {
-                driveRepository.createSecureFolder(name)
-            } else if (isVirtual) {
-                // Determine parentId based on current view
-                val parentId = if (_currentVirtualFolderId.value != "0") {
-                    _currentVirtualFolderId.value
-                } else if (_currentFolderId.value != null) {
-                    // This case should be restricted by UI, but adding a safeguard
-                    _currentFolderId.value.toString()
-                } else {
-                    "0"
-                }
-
-                // Restriction: Cannot create virtual folders inside physical folders as per user requirement
-                if (_currentFolderId.value != null && _currentVirtualFolderId.value == "0") {
-                    return@launch
-                }
-
-                val isParentSecure = if (parentId.startsWith("vf_")) {
-                    driveRepository.isVirtualFolderSecure(parentId)
-                } else {
-                    driveRepository.isChatSecure(parentId.toLongOrNull() ?: 0L)
-                }
-
-                driveRepository.createVirtualFolder(name, parentId, isSecure = isParentSecure)
+            val parentId = _currentVirtualFolderId.value
+            val isParentSecure = if (parentId.startsWith("vf_")) {
+                driveRepository.isVirtualFolderSecure(parentId)
             } else {
-                // Physical folder (Channel) can only be created at root
-                if (_currentFolderId.value == null && _currentVirtualFolderId.value == "0") {
-                    driveRepository.createFolder(name)
-                }
+                false
             }
+            driveRepository.createVirtualFolder(name, parentId, isSecure = isSecure || isParentSecure)
         }
     }
 
@@ -201,26 +172,11 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             if (items.value.isEmpty()) _isInitialLoading.value = true
             else _isRefreshing.value = true
-            _isSyncingMetadata.value = true
             
-            driveRepository.fetchFiles(_currentFolderId.value)
+            driveRepository.fetchFiles(null)
             
-            // For root/Saved Messages, wait a bit longer for deep metadata scan to process messages
-            if (_currentFolderId.value == null) {
-                kotlinx.coroutines.withTimeoutOrNull(30000) { // Increased to 30s
-                    driveRepository.getSavedMessagesChatIdFlow().collect { id ->
-                        if (id != 0L) {
-                            kotlinx.coroutines.delay(3000) // Extra time for distributed metadata processing
-                            _isSyncingMetadata.value = false
-                            _isInitialLoading.value = false
-                            _isRefreshing.value = false
-                            throw kotlinx.coroutines.CancellationException()
-                        }
-                    }
-                }
-            } else {
-                kotlinx.coroutines.delay(1000)
-            }
+            // আগের ৩ সেকেন্ডের অযথা ডিলে (delay) কমিয়ে মাত্র ৩০০ মিলিসেকেন্ড করা হলো
+            kotlinx.coroutines.delay(300)
             _isSyncingMetadata.value = false
             _isInitialLoading.value = false
             _isRefreshing.value = false
@@ -229,7 +185,7 @@ class HomeViewModel @Inject constructor(
 
     fun uploadFile(filePath: String, fileName: String) {
         viewModelScope.launch {
-            driveRepository.uploadFile(filePath, fileName, _currentFolderId.value, _currentVirtualFolderId.value)
+            driveRepository.uploadFile(filePath, fileName, null, _currentVirtualFolderId.value)
         }
     }
 
@@ -251,23 +207,9 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun moveItems(ids: Set<Long>, targetChatId: Long) {
-        val fromChatId = _currentFolderId.value ?: driveRepository.getSavedMessagesChatId()
-        val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
-        
-        if (fromChatId != 0L && fromChatId != destination) {
-            viewModelScope.launch {
-                driveRepository.moveItems(fromChatId, destination, ids.toList())
-            }
-        }
-    }
+    fun moveItems(ids: Set<Long>, targetChatId: Long) { }
 
-    fun moveFolderContentsAndDelete(folderChatId: Long, targetChatId: Long) {
-        val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
-        viewModelScope.launch {
-            driveRepository.moveFolderContentsAndDelete(folderChatId, destination)
-        }
-    }
+    fun moveFolderContentsAndDelete(folderChatId: Long, targetChatId: Long) { }
 
     fun toggleStarred(item: DriveItem) {
         viewModelScope.launch {
@@ -290,7 +232,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun shareFileToPhone(phoneNumber: String, messageId: Long, onResult: (Boolean, String?) -> Unit) {
-        val chatId = _currentFolderId.value ?: driveRepository.getSavedMessagesChatId()
+        val chatId = driveRepository.getSavedMessagesChatId()
         shareRepository.shareFileToPhone(phoneNumber, messageId, chatId, onResult)
     }
 }
