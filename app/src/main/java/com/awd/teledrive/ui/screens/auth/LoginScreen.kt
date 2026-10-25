@@ -26,19 +26,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.filled.CloudQueue
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockPerson
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Sms
-import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,7 +45,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -59,8 +54,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusDirection
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -69,7 +62,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
 
@@ -111,16 +103,16 @@ fun LoginContent(
     onPasswordSubmit: (String) -> Unit,
     onResetApi: () -> Unit
 ) {
-    var apiId by remember { mutableStateOf("") }
-    var apiHash by remember { mutableStateOf("") }
+    // এখানে টেলিগ্রামের অফিসিয়াল API ID এবং Hash লুকিয়ে বসানো হলো
+    val defaultApiId = "94575" 
+    val defaultApiHash = "a3406de8d171bb422bb6ddf3bbd800e2" 
+    
     var phoneNumber by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isPasswordVisible by remember { mutableStateOf(false) }
     
-    val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
-    val context = androidx.compose.ui.platform.LocalContext.current
 
     Scaffold(
         topBar = {
@@ -187,7 +179,7 @@ fun LoginContent(
                 
                 Text(
                     text = when (uiState) {
-                        is LoginUiState.InitialSetup -> stringResource(R.string.login_desc)
+                        is LoginUiState.InitialSetup -> "আপনার ফোন নম্বর দিয়ে লগইন করুন"
                         is LoginUiState.EnteringCode -> stringResource(R.string.code_sent)
                         is LoginUiState.EnteringPassword -> stringResource(R.string.account_protected)
                         else -> ""
@@ -222,61 +214,6 @@ fun LoginContent(
 
                 when (uiState) {
                     is LoginUiState.InitialSetup -> {
-                        Card(
-                            shape = MaterialTheme.shapes.large,
-                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    stringResource(R.string.telegram_api).uppercase(), 
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(bottom = 12.dp)
-                                )
-                                OutlinedTextField(
-                                    value = apiId,
-                                    onValueChange = { apiId = it },
-                                    label = { Text(stringResource(R.string.api_id_label)) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
-                                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                                    singleLine = true,
-                                    shape = MaterialTheme.shapes.medium,
-                                    leadingIcon = { Icon(Icons.Default.VpnKey, null) },
-                                    trailingIcon = {
-                                        IconButton(onClick = {
-                                            val clipboardManager = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                            clipboardManager.primaryClip?.getItemAt(0)?.text?.let { apiId = it.toString() }
-                                        }) {
-                                            Icon(Icons.Default.ContentPaste, contentDescription = stringResource(R.string.paste_label))
-                                        }
-                                    }
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                OutlinedTextField(
-                                    value = apiHash,
-                                    onValueChange = { apiHash = it },
-                                    label = { Text(stringResource(R.string.api_hash_label)) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                                    singleLine = true,
-                                    shape = MaterialTheme.shapes.medium,
-                                    leadingIcon = { Icon(Icons.Default.Tag, null) },
-                                    trailingIcon = {
-                                        IconButton(onClick = {
-                                            val clipboardManager = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                            clipboardManager.primaryClip?.getItemAt(0)?.text?.let { apiHash = it.toString() }
-                                        }) {
-                                            Icon(Icons.Default.ContentPaste, contentDescription = stringResource(R.string.paste_label))
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(24.dp))
                         
                         OutlinedTextField(
                             value = phoneNumber,
@@ -285,7 +222,7 @@ fun LoginContent(
                             placeholder = { Text(stringResource(R.string.phone_placeholder)) },
                             modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
-                            keyboardActions = KeyboardActions(onDone = { onLoginSubmit(apiId, apiHash, phoneNumber) }),
+                            keyboardActions = KeyboardActions(onDone = { onLoginSubmit(defaultApiId, defaultApiHash, phoneNumber) }),
                             leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
                             singleLine = true,
                             shape = MaterialTheme.shapes.medium
@@ -293,10 +230,10 @@ fun LoginContent(
                         
                         Spacer(modifier = Modifier.height(32.dp))
                         
-                        val canSubmit = apiId.isNotBlank() && apiHash.isNotBlank() && phoneNumber.isNotBlank()
+                        val canSubmit = phoneNumber.isNotBlank()
 
                         Button(
-                            onClick = { onLoginSubmit(apiId, apiHash, phoneNumber) },
+                            onClick = { onLoginSubmit(defaultApiId, defaultApiHash, phoneNumber) },
                             modifier = Modifier.fillMaxWidth().height(56.dp),
                             shape = MaterialTheme.shapes.large,
                             enabled = !isProcessing && canSubmit
@@ -308,16 +245,6 @@ fun LoginContent(
                                 Spacer(Modifier.width(8.dp))
                                 Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                             }
-                        }
-                        
-                        TextButton(
-                            onClick = { 
-                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://my.telegram.org"))
-                                context.startActivity(intent)
-                            },
-                            modifier = Modifier.padding(top = 16.dp)
-                        ) {
-                            Text(stringResource(R.string.api_hint), fontSize = 12.sp)
                         }
                     }
                     
