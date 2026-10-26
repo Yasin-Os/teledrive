@@ -31,8 +31,8 @@ class UpdateRepository @Inject constructor(
 
     private var hasDismissedUpdate = false
 
-    // নিচের লাইনে YOUR_GITHUB_USERNAME কেটে আপনার গিটহাব ইউজারনেম লিখুন (যেমন: "Yasin-Os/teledrive")
-    private val GITHUB_REPO = "YOUR_GITHUB_USERNAME/teledrive"
+    // আপনার গিটহাব রিপোজিটরি সরাসরি যুক্ত করা হলো
+    private val GITHUB_REPO = "Yasin-Os/teledrive"
 
     private val prefs by lazy {
         context.getSharedPreferences("app_auto_update_prefs", Context.MODE_PRIVATE)
