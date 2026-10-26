@@ -34,14 +34,12 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -190,9 +188,7 @@ fun SettingsScreen(
         onSetDownloadUri = viewModel::setDownloadUri,
         onSetCacheSizeLimit = viewModel::setCacheSizeLimit,
         onSetCacheAgeLimit = viewModel::setCacheAgeLimit,
-        onSetThumbnailAutoDownload = viewModel::setThumbnailAutoDownloadEnabled,
-        onCheckForUpdates = { viewModel.checkForUpdates(true) },
-        onDismissUpdate = viewModel::resetUpdateState
+        onSetThumbnailAutoDownload = viewModel::setThumbnailAutoDownloadEnabled
     )
 }
 
@@ -221,13 +217,9 @@ fun SettingsContent(
     onSetDownloadUri: (String?) -> Unit,
     onSetCacheSizeLimit: (Long) -> Unit,
     onSetCacheAgeLimit: (Int) -> Unit,
-    onSetThumbnailAutoDownload: (Boolean) -> Unit,
-    onCheckForUpdates: () -> Unit,
-    onDismissUpdate: () -> Unit
+    onSetThumbnailAutoDownload: (Boolean) -> Unit
 ) {
-    var showLanguageDialog by remember { mutableStateOf(false) }
     var showSetPasswordConfirm by remember { mutableStateOf(false) }
-    var showLanguageRestartConfirm by remember { mutableStateOf(false) }
     var showCacheSizeDialog by remember { mutableStateOf(false) }
     var showCacheAgeDialog by remember { mutableStateOf(false) }
 
@@ -246,53 +238,6 @@ fun SettingsContent(
             context.contentResolver.takePersistableUriPermission(it, takeFlags)
             onSetDownloadUri(it.toString())
         }
-    }
-
-    // ইন-অ্যাপ আপডেট পপ-আপ ডায়ালগ
-    if (uiState.updateState is UpdateState.NewVersionAvailable) {
-        val release = uiState.updateState.release
-        AlertDialog(
-            onDismissRequest = onDismissUpdate,
-            title = { Text("New Update Available (${release.tag_name})") },
-            text = { Text("একটি নতুন আপডেট পাওয়া গেছে! লগইন ঠিক রেখে সরাসরি আপডেট করতে নিচের Download বাটনে ট্যাপ করুন।") },
-            confirmButton = {
-                Button(onClick = {
-                    val apkUrl = release.assets.firstOrNull { it.name.contains("universal", ignoreCase = true) }?.browser_download_url
-                        ?: release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }?.browser_download_url
-                        ?: release.html_url
-                    onDismissUpdate()
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl))
-                    context.startActivity(intent)
-                }) {
-                    Text("Download & Update")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissUpdate) {
-                    Text(stringResource(R.string.cancel))
-                }
-            }
-        )
-    }
-
-    if (showLanguageRestartConfirm) {
-        AlertDialog(
-            onDismissRequest = { showLanguageRestartConfirm = false },
-            title = { Text(stringResource(R.string.language_changed_title)) },
-            text = { Text(stringResource(R.string.language_changed_message)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showLanguageRestartConfirm = false
-                    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                    intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                    (context as? android.app.Activity)?.finish()
-                }) { Text(stringResource(R.string.restart_app)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLanguageRestartConfirm = false }) { Text(stringResource(R.string.cancel)) }
-            }
-        )
     }
 
     if (showSetPasswordConfirm) {
@@ -352,29 +297,6 @@ fun SettingsContent(
             dismissButton = {
                 TextButton(onClick = { showThemeRestartConfirm = false }) { Text(stringResource(R.string.cancel)) }
             }
-        )
-    }
-
-    if (showLanguageDialog) {
-        AlertDialog(
-            onDismissRequest = { showLanguageDialog = false },
-            title = { Text(stringResource(R.string.language)) },
-            text = {
-                Column {
-                    ListItem(
-                        headlineContent = { Text("English") },
-                        modifier = Modifier.clickable {
-                            onSetLanguage("en")
-                            showLanguageDialog = false
-                            showLanguageRestartConfirm = true
-                        },
-                        trailingContent = {
-                            if (uiState.currentLanguage == "en") Icon(Icons.Default.Check, null)
-                        }
-                    )
-                }
-            },
-            confirmButton = {}
         )
     }
 
@@ -505,7 +427,6 @@ fun SettingsContent(
                 onCheckedChange = onSetAutoBackupEnabled
             )
             
-            // নতুন ফিচার: ফোন স্টোরেজ থেকে ফাইল আপলোড হওয়ার পর অটো-ডিলিট করার সুইচ
             SettingsToggleRow(
                 icon = Icons.Default.DeleteSweep,
                 title = "Delete from phone after backup",
@@ -652,13 +573,12 @@ fun SettingsContent(
             SettingsCategory(title = "App Update")
             SettingsClickableRow(
                 icon = Icons.Default.SystemUpdate,
-                title = "Check for App Updates",
-                subtitle = when (uiState.updateState) {
-                    is UpdateState.Checking -> "Checking GitHub for new build..."
-                    is UpdateState.UpToDate -> "You are using the latest version"
-                    else -> "Tap to check and install latest update"
-                },
-                onClick = onCheckForUpdates
+                title = "Download Latest App Update",
+                subtitle = "লগইন অক্ষত রেখে সরাসরি নতুন আপডেট ডাউনলোড ও ইনস্টল করতে এখানে ট্যাপ করুন",
+                onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Yasin-Os/teledrive/releases/latest"))
+                    context.startActivity(intent)
+                }
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
