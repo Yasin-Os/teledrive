@@ -2,7 +2,6 @@ package com.awd.teledrive.data.repository
 
 import android.content.Context
 import android.util.Log
-import com.awd.teledrive.core.utils.VersionUtils
 import com.awd.teledrive.data.model.GitHubRelease
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +31,13 @@ class UpdateRepository @Inject constructor(
 
     private var hasDismissedUpdate = false
 
+    // এখানে নিচের লাইনে YOUR_GITHUB_USERNAME কেটে আপনার গিটহাব ইউজারনেম লিখুন (যেমন: "Yasin-Os/teledrive")
+    private val GITHUB_REPO = "Yasin-Os/teledrive"
+
+    private val prefs by lazy {
+        context.getSharedPreferences("app_auto_update_prefs", Context.MODE_PRIVATE)
+    }
+
     private val json = Json { 
         ignoreUnknownKeys = true 
         coerceInputValues = true
@@ -44,7 +50,7 @@ class UpdateRepository @Inject constructor(
         _updateState.value = UpdateState.Checking
         
         try {
-            val url = URL("https://api.github.com/repos/putuwahyu29/awd-teledrive-android/releases/latest")
+            val url = URL("https://api.github.com/repos/$GITHUB_REPO/releases/latest")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.connectTimeout = 10000
@@ -55,9 +61,29 @@ class UpdateRepository @Inject constructor(
                 val responseBody = connection.inputStream.bufferedReader().readText()
                 val latestRelease = json.decodeFromString<GitHubRelease>(responseBody)
                 
-                val currentVersion = VersionUtils.getVersionName(context)
-                if (isNewerVersion(latestRelease.tag_name, currentVersion)) {
-                    _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
+                // শুধুমাত্র universal APK ফাইলটি ফিল্টার করা হচ্ছে যাতে ফোনে ইনস্টল হতে কখনো সমস্যা না হয়
+                val universalAssets = latestRelease.assets.filter { 
+                    it.name.contains("universal", ignoreCase = true) && it.name.endsWith(".apk", ignoreCase = true)
+                }
+                val filteredRelease = if (universalAssets.isNotEmpty()) {
+                    latestRelease.copy(assets = universalAssets)
+                } else {
+                    latestRelease
+                }
+
+                val lastKnownTag = prefs.getString("last_installed_tag", null)
+
+                if (lastKnownTag == null) {
+                    // প্রথমবার অ্যাপ চালু হলে বর্তমান রিলিজ ট্যাগটি সেভ করে রাখবে
+                    prefs.edit().putString("last_installed_tag", filteredRelease.tag_name).apply()
+                    if (manual) {
+                        _updateState.value = UpdateState.NewVersionAvailable(filteredRelease)
+                    } else {
+                        _updateState.value = UpdateState.UpToDate
+                    }
+                } else if (filteredRelease.tag_name != lastKnownTag || manual) {
+                    // গিটহাবে নতুন যেকোনো রিলিজ আসলেই সাথে সাথে আপডেট দেখাবে!
+                    _updateState.value = UpdateState.NewVersionAvailable(filteredRelease)
                 } else {
                     _updateState.value = UpdateState.UpToDate
                 }
@@ -69,27 +95,21 @@ class UpdateRepository @Inject constructor(
             _updateState.value = UpdateState.Error(e.message ?: "Unknown error")
         } finally {
             if (!manual && (_updateState.value is UpdateState.UpToDate || _updateState.value is UpdateState.Error)) {
-                // If automatic check, reset to idle to avoid showing Toast/Dialog if not requested
                 _updateState.value = UpdateState.Idle
             }
         }
     }
 
-    fun resetState() {
-        if (_updateState.value is UpdateState.NewVersionAvailable) {
-            hasDismissedUpdate = true
-        }
-        _updateState.value = UpdateState.Idle
+    fun markUpdateSeen(tagName: String) {
+        prefs.edit().putString("last_installed_tag", tagName).apply()
     }
 
-    private fun isNewerVersion(latestTag: String, currentVersion: String): Boolean {
-        val latest = latestTag.removePrefix("v").split(".").mapNotNull { it.toIntOrNull() }
-        val current = currentVersion.removePrefix("v").split(".").mapNotNull { it.toIntOrNull() }
-
-        for (i in 0 until minOf(latest.size, current.size)) {
-            if (latest[i] > current[i]) return true
-            if (latest[i] < current[i]) return false
+    fun resetState() {
+        val currentState = _updateState.value
+        if (currentState is UpdateState.NewVersionAvailable) {
+            hasDismissedUpdate = true
+            markUpdateSeen(currentState.release.tag_name)
         }
-        return latest.size > current.size
+        _updateState.value = UpdateState.Idle
     }
 }
