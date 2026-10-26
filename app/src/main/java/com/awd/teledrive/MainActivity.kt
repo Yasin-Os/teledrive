@@ -1,9 +1,7 @@
 package com.awd.teledrive
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
@@ -13,10 +11,16 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,12 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
+import com.awd.teledrive.data.model.GitHubRelease
 import com.awd.teledrive.data.repository.UpdateRepository
 import com.awd.teledrive.data.repository.UpdateState
 import com.awd.teledrive.data.secure.SecureSettings
@@ -91,12 +97,10 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         checkAndRequestPermissions()
         
-        // Trigger update check once
         lifecycleScope.launch {
             updateRepository.checkForUpdates(manual = false)
         }
         
-        // Safety: Cancel all previous work to prevent crashes from old task versions
         try {
             androidx.work.WorkManager.getInstance(this).cancelAllWork()
         } catch (e: Exception) {
@@ -128,9 +132,6 @@ class MainActivity : AppCompatActivity() {
             val updateState by updateRepository.updateState.collectAsState()
             
             val darkTheme = isDarkModePref ?: isSystemInDarkTheme()
-
-            // The locale is handled by AppCompatDelegate.setApplicationLocales in SettingsViewModel.
-            // We just need to make sure Compose is aware of the configuration changes.
             val configuration = LocalConfiguration.current
             
             CompositionLocalProvider(
@@ -140,9 +141,9 @@ class MainActivity : AppCompatActivity() {
                     val navController = rememberNavController()
                     NavGraph(navController = navController)
                     
-                    // Global Update Dialog
                     GlobalUpdateDialog(
                         updateState = updateState,
+                        onDownloadUpdate = { release -> updateRepository.downloadAndInstall(release) },
                         onDismiss = { updateRepository.resetState() }
                     )
                 }
@@ -155,6 +156,7 @@ class MainActivity : AppCompatActivity() {
 @Composable
 fun GlobalUpdateDialog(
     updateState: UpdateState,
+    onDownloadUpdate: (GitHubRelease) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -177,21 +179,17 @@ fun GlobalUpdateDialog(
         is UpdateState.NewVersionAvailable -> {
             AlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text(stringResource(R.string.update_available, updateState.release.name)) },
+                title = { Text(stringResource(R.string.update_available, updateState.release.name.ifEmpty { updateState.release.tag_name })) },
                 text = { 
                     Column(
                         modifier = Modifier.verticalScroll(rememberScrollState())
                     ) {
-                        Text(updateState.release.body)
+                        Text(updateState.release.body.ifEmpty { "নতুন আপডেট পাওয়া গেছে। অ্যাপের ভেতর থেকেই সরাসরি ডাউনলোড ও ইনস্টল করুন।" })
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateState.release.html_url))
-                        context.startActivity(intent)
-                        onDismiss()
-                    }) {
-                        Text(stringResource(R.string.open_browser))
+                    Button(onClick = { onDownloadUpdate(updateState.release) }) {
+                        Text("Update Now")
                     }
                 },
                 dismissButton = {
@@ -199,6 +197,26 @@ fun GlobalUpdateDialog(
                         Text(stringResource(R.string.later))
                     }
                 }
+            )
+        }
+        is UpdateState.Downloading -> {
+            AlertDialog(
+                onDismissRequest = {},
+                title = { Text("Downloading Update...") },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        LinearProgressIndicator(
+                            progress = { updateState.progress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "${(updateState.progress * 100).toInt()}% • ${updateState.progressText}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                },
+                confirmButton = {}
             )
         }
         else -> {}
