@@ -3,11 +3,11 @@ package com.awd.teledrive.ui.screens.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.core.ConnectivityObserver
-import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.data.repository.ShareRepository
 import com.awd.teledrive.data.secure.MasterPasswordService
 import com.awd.teledrive.data.secure.SecureSessionManager
+import com.awd.teledrive.data.secure.SecureSettings
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,7 +32,7 @@ enum class FilterType {
 }
 
 enum class CustomCategory {
-    NONE, APPS, ARCHIVES
+    NONE, APPS, ARCHIVES, RECENTS
 }
 
 @HiltViewModel
@@ -41,7 +41,8 @@ class HomeViewModel @Inject constructor(
     private val shareRepository: ShareRepository,
     private val connectivityObserver: ConnectivityObserver,
     private val masterPasswordService: MasterPasswordService,
-    private val secureSessionManager: SecureSessionManager
+    private val secureSessionManager: SecureSessionManager,
+    private val secureSettings: SecureSettings
 ) : ViewModel() {
 
     val connectivityStatus = connectivityObserver.status
@@ -80,15 +81,40 @@ class HomeViewModel @Inject constructor(
     private val _isSyncingMetadata = MutableStateFlow(false)
     val isSyncingMetadata = _isSyncingMetadata.asStateFlow()
 
+    private val _recentOpenedIds = MutableStateFlow<List<Long>>(
+        secureSettings.getStringList("recent_opened_files").mapNotNull { it.toLongOrNull() }
+    )
+
+    val allCloudFiles: StateFlow<List<DriveItem.File>> = driveRepository.getAllFiles()
+        .map { list -> list.filter { !it.isEncrypted } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val recentFiles: StateFlow<List<DriveItem.File>> = combine(
+        allCloudFiles,
+        _recentOpenedIds
+    ) { files, recentIds ->
+        if (recentIds.isEmpty()) emptyList()
+        else {
+            val fileMap = files.associateBy { it.id }
+            recentIds.mapNotNull { fileMap[it] }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
-    val cloudStats: StateFlow<List<DriveDao.FileTypeStat>> = driveRepository.getCloudFileTypeStats()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    fun recordFileOpened(fileId: Long) {
+        val updated = listOf(fileId) + _recentOpenedIds.value.filter { it != fileId }
+        val trimmed = updated.take(30)
+        _recentOpenedIds.value = trimmed
+        secureSettings.saveStringList("recent_opened_files", trimmed.map { it.toString() })
+    }
 
-    val recentFiles: StateFlow<List<DriveItem>> = driveRepository.getAllFiles()
-        .map { files -> files.sortedByDescending { it.id }.take(10) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    fun removeFromRecents(fileId: Long) {
+        val updated = _recentOpenedIds.value.filter { it != fileId }
+        _recentOpenedIds.value = updated
+        secureSettings.saveStringList("recent_opened_files", updated.map { it.toString() })
+    }
 
     private fun isAppFile(file: DriveItem.File): Boolean {
         val ext = file.name.lowercase()
@@ -103,7 +129,7 @@ class HomeViewModel @Inject constructor(
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val items: StateFlow<List<DriveItem>> = combine(
-        listOf(_currentFolderId, _currentVirtualFolderId, _searchQuery, _sortOrder, _filterType, _customCategory, driveRepository.getSavedMessagesChatIdFlow())
+        listOf(_currentFolderId, _currentVirtualFolderId, _searchQuery, _sortOrder, _filterType, _customCategory, driveRepository.getSavedMessagesChatIdFlow(), _recentOpenedIds)
     ) { arr ->
         val folderId = arr[0] as? Long
         val virtualId = arr[1] as String
@@ -111,6 +137,8 @@ class HomeViewModel @Inject constructor(
         val order = arr[3] as SortOrder
         val filter = arr[4] as FilterType
         val customCat = arr[5] as CustomCategory
+        @Suppress("UNCHECKED_CAST")
+        val recentIds = arr[7] as List<Long>
 
         val isGlobalCategoryActive = (filter != FilterType.ALL || customCat != CustomCategory.NONE) && virtualId == "0" && query.isEmpty()
 
@@ -125,6 +153,11 @@ class HomeViewModel @Inject constructor(
                 !(item is DriveItem.Folder && item.isSecure) && 
                 !(item is DriveItem.File && item.isEncrypted) &&
                 !(item is DriveItem.Folder && !item.isVirtual)
+            }
+
+            if (customCat == CustomCategory.RECENTS) {
+                val fileMap = items.filterIsInstance<DriveItem.File>().associateBy { it.id }
+                return@map recentIds.mapNotNull { fileMap[it] }
             }
 
             val filteredByType = when {
@@ -258,6 +291,7 @@ class HomeViewModel @Inject constructor(
     fun deleteItems(itemsToDelete: List<DriveItem>) {
         viewModelScope.launch {
             driveRepository.permanentlyDeleteItems(itemsToDelete)
+            itemsToDelete.forEach { removeFromRecents(it.id) }
         }
     }
 
