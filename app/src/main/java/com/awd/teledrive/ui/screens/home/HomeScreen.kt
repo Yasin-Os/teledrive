@@ -1,3 +1,4 @@
+// File: app/src/main/java/com/awd/teledrive/ui/screens/home/HomeScreen.kt
 package com.awd.teledrive.ui.screens.home
 
 import android.provider.OpenableColumns
@@ -53,13 +54,10 @@ import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudQueue
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
@@ -71,7 +69,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
@@ -110,7 +107,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -158,6 +154,7 @@ fun HomeScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val sortOrder by viewModel.sortOrder.collectAsState()
     val filterType by viewModel.filterType.collectAsState()
+    val customCategory by viewModel.customCategory.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val isInitialLoading by viewModel.isInitialLoading.collectAsState()
     val currentFolderId by viewModel.currentFolderId.collectAsState()
@@ -172,6 +169,7 @@ fun HomeScreen(
         searchQuery = searchQuery,
         sortOrder = sortOrder,
         filterType = filterType,
+        customCategory = customCategory,
         isRefreshing = isRefreshing,
         isInitialLoading = isInitialLoading,
         currentFolderId = currentFolderId,
@@ -186,6 +184,7 @@ fun HomeScreen(
         onToggleViewMode = viewModel::toggleViewMode,
         onSetSortOrder = viewModel::setSortOrder,
         onSetFilterType = viewModel::setFilterType,
+        onSetCustomCategory = viewModel::setCustomCategory,
         onCreateFolder = viewModel::createFolder,
         isPasswordSet = viewModel.isPasswordSet(),
         onUploadFile = viewModel::uploadFile,
@@ -214,6 +213,7 @@ fun HomeContent(
     searchQuery: String,
     sortOrder: SortOrder,
     filterType: FilterType,
+    customCategory: CustomCategory = CustomCategory.NONE,
     isRefreshing: Boolean,
     isInitialLoading: Boolean,
     currentFolderId: Long?,
@@ -228,6 +228,7 @@ fun HomeContent(
     onToggleViewMode: () -> Unit,
     onSetSortOrder: (SortOrder) -> Unit,
     onSetFilterType: (FilterType) -> Unit,
+    onSetCustomCategory: (CustomCategory) -> Unit = {},
     onCreateFolder: (String, Boolean, Boolean) -> Unit,
     isPasswordSet: Boolean,
     onUploadFile: (String, String) -> Unit,
@@ -359,6 +360,7 @@ fun HomeContent(
             showNewSheet -> showNewSheet = false
             isSearchActive -> isSearchActive = false
             isSelectionMode -> selectedItems = emptySet()
+            customCategory != CustomCategory.NONE -> onSetCustomCategory(CustomCategory.NONE)
             filterType != FilterType.ALL -> onSetFilterType(FilterType.ALL)
             (currentFolderId != null || currentVirtualFolderId != "0") -> onNavigateBack()
             else -> {
@@ -489,7 +491,6 @@ fun HomeContent(
         }
     }
 
-    // ক্লিন ফোল্ডার তৈরির ডায়ালগ (চ্যানেল তৈরির জটিল অপশন বাদ দেওয়া হয়েছে)
     if (showFolderDialog) {
         AlertDialog(
             onDismissRequest = { showFolderDialog = false },
@@ -629,8 +630,10 @@ fun HomeContent(
                             )
                             FilterSortRow(
                                 filterType = filterType,
+                                customCategory = customCategory,
                                 sortOrder = sortOrder,
                                 onSetFilterType = onSetFilterType,
+                                onSetCustomCategory = onSetCustomCategory,
                                 onSetSortOrder = onSetSortOrder,
                                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                             )
@@ -701,8 +704,10 @@ fun HomeContent(
 
                                 FilterSortRow(
                                     filterType = filterType,
+                                    customCategory = customCategory,
                                     sortOrder = sortOrder,
                                     onSetFilterType = onSetFilterType,
+                                    onSetCustomCategory = onSetCustomCategory,
                                     onSetSortOrder = onSetSortOrder
                                 )
                             }
@@ -757,7 +762,7 @@ fun HomeContent(
                         }
                     }
 
-                    val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && filterType == FilterType.ALL
+                    val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && filterType == FilterType.ALL && customCategory == CustomCategory.NONE
 
                     if (items.isEmpty() && !showDashboard) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -798,7 +803,8 @@ fun HomeContent(
                                         GoogleFilesCategoriesSection(
                                             totalStorageUsed = totalStorageUsed,
                                             allItems = items,
-                                            onSelectCategory = onSetFilterType
+                                            onSelectFilter = onSetFilterType,
+                                            onSelectCustom = onSetCustomCategory
                                         )
                                     }
                                 }
@@ -851,7 +857,8 @@ fun HomeContent(
                                             GoogleFilesCategoriesSection(
                                                 totalStorageUsed = totalStorageUsed,
                                                 allItems = items,
-                                                onSelectCategory = onSetFilterType
+                                                onSelectFilter = onSetFilterType,
+                                                onSelectCustom = onSetCustomCategory
                                             )
                                         }
                                     }
@@ -902,12 +909,12 @@ fun HomeContent(
     }
 }
 
-// Google Files স্টাইলের স্টোরেজ ও ক্যাটাগরি ড্যাশবোর্ড
 @Composable
 fun GoogleFilesCategoriesSection(
     totalStorageUsed: Long,
     allItems: List<DriveItem>,
-    onSelectCategory: (FilterType) -> Unit
+    onSelectFilter: (FilterType) -> Unit,
+    onSelectCustom: (CustomCategory) -> Unit
 ) {
     val files = allItems.filterIsInstance<DriveItem.File>()
     val videoCount = files.count { it.mimeType.startsWith("video/") }
@@ -921,7 +928,6 @@ fun GoogleFilesCategoriesSection(
     val docCount = (files.size - (videoCount + photoCount + audioCount + appCount + archiveCount)).coerceAtLeast(0)
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        // ক্লাউড স্টোরেজ ব্যানার কার্ড
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
             shape = RoundedCornerShape(20.dp),
@@ -937,7 +943,7 @@ fun GoogleFilesCategoriesSection(
                     modifier = Modifier.size(48.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.CloudDone, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
+                        Icon(Icons.Default.CloudQueue, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 }
                 Spacer(modifier = Modifier.width(16.dp))
@@ -956,7 +962,6 @@ fun GoogleFilesCategoriesSection(
             modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
         )
 
-        // Google Files স্টাইলের ২ কলামের ক্যাটাগরি গ্রিড
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 CategoryCard(
@@ -965,7 +970,7 @@ fun GoogleFilesCategoriesSection(
                     icon = Icons.Default.Android,
                     color = Color(0xFF3DDC84),
                     modifier = Modifier.weight(1f),
-                    onClick = { onSelectCategory(FilterType.APPS) }
+                    onClick = { onSelectCustom(CustomCategory.APPS) }
                 )
                 CategoryCard(
                     title = "ZIP & RAR",
@@ -973,7 +978,7 @@ fun GoogleFilesCategoriesSection(
                     icon = Icons.Default.FolderZip,
                     color = Color(0xFF9C27B0),
                     modifier = Modifier.weight(1f),
-                    onClick = { onSelectCategory(FilterType.ARCHIVES) }
+                    onClick = { onSelectCustom(CustomCategory.ARCHIVES) }
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -983,7 +988,7 @@ fun GoogleFilesCategoriesSection(
                     icon = Icons.Default.VideoFile,
                     color = Color(0xFFE91E63),
                     modifier = Modifier.weight(1f),
-                    onClick = { onSelectCategory(FilterType.VIDEOS) }
+                    onClick = { onSelectFilter(FilterType.VIDEOS) }
                 )
                 CategoryCard(
                     title = "Audio",
@@ -991,7 +996,7 @@ fun GoogleFilesCategoriesSection(
                     icon = Icons.Default.AudioFile,
                     color = Color(0xFFFF9800),
                     modifier = Modifier.weight(1f),
-                    onClick = { onSelectCategory(FilterType.AUDIO) }
+                    onClick = { onSelectFilter(FilterType.AUDIO) }
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -1001,15 +1006,15 @@ fun GoogleFilesCategoriesSection(
                     icon = Icons.Default.Image,
                     color = Color(0xFF4CAF50),
                     modifier = Modifier.weight(1f),
-                    onClick = { onSelectCategory(FilterType.PHOTOS) }
+                    onClick = { onSelectFilter(FilterType.PHOTOS) }
                 )
                 CategoryCard(
                     title = "Documents",
                     count = "$docCount files",
-                    icon = Icons.Default.Description,
+                    icon = Icons.AutoMirrored.Filled.Article,
                     color = Color(0xFF2196F3),
                     modifier = Modifier.weight(1f),
-                    onClick = { onSelectCategory(FilterType.DOCUMENTS) }
+                    onClick = { onSelectFilter(FilterType.DOCUMENTS) }
                 )
             }
         }
@@ -1086,8 +1091,10 @@ fun NewActionItem(icon: ImageVector, label: String, onClick: () -> Unit) {
 @Composable
 fun FilterSortRow(
     filterType: FilterType,
+    customCategory: CustomCategory = CustomCategory.NONE,
     sortOrder: SortOrder,
     onSetFilterType: (FilterType) -> Unit,
+    onSetCustomCategory: (CustomCategory) -> Unit = {},
     onSetSortOrder: (SortOrder) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1100,37 +1107,58 @@ fun FilterSortRow(
             contentPadding = PaddingValues(horizontal = 4.dp),
             modifier = Modifier.weight(1f)
         ) {
-            val categories = FilterType.entries
-            items(categories) { category ->
+            item {
+                val isAllSelected = filterType == FilterType.ALL && customCategory == CustomCategory.NONE
                 FilterChip(
-                    selected = filterType == category,
+                    selected = isAllSelected,
+                    onClick = { onSetFilterType(FilterType.ALL) },
+                    label = { Text(stringResource(R.string.filter_all)) },
+                    leadingIcon = if (isAllSelected) {
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
+                )
+            }
+            item {
+                val isApps = customCategory == CustomCategory.APPS
+                FilterChip(
+                    selected = isApps,
+                    onClick = { onSetCustomCategory(CustomCategory.APPS) },
+                    label = { Text("Apps (APK)") },
+                    leadingIcon = if (isApps) {
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
+                )
+            }
+            item {
+                val isArchives = customCategory == CustomCategory.ARCHIVES
+                FilterChip(
+                    selected = isArchives,
+                    onClick = { onSetCustomCategory(CustomCategory.ARCHIVES) },
+                    label = { Text("ZIP / RAR") },
+                    leadingIcon = if (isArchives) {
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
+                )
+            }
+            val standardCategories = listOf(FilterType.VIDEOS, FilterType.AUDIO, FilterType.PHOTOS, FilterType.DOCUMENTS)
+            items(standardCategories) { category ->
+                val isSelected = customCategory == CustomCategory.NONE && filterType == category
+                FilterChip(
+                    selected = isSelected,
                     onClick = { onSetFilterType(category) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    ),
                     label = {
                         Text(
                             when (category) {
-                                FilterType.ALL -> stringResource(R.string.filter_all)
-                                FilterType.APPS -> "Apps (APK)"
-                                FilterType.ARCHIVES -> "ZIP / RAR"
+                                FilterType.PHOTOS -> stringResource(R.string.filter_photos)
                                 FilterType.VIDEOS -> stringResource(R.string.filter_videos)
                                 FilterType.AUDIO -> stringResource(R.string.filter_audio)
-                                FilterType.PHOTOS -> stringResource(R.string.filter_photos)
                                 FilterType.DOCUMENTS -> stringResource(R.string.filter_documents)
+                                else -> ""
                             }
                         )
                     },
-                    leadingIcon = if (filterType == category) {
-                        {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = null,
-                                modifier = Modifier.size(FilterChipDefaults.IconSize)
-                            )
-                        }
+                    leadingIcon = if (isSelected) {
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
                     } else null
                 )
             }
