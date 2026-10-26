@@ -1,4 +1,3 @@
-// File: app/src/main/java/com/awd/teledrive/ui/screens/home/HomeScreen.kt
 package com.awd.teledrive.ui.screens.home
 
 import android.provider.OpenableColumns
@@ -24,7 +23,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -44,14 +42,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBox
@@ -73,27 +69,25 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOutline
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SwapVert
-import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -137,12 +131,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.ConnectivityObserver
-import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.domain.model.DriveItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -161,15 +153,16 @@ import kotlin.time.Duration.Companion.seconds
 fun HomeScreen(
     onNavigateToTransfers: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onNavigateToPreview: (DriveItem.File) -> Unit,
     onNavigateToStarred: () -> Unit = {},
-    onNavigateToSecure: () -> Unit = {},
+    onNavigateToSafeFolder: () -> Unit = {},
+    onNavigateToCloudAnalysis: () -> Unit = {},
+    onNavigateToPreview: (DriveItem.File) -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val items by viewModel.items.collectAsState()
-    val totalStorageUsed by viewModel.totalStorageUsed.collectAsState()
-    val cloudStats by viewModel.cloudStats.collectAsState()
+    val allCloudFiles by viewModel.allCloudFiles.collectAsState()
     val recentFiles by viewModel.recentFiles.collectAsState()
+    val totalStorageUsed by viewModel.totalStorageUsed.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val sortOrder by viewModel.sortOrder.collectAsState()
     val filterType by viewModel.filterType.collectAsState()
@@ -184,9 +177,9 @@ fun HomeScreen(
 
     HomeContent(
         items = items,
-        totalStorageUsed = totalStorageUsed,
-        cloudStats = cloudStats,
+        allCloudFiles = allCloudFiles,
         recentFiles = recentFiles,
+        totalStorageUsed = totalStorageUsed,
         searchQuery = searchQuery,
         sortOrder = sortOrder,
         filterType = filterType,
@@ -200,9 +193,14 @@ fun HomeScreen(
         connectivityStatus = connectivityStatus,
         onNavigateToTransfers = onNavigateToTransfers,
         onNavigateToSettings = onNavigateToSettings,
-        onNavigateToPreview = onNavigateToPreview,
         onNavigateToStarred = onNavigateToStarred,
-        onNavigateToSecure = onNavigateToSecure,
+        onNavigateToSafeFolder = onNavigateToSafeFolder,
+        onNavigateToCloudAnalysis = onNavigateToCloudAnalysis,
+        onNavigateToPreview = { file ->
+            viewModel.recordFileOpened(file.id)
+            onNavigateToPreview(file)
+        },
+        onRemoveFromRecents = viewModel::removeFromRecents,
         onSearchQueryChange = viewModel::onSearchQueryChange,
         onToggleViewMode = viewModel::toggleViewMode,
         onSetSortOrder = viewModel::setSortOrder,
@@ -232,9 +230,9 @@ fun HomeScreen(
 @Composable
 fun HomeContent(
     items: List<DriveItem>,
+    allCloudFiles: List<DriveItem.File> = emptyList(),
+    recentFiles: List<DriveItem.File> = emptyList(),
     totalStorageUsed: Long,
-    cloudStats: List<DriveDao.FileTypeStat>,
-    recentFiles: List<DriveItem>,
     searchQuery: String,
     sortOrder: SortOrder,
     filterType: FilterType,
@@ -248,9 +246,11 @@ fun HomeContent(
     connectivityStatus: ConnectivityObserver.Status,
     onNavigateToTransfers: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToStarred: () -> Unit = {},
+    onNavigateToSafeFolder: () -> Unit = {},
+    onNavigateToCloudAnalysis: () -> Unit = {},
     onNavigateToPreview: (DriveItem.File) -> Unit,
-    onNavigateToStarred: () -> Unit,
-    onNavigateToSecure: () -> Unit,
+    onRemoveFromRecents: (Long) -> Unit = {},
     onSearchQueryChange: (String) -> Unit,
     onToggleViewMode: () -> Unit,
     onSetSortOrder: (SortOrder) -> Unit,
@@ -382,13 +382,20 @@ fun HomeContent(
     val pressBackMsg = stringResource(R.string.press_back_again)
     var backPressedOnce by remember { mutableStateOf(false) }
 
+    val isCategoryActive = filterType != FilterType.ALL || customCategory != CustomCategory.NONE
+
     BackHandler(enabled = true) {
         when {
             showNewSheet -> showNewSheet = false
-            isSearchActive -> isSearchActive = false
+            isSearchActive -> {
+                isSearchActive = false
+                onSearchQueryChange("")
+            }
             isSelectionMode -> selectedItems = emptySet()
-            customCategory != CustomCategory.NONE -> onSetCustomCategory(CustomCategory.NONE)
-            filterType != FilterType.ALL -> onSetFilterType(FilterType.ALL)
+            isCategoryActive -> {
+                onSetCustomCategory(CustomCategory.NONE)
+                onSetFilterType(FilterType.ALL)
+            }
             (currentFolderId != null || currentVirtualFolderId != "0") -> onNavigateBack()
             else -> {
                 if (backPressedOnce) {
@@ -554,11 +561,22 @@ fun HomeContent(
         )
     }
 
+    val activeTitle = when {
+        customCategory == CustomCategory.RECENTS -> "Recents"
+        customCategory == CustomCategory.APPS -> "Apps (APK)"
+        customCategory == CustomCategory.ARCHIVES -> "Archives (ZIP & RAR)"
+        filterType == FilterType.PHOTOS -> "Images"
+        filterType == FilterType.VIDEOS -> "Videos"
+        filterType == FilterType.AUDIO -> "Audio"
+        filterType == FilterType.DOCUMENTS -> "Documents"
+        currentFolderName != null -> currentFolderName
+        else -> stringResource(R.string.my_drive)
+    }
+
     Scaffold(
-        containerColor = Color(0xFF1E1E22),
         topBar = {
             AnimatedContent(
-                targetState = if (isSelectionMode) "selection" else if ((currentFolderId != null || currentVirtualFolderId != "0") && !isSearchActive) "folder" else "main",
+                targetState = if (isSelectionMode) "selection" else if ((currentFolderId != null || currentVirtualFolderId != "0" || isCategoryActive) && !isSearchActive) "folder" else "main",
                 transitionSpec = {
                     (fadeIn() + slideInVertically { -it / 2 }).togetherWith(fadeOut() + slideOutVertically { -it / 2 })
                 },
@@ -621,8 +639,7 @@ fun HomeContent(
                                 ) {
                                     Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete))
                                 }
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1E1E22), titleContentColor = Color.White, navigationIconContentColor = Color.White, actionIconContentColor = Color.White)
+                            }
                         )
                     }
                     "folder" -> {
@@ -630,7 +647,7 @@ fun HomeContent(
                             TopAppBar(
                                 title = {
                                     Text(
-                                        text = currentFolderName ?: stringResource(R.string.my_drive),
+                                        text = activeTitle,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         style = MaterialTheme.typography.titleLarge
@@ -655,8 +672,7 @@ fun HomeContent(
                                         Icon(if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView, contentDescription = null)
                                     }
                                 },
-                                modifier = Modifier.statusBarsPadding(),
-                                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1E1E22), titleContentColor = Color.White, navigationIconContentColor = Color.White, actionIconContentColor = Color.White)
+                                modifier = Modifier.statusBarsPadding()
                             )
                             FilterSortRow(
                                 filterType = filterType,
@@ -665,43 +681,108 @@ fun HomeContent(
                                 onSetFilterType = onSetFilterType,
                                 onSetCustomCategory = onSetCustomCategory,
                                 onSetSortOrder = onSetSortOrder,
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp).background(Color(0xFF1E1E22))
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                             )
                         }
                     }
                     "main" -> {
-                        Column(modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                            if (!isSearchActive) {
-                                // We keep the layout cleaner when search isn't active
-                                Spacer(modifier = Modifier.height(1.dp))
-                            } else {
-                                Surface(
-                                    color = Color(0xFF2A2A30),
-                                    shape = RoundedCornerShape(28.dp),
-                                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .statusBarsPadding()
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            var showTopMenu by remember { mutableStateOf(false) }
+
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(28.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(54.dp)
+                                    .clickable { isSearchActive = true }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 16.dp)
-                                    ) {
-                                        IconButton(onClick = { isSearchActive = false }) {
-                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = Color.White)
+                                    if (!isSearchActive) {
+                                        Box {
+                                            IconButton(onClick = { showTopMenu = true }) {
+                                                Icon(
+                                                    Icons.Default.Menu,
+                                                    contentDescription = "Menu",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            DropdownMenu(
+                                                expanded = showTopMenu,
+                                                onDismissRequest = { showTopMenu = false }
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text(stringResource(R.string.transfers)) },
+                                                    onClick = { showTopMenu = false; onNavigateToTransfers() },
+                                                    leadingIcon = { Icon(Icons.Default.SwapVert, null) }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text(if (isGridView) "List View" else "Grid View") },
+                                                    onClick = { showTopMenu = false; onToggleViewMode() },
+                                                    leadingIcon = { Icon(if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView, null) }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Refresh Cloud") },
+                                                    onClick = {
+                                                        showTopMenu = false
+                                                        onRefresh()
+                                                        Toast.makeText(context, context.getString(R.string.refreshing), Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    leadingIcon = { Icon(Icons.Default.Refresh, null) }
+                                                )
+                                            }
                                         }
-                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Search \"MyCloud\"",
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        IconButton(onClick = onNavigateToTransfers) {
+                                            Icon(
+                                                Icons.Default.SwapVert,
+                                                contentDescription = stringResource(R.string.transfers),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        IconButton(onClick = { isSearchActive = true }) {
+                                            Icon(
+                                                Icons.Default.Search,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    } else {
+                                        IconButton(onClick = {
+                                            isSearchActive = false
+                                            onSearchQueryChange("")
+                                        }) {
+                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                                             BasicTextField(
                                                 value = searchQuery,
                                                 onValueChange = onSearchQueryChange,
-                                                textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.White),
+                                                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                                                 modifier = Modifier.fillMaxWidth()
                                             )
                                             if (searchQuery.isEmpty()) {
-                                                Text("Search files...", color = Color.Gray)
+                                                Text("Search files...", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             }
                                         }
                                         if (searchQuery.isNotEmpty()) {
                                             IconButton(onClick = { onSearchQueryChange("") }) {
-                                                Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+                                                Icon(Icons.Default.Close, contentDescription = null)
                                             }
                                         }
                                     }
@@ -712,11 +793,8 @@ fun HomeContent(
                 }
             }
         },
-        floatingActionButtonPosition = FabPosition.Center,
         floatingActionButton = {
-            if (!isOffline && currentVirtualFolderId == "0" && searchQuery.isEmpty() && filterType == FilterType.ALL && customCategory == CustomCategory.NONE) {
-                GoogleFilesFab(onScanClick = { cameraLauncher.launch(null) }, onSyncClick = { onRefresh() })
-            } else if (!isOffline) {
+            if (!isOffline) {
                 ExtendedFloatingActionButton(
                     onClick = { showNewSheet = true },
                     icon = { Icon(Icons.Default.Add, null) },
@@ -736,11 +814,11 @@ fun HomeContent(
             Column(modifier = Modifier.fillMaxSize()) {
                 if (isInitialLoading) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = Color.White)
+                        CircularProgressIndicator()
                     }
                 } else {
                     if (isRefreshing) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF2B4380))
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                 
                     if (isOffline) {
@@ -761,7 +839,7 @@ fun HomeContent(
                         }
                     }
 
-                    val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && filterType == FilterType.ALL && customCategory == CustomCategory.NONE
+                    val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && !isCategoryActive
 
                     if (items.isEmpty() && !showDashboard) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -770,140 +848,156 @@ fun HomeContent(
                                     imageVector = if (searchQuery.isEmpty()) Icons.Default.CloudQueue else Icons.Default.SearchOff,
                                     contentDescription = null,
                                     modifier = Modifier.size(80.dp),
-                                    tint = Color.Gray.copy(alpha = 0.5f)
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Text(
                                     text = if (searchQuery.isEmpty()) stringResource(R.string.drive_empty) else stringResource(R.string.no_results),
                                     style = MaterialTheme.typography.titleMedium,
-                                    color = Color.Gray
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (searchQuery.isEmpty()) {
+                                    Text(
+                                        text = stringResource(R.string.tap_to_add),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
                             }
                         }
                     } else {
-                        if (showDashboard) {
-                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF2A2A30))
-                                        .clickable { isSearchActive = true }
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color.White)
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(
-                                        text = "Search in TeleDrive",
-                                        color = Color.Gray,
-                                        modifier = Modifier.weight(1f),
-                                        fontSize = 16.sp
-                                    )
-                                    Icon(Icons.Default.Search, contentDescription = "Search", tint = Color.White)
+                        if (isGridView) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(2),
+                                contentPadding = PaddingValues(16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                if (showDashboard) {
+                                    item(span = { GridItemSpan(2) }) {
+                                        GoogleFilesDashboardSection(
+                                            totalStorageUsed = totalStorageUsed,
+                                            allFiles = allCloudFiles.ifEmpty { items.filterIsInstance<DriveItem.File>() },
+                                            recentFiles = recentFiles,
+                                            sortOrder = sortOrder,
+                                            onSetSortOrder = onSetSortOrder,
+                                            onSelectFilter = onSetFilterType,
+                                            onSelectCustom = onSetCustomCategory,
+                                            onOpenFile = onNavigateToPreview,
+                                            onShareFile = { shareItem = it },
+                                            onDownloadFile = { onDownloadFile(it.id, it.parentChatId, it.name) },
+                                            onStarFile = onToggleStarred,
+                                            onRemoveRecent = onRemoveFromRecents,
+                                            onNavigateToStarred = onNavigateToStarred,
+                                            onNavigateToSafeFolder = onNavigateToSafeFolder,
+                                            onNavigateToCloudAnalysis = onNavigateToCloudAnalysis
+                                        )
+                                    }
                                 }
-                                
-                                GoogleFilesDashboard(
-                                    totalStorageUsed = totalStorageUsed,
-                                    cloudStats = cloudStats,
-                                    recentFiles = recentFiles.filterIsInstance<DriveItem.File>(),
-                                    onSelectFilter = onSetFilterType,
-                                    onSelectCustom = onSetCustomCategory,
-                                    onNavigateToPreview = onNavigateToPreview,
-                                    onNavigateToStarred = onNavigateToStarred,
-                                    onNavigateToSecure = onNavigateToSecure
-                                )
+                                items(items) { item ->
+                                    val isSelected = selectedItems.contains(item.id)
+                                    DriveGridItem(
+                                        item = item,
+                                        isSelected = isSelected,
+                                        onClick = {
+                                            if (isSelectionMode) {
+                                                selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
+                                            } else {
+                                                if (item is DriveItem.File) onNavigateToPreview(item)
+                                                else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            if (!isSelectionMode) {
+                                                selectedItems = setOf(item.id)
+                                            }
+                                        },
+                                        onStarClick = { onToggleStarred(item) },
+                                        onShareClick = { shareItem = item },
+                                        onDownloadClick = {
+                                            if (item is DriveItem.File) {
+                                                onDownloadFile(item.id, item.parentChatId, item.name)
+                                            } else if (item is DriveItem.Folder) {
+                                                folderToDownload = item
+                                            }
+                                        },
+                                        onMoveClick = null,
+                                        onRenameClick = {
+                                            itemToRename = item
+                                            renameValue = item.name
+                                        },
+                                        onDeleteClick = {
+                                            showDeleteConfirm = listOf(item)
+                                        }
+                                    )
+                                }
                             }
                         } else {
-                            if (isGridView) {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Fixed(2),
-                                    contentPadding = PaddingValues(16.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    items(items) { item ->
-                                        val isSelected = selectedItems.contains(item.id)
-                                        DriveGridItem(
-                                            item = item,
-                                            isSelected = isSelected,
-                                            onClick = {
-                                                if (isSelectionMode) {
-                                                    selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                                } else {
-                                                    if (item is DriveItem.File) onNavigateToPreview(item)
-                                                    else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                                }
-                                            },
-                                            onLongClick = {
-                                                if (!isSelectionMode) {
-                                                    selectedItems = setOf(item.id)
-                                                }
-                                            },
-                                            onStarClick = { onToggleStarred(item) },
-                                            onShareClick = { shareItem = item },
-                                            onDownloadClick = {
-                                                if (item is DriveItem.File) {
-                                                    onDownloadFile(item.id, item.parentChatId, item.name)
-                                                } else if (item is DriveItem.Folder) {
-                                                    folderToDownload = item
-                                                }
-                                            },
-                                            onMoveClick = null,
-                                            onRenameClick = {
-                                                itemToRename = item
-                                                renameValue = item.name
-                                            },
-                                            onDeleteClick = {
-                                                showDeleteConfirm = listOf(item)
-                                            }
-                                        )
+                            LazyColumn(
+                                contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                if (showDashboard) {
+                                    item {
+                                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                                            GoogleFilesDashboardSection(
+                                                totalStorageUsed = totalStorageUsed,
+                                                allFiles = allCloudFiles.ifEmpty { items.filterIsInstance<DriveItem.File>() },
+                                                recentFiles = recentFiles,
+                                                sortOrder = sortOrder,
+                                                onSetSortOrder = onSetSortOrder,
+                                                onSelectFilter = onSetFilterType,
+                                                onSelectCustom = onSetCustomCategory,
+                                                onOpenFile = onNavigateToPreview,
+                                                onShareFile = { shareItem = it },
+                                                onDownloadFile = { onDownloadFile(it.id, it.parentChatId, it.name) },
+                                                onStarFile = onToggleStarred,
+                                                onRemoveRecent = onRemoveFromRecents,
+                                                onNavigateToStarred = onNavigateToStarred,
+                                                onNavigateToSafeFolder = onNavigateToSafeFolder,
+                                                onNavigateToCloudAnalysis = onNavigateToCloudAnalysis
+                                            )
+                                        }
                                     }
                                 }
-                            } else {
-                                LazyColumn(
-                                    contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    items(items) { item ->
-                                        val isSelected = selectedItems.contains(item.id)
-                                        DriveListItem(
-                                            item = item,
-                                            isSelected = isSelected,
-                                            onClick = {
-                                                if (isSelectionMode) {
-                                                    selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                                } else {
-                                                    if (item is DriveItem.File) onNavigateToPreview(item)
-                                                    else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                                }
-                                            },
-                                            onLongClick = {
-                                                if (!isSelectionMode) {
-                                                    selectedItems = setOf(item.id)
-                                                }
-                                            },
-                                            onStarClick = { onToggleStarred(item) },
-                                            onShareClick = { shareItem = item },
-                                            onDownloadClick = {
-                                                if (item is DriveItem.File) {
-                                                    onDownloadFile(item.id, item.parentChatId, item.name)
-                                                } else if (item is DriveItem.Folder) {
-                                                    folderToDownload = item
-                                                }
-                                            },
-                                            onMoveClick = null,
-                                            onRenameClick = {
-                                                itemToRename = item
-                                                renameValue = item.name
-                                            },
-                                            onDeleteClick = {
-                                                showDeleteConfirm = listOf(item)
+                                items(items) { item ->
+                                    val isSelected = selectedItems.contains(item.id)
+                                    DriveListItem(
+                                        item = item,
+                                        isSelected = isSelected,
+                                        onClick = {
+                                            if (isSelectionMode) {
+                                                selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
+                                            } else {
+                                                if (item is DriveItem.File) onNavigateToPreview(item)
+                                                else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                                             }
-                                        )
-                                    }
+                                        },
+                                        onLongClick = {
+                                            if (!isSelectionMode) {
+                                                selectedItems = setOf(item.id)
+                                            }
+                                        },
+                                        onStarClick = { onToggleStarred(item) },
+                                        onShareClick = { shareItem = item },
+                                        onDownloadClick = {
+                                            if (item is DriveItem.File) {
+                                                onDownloadFile(item.id, item.parentChatId, item.name)
+                                            } else if (item is DriveItem.Folder) {
+                                                folderToDownload = item
+                                            }
+                                        },
+                                        onMoveClick = null,
+                                        onRenameClick = {
+                                            itemToRename = item
+                                            renameValue = item.name
+                                        },
+                                        onDeleteClick = {
+                                            showDeleteConfirm = listOf(item)
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -915,179 +1009,511 @@ fun HomeContent(
 }
 
 @Composable
-fun GoogleFilesDashboard(
+fun GoogleFilesDashboardSection(
     totalStorageUsed: Long,
-    cloudStats: List<DriveDao.FileTypeStat>,
+    allFiles: List<DriveItem.File>,
     recentFiles: List<DriveItem.File>,
+    sortOrder: SortOrder,
+    onSetSortOrder: (SortOrder) -> Unit,
     onSelectFilter: (FilterType) -> Unit,
     onSelectCustom: (CustomCategory) -> Unit,
-    onNavigateToPreview: (DriveItem.File) -> Unit,
+    onOpenFile: (DriveItem.File) -> Unit,
+    onShareFile: (DriveItem.File) -> Unit,
+    onDownloadFile: (DriveItem.File) -> Unit,
+    onStarFile: (DriveItem.File) -> Unit,
+    onRemoveRecent: (Long) -> Unit,
     onNavigateToStarred: () -> Unit,
-    onNavigateToSecure: () -> Unit
+    onNavigateToSafeFolder: () -> Unit,
+    onNavigateToCloudAnalysis: () -> Unit
 ) {
-    val photoStat = cloudStats.find { it.category == "IMAGE" }
-    val videoStat = cloudStats.find { it.category == "VIDEO" }
-    val audioStat = cloudStats.find { it.category == "AUDIO" }
-    val docStat = cloudStats.find { it.category == "DOCUMENT" }
+    val videoSize = allFiles.filter { it.mimeType.startsWith("video/") }.sumOf { it.size }
+    val imageSize = allFiles.filter { it.mimeType.startsWith("image/") }.sumOf { it.size }
+    val audioSize = allFiles.filter { it.mimeType.startsWith("audio/") }.sumOf { it.size }
+    val appSize = allFiles.filter { it.mimeType.contains("android.package-archive") || it.name.lowercase().endsWith(".apk") }.sumOf { it.size }
+    val archiveSize = allFiles.filter {
+        val n = it.name.lowercase()
+        it.mimeType.contains("zip") || it.mimeType.contains("rar") || it.mimeType.contains("7z") || n.endsWith(".zip") || n.endsWith(".rar") || n.endsWith(".7z")
+    }.sumOf { it.size }
+    val docSize = (allFiles.sumOf { it.size } - (videoSize + imageSize + audioSize + appSize + archiveSize)).coerceAtLeast(0L)
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp)
-    ) {
-        if (recentFiles.isNotEmpty()) {
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Recents", style = MaterialTheme.typography.titleMedium.copy(color = Color(0xFFE3E2E6), fontWeight = FontWeight.SemiBold))
-                    Text("See all", style = MaterialTheme.typography.labelLarge.copy(color = Color(0xFFA8C7FA), fontWeight = FontWeight.Medium), modifier = Modifier.clickable { onSelectFilter(FilterType.ALL) })
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(recentFiles) { file ->
-                        RecentCardItem(file = file, onClick = { onNavigateToPreview(file) })
-                    }
-                }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 1. Recents Section (Opened Files)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Recents",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (recentFiles.isNotEmpty()) {
+                Text(
+                    text = "See all",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onSelectCustom(CustomCategory.RECENTS) }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
             }
         }
 
-        Column {
-            Text("Categories", style = MaterialTheme.typography.titleMedium.copy(color = Color(0xFFE3E2E6), fontWeight = FontWeight.SemiBold))
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                CategoryItem(icon = Icons.Default.Download, title = "Downloads", subtitle = "Local", modifier = Modifier.weight(1f)) { onSelectFilter(FilterType.ALL) }
-                CategoryItem(icon = Icons.Default.Image, title = "Images", subtitle = formatSize(photoStat?.totalSize ?: 0L), modifier = Modifier.weight(1f)) { onSelectFilter(FilterType.PHOTOS) }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                CategoryItem(icon = Icons.Default.Movie, title = "Videos", subtitle = formatSize(videoStat?.totalSize ?: 0L), modifier = Modifier.weight(1f)) { onSelectFilter(FilterType.VIDEOS) }
-                CategoryItem(icon = Icons.Default.Audiotrack, title = "Audio", subtitle = formatSize(audioStat?.totalSize ?: 0L), modifier = Modifier.weight(1f)) { onSelectFilter(FilterType.AUDIO) }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                CategoryItem(icon = Icons.AutoMirrored.Filled.Article, title = "Documents", subtitle = formatSize(docStat?.totalSize ?: 0L), modifier = Modifier.weight(1f)) { onSelectFilter(FilterType.DOCUMENTS) }
-                CategoryItem(icon = Icons.Default.Apps, title = "Apps", subtitle = "", modifier = Modifier.weight(1f)) { onSelectCustom(CustomCategory.APPS) }
-            }
-        }
-
-        Column {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Collections", style = MaterialTheme.typography.titleMedium.copy(color = Color(0xFFE3E2E6), fontWeight = FontWeight.SemiBold))
-                Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color(0xFFC4C7C5))
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                CategoryItem(icon = Icons.Outlined.StarOutline, title = "Starred", subtitle = "", modifier = Modifier.weight(1f)) { onNavigateToStarred() }
-                CategoryItem(icon = Icons.Default.LockOutline, title = "Safe folder", subtitle = "", modifier = Modifier.weight(1f)) { onNavigateToSecure() }
-            }
-        }
-
-        Column {
-            Text("All storage", style = MaterialTheme.typography.titleMedium.copy(color = Color(0xFFE3E2E6), fontWeight = FontWeight.SemiBold))
-            Spacer(modifier = Modifier.height(12.dp))
+        if (recentFiles.isEmpty()) {
             Surface(
-                color = Color(0xFF2A2A30),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth().clickable { onSelectFilter(FilterType.ALL) }
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(110.dp)
             ) {
-                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.CloudQueue, contentDescription = null, tint = Color(0xFFC4C7C5), modifier = Modifier.size(24.dp))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Cloud storage", style = MaterialTheme.typography.bodyLarge.copy(color = Color.White, fontWeight = FontWeight.Medium))
-                        Text("${formatSize(totalStorageUsed)} used", style = MaterialTheme.typography.bodyMedium.copy(color = Color(0xFFC4C7C5)))
-                    }
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = Color(0xFFC4C7C5))
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(80.dp))
-    }
-}
-
-@Composable
-fun RecentCardItem(file: DriveItem.File, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .width(140.dp)
-            .height(160.dp)
-            .clickable { onClick() },
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF2A2A30)),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Surface(color = Color(0xFF3F3F46), shape = CircleShape, modifier = Modifier.size(28.dp)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color.White, modifier = Modifier.size(16.dp))
-                    }
-                }
-            }
-            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                if (file.thumbnailPath != null || file.localPath != null) {
-                    AsyncImage(
-                        model = file.localPath ?: file.thumbnailPath,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)),
-                        contentScale = ContentScale.Crop
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Recently opened files will appear here",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                } else {
-                    Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = "File", tint = Color.Gray, modifier = Modifier.size(40.dp))
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(text = file.name, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-            Text(text = file.mimeType.substringAfterLast("/").uppercase(), color = Color.Gray, fontSize = 12.sp, maxLines = 1)
+        } else {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(recentFiles.take(10), key = { it.id }) { file ->
+                    RecentOpenedFileCard(
+                        file = file,
+                        onClick = { onOpenFile(file) },
+                        onShareClick = { onShareFile(file) },
+                        onDownloadClick = { onDownloadFile(file) },
+                        onStarClick = { onStarFile(file) },
+                        onRemoveRecentClick = { onRemoveRecent(file.id) }
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 2. Categories Section
+        Text(
+            text = "Categories",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                GoogleFilesCategoryCard(
+                    title = "ZIP & RAR",
+                    subtitle = formatSize(archiveSize),
+                    icon = Icons.Default.FolderZip,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCustom(CustomCategory.ARCHIVES) }
+                )
+                GoogleFilesCategoryCard(
+                    title = "Images",
+                    subtitle = formatSize(imageSize),
+                    icon = Icons.Outlined.Image,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectFilter(FilterType.PHOTOS) }
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                GoogleFilesCategoryCard(
+                    title = "Videos",
+                    subtitle = formatSize(videoSize),
+                    icon = Icons.Outlined.Movie,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectFilter(FilterType.VIDEOS) }
+                )
+                GoogleFilesCategoryCard(
+                    title = "Audio",
+                    subtitle = formatSize(audioSize),
+                    icon = Icons.Default.MusicNote,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectFilter(FilterType.AUDIO) }
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                GoogleFilesCategoryCard(
+                    title = "Documents",
+                    subtitle = formatSize(docSize),
+                    icon = Icons.Default.Description,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectFilter(FilterType.DOCUMENTS) }
+                )
+                GoogleFilesCategoryCard(
+                    title = "Apps",
+                    subtitle = formatSize(appSize),
+                    icon = Icons.Default.Apps,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCustom(CustomCategory.APPS) }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 3. Collections Section
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Collections",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            GoogleFilesCollectionCard(
+                title = "Starred",
+                icon = Icons.Outlined.StarOutline,
+                modifier = Modifier.weight(1f),
+                onClick = onNavigateToStarred
+            )
+            GoogleFilesCollectionCard(
+                title = "Safe folder",
+                icon = Icons.Outlined.Lock,
+                modifier = Modifier.weight(1f),
+                onClick = onNavigateToSafeFolder
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 4. All storage Section (Telegram Storage at the bottom)
+        Text(
+            text = "All storage",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            GoogleFilesStorageCard(
+                title = "Telegram Cloud",
+                subtitle = "${formatSize(totalStorageUsed)} used • Unlimited",
+                icon = Icons.Default.CloudQueue,
+                modifier = Modifier.weight(1f),
+                onClick = onNavigateToCloudAnalysis
+            )
+            GoogleFilesStorageCard(
+                title = "Cloud Analysis",
+                subtitle = "${allFiles.size} files stored",
+                icon = Icons.Default.Storage,
+                modifier = Modifier.weight(1f),
+                onClick = onNavigateToCloudAnalysis
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 5. All Folders & Files Header with Sort Button
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "All Folders & Files",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            var showSortMenu by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { showSortMenu = true }) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Sort,
+                        contentDescription = "Sort",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DropdownMenu(
+                    expanded = showSortMenu,
+                    onDismissRequest = { showSortMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.sort_name)) },
+                        onClick = { onSetSortOrder(SortOrder.NAME); showSortMenu = false },
+                        leadingIcon = { if (sortOrder == SortOrder.NAME) Icon(Icons.Default.Check, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.sort_date)) },
+                        onClick = { onSetSortOrder(SortOrder.DATE); showSortMenu = false },
+                        leadingIcon = { if (sortOrder == SortOrder.DATE) Icon(Icons.Default.Check, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.sort_size)) },
+                        onClick = { onSetSortOrder(SortOrder.SIZE); showSortMenu = false },
+                        leadingIcon = { if (sortOrder == SortOrder.SIZE) Icon(Icons.Default.Check, null) }
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-fun CategoryItem(
-    icon: ImageVector,
+fun RecentOpenedFileCard(
+    file: DriveItem.File,
+    onClick: () -> Unit,
+    onShareClick: () -> Unit,
+    onDownloadClick: () -> Unit,
+    onStarClick: () -> Unit,
+    onRemoveRecentClick: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    val (icon, _) = getFileIconAndColor(file)
+    val thumbnailModel = file.localPath ?: file.thumbnailPath
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier
+            .width(172.dp)
+            .height(210.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (thumbnailModel != null) {
+                AsyncImage(
+                    model = thumbnailModel,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.35f))
+                )
+            } else {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .align(Alignment.Center)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    IconButton(
+                        onClick = { showMenu = true },
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "More",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(if (file.isStarred) stringResource(R.string.remove_star) else stringResource(R.string.add_star)) },
+                        onClick = { showMenu = false; onStarClick() },
+                        leadingIcon = { Icon(if (file.isStarred) Icons.Default.Star else Icons.Outlined.StarOutline, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.download)) },
+                        onClick = { showMenu = false; onDownloadClick() },
+                        leadingIcon = { Icon(Icons.Default.Download, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.share)) },
+                        onClick = { showMenu = false; onShareClick() },
+                        leadingIcon = { Icon(Icons.Default.Share, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from Recents") },
+                        onClick = { showMenu = false; onRemoveRecentClick() },
+                        leadingIcon = { Icon(Icons.Default.Close, null) }
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(14.dp)
+            ) {
+                Text(
+                    text = file.name,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (thumbnailModel != null) Color.White else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = formatSize(file.size),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (thumbnailModel != null) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun GoogleFilesCategoryCard(
     title: String,
     subtitle: String,
+    icon: ImageVector,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(16.dp),
-        color = Color(0xFF2A2A30),
-        modifier = modifier
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = modifier.height(68.dp)
     ) {
-        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null, tint = Color(0xFFE3E2E6))
-            Spacer(modifier = Modifier.width(12.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(16.dp))
             Column {
-                Text(title, style = MaterialTheme.typography.bodyMedium.copy(color = Color(0xFFE3E2E6), fontWeight = FontWeight.Medium), maxLines = 1)
-                if (subtitle.isNotEmpty()) {
-                    Text(subtitle, style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFFC4C7C5)))
-                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
             }
         }
     }
 }
 
 @Composable
-fun GoogleFilesFab(onScanClick: () -> Unit, onSyncClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color(0xFF2B4380))
-            .padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(24.dp)
+fun GoogleFilesCollectionCard(
+    title: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = modifier.height(60.dp)
     ) {
-        Icon(Icons.Default.Sync, contentDescription = "Sync", tint = Color.White, modifier = Modifier.clickable { onSyncClick() })
-        Icon(Icons.Default.QrCodeScanner, contentDescription = "Scan", tint = Color.White, modifier = Modifier.clickable { onScanClick() })
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(modifier = Modifier.width(14.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
-// ... বাকি ফাংশনগুলো যেমন FilterSortRow, DriveListItem, DriveGridItem, InfoDialog, ShareDialog, getFileIconAndColor আগের মতোই থাকবে। নিচে শুধু সেগুলো রেখে দেওয়া হয়েছে যাতে কোড ব্রেক না করে।
+@Composable
+fun GoogleFilesStorageCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = modifier.height(74.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(14.dp))
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun NewActionItem(icon: ImageVector, label: String, onClick: () -> Unit) {
@@ -1107,7 +1533,7 @@ fun NewActionItem(icon: ImageVector, label: String, onClick: () -> Unit) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium, color = Color.White)
+        Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -1135,11 +1561,21 @@ fun FilterSortRow(
                 FilterChip(
                     selected = isAllSelected,
                     onClick = { onSetFilterType(FilterType.ALL) },
-                    label = { Text(stringResource(R.string.filter_all), color = Color.White) },
+                    label = { Text(stringResource(R.string.filter_all)) },
                     leadingIcon = if (isAllSelected) {
-                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize), tint = Color.White) }
-                    } else null,
-                    colors = FilterChipDefaults.filterChipColors(containerColor = Color(0xFF2A2A30), selectedContainerColor = Color(0xFF2B4380))
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
+                )
+            }
+            item {
+                val isRecents = customCategory == CustomCategory.RECENTS
+                FilterChip(
+                    selected = isRecents,
+                    onClick = { onSetCustomCategory(CustomCategory.RECENTS) },
+                    label = { Text("Recents") },
+                    leadingIcon = if (isRecents) {
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
                 )
             }
             item {
@@ -1147,11 +1583,10 @@ fun FilterSortRow(
                 FilterChip(
                     selected = isApps,
                     onClick = { onSetCustomCategory(CustomCategory.APPS) },
-                    label = { Text("Apps (APK)", color = Color.White) },
+                    label = { Text("Apps (APK)") },
                     leadingIcon = if (isApps) {
-                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize), tint = Color.White) }
-                    } else null,
-                    colors = FilterChipDefaults.filterChipColors(containerColor = Color(0xFF2A2A30), selectedContainerColor = Color(0xFF2B4380))
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
                 )
             }
             item {
@@ -1159,11 +1594,10 @@ fun FilterSortRow(
                 FilterChip(
                     selected = isArchives,
                     onClick = { onSetCustomCategory(CustomCategory.ARCHIVES) },
-                    label = { Text("ZIP / RAR", color = Color.White) },
+                    label = { Text("ZIP / RAR") },
                     leadingIcon = if (isArchives) {
-                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize), tint = Color.White) }
-                    } else null,
-                    colors = FilterChipDefaults.filterChipColors(containerColor = Color(0xFF2A2A30), selectedContainerColor = Color(0xFF2B4380))
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
                 )
             }
             val standardCategories = listOf(FilterType.VIDEOS, FilterType.AUDIO, FilterType.PHOTOS, FilterType.DOCUMENTS)
@@ -1174,20 +1608,18 @@ fun FilterSortRow(
                     onClick = { onSetFilterType(category) },
                     label = {
                         Text(
-                            text = when (category) {
+                            when (category) {
                                 FilterType.PHOTOS -> stringResource(R.string.filter_photos)
                                 FilterType.VIDEOS -> stringResource(R.string.filter_videos)
                                 FilterType.AUDIO -> stringResource(R.string.filter_audio)
                                 FilterType.DOCUMENTS -> stringResource(R.string.filter_documents)
                                 else -> ""
-                            },
-                            color = Color.White
+                            }
                         )
                     },
                     leadingIcon = if (isSelected) {
-                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize), tint = Color.White) }
-                    } else null,
-                    colors = FilterChipDefaults.filterChipColors(containerColor = Color(0xFF2A2A30), selectedContainerColor = Color(0xFF2B4380))
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                    } else null
                 )
             }
         }
@@ -1198,7 +1630,7 @@ fun FilterSortRow(
                 Icon(
                     Icons.AutoMirrored.Filled.Sort,
                     contentDescription = "Sort",
-                    tint = Color.White
+                    tint = MaterialTheme.colorScheme.onSurface
                 )
             }
             DropdownMenu(
@@ -1245,23 +1677,23 @@ fun DriveListItem(
     ListItem(
         headlineContent = { 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false), color = Color.White)
+                Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 if (isSecure) {
                     Spacer(Modifier.width(4.dp))
-                    Icon(Icons.Default.Lock, null, modifier = Modifier.size(12.dp), tint = Color.Gray)
+                    Icon(Icons.Default.Lock, null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.outline)
                 }
             }
         },
         supportingContent = {
             if (item is DriveItem.File) {
-                Text(formatSize(item.size), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(formatSize(item.size), style = MaterialTheme.typography.bodySmall)
             } else {
-                Text(stringResource(R.string.folder), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(stringResource(R.string.folder), style = MaterialTheme.typography.bodySmall)
             }
         },
         leadingContent = {
             Surface(
-                color = if (item is DriveItem.Folder) Color(0xFF2A2A30) else color.copy(alpha = 0.1f),
+                color = if (item is DriveItem.Folder) MaterialTheme.colorScheme.primaryContainer else color.copy(alpha = 0.1f),
                 shape = MaterialTheme.shapes.small,
                 modifier = Modifier.size(40.dp)
             ) {
@@ -1298,13 +1730,13 @@ fun DriveListItem(
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (isSelected) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF81D4FA))
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
                 }
                 
                 var showItemMenu by remember { mutableStateOf(false) }
                 IconButton(onClick = { showItemMenu = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color.White)
+                    Icon(Icons.Default.MoreVert, contentDescription = "More")
                 }
                 
                 var showInfoDialog by remember { mutableStateOf(false) }
@@ -1333,7 +1765,7 @@ fun DriveListItem(
                                 Icon(
                                     imageVector = if (item.isStarred) Icons.Default.Star else Icons.Outlined.StarOutline,
                                     contentDescription = null,
-                                    tint = if (item.isStarred) Color(0xFFFFC107) else Color.Gray
+                                    tint = if (item.isStarred) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
                                 ) 
                             }
                         )
@@ -1400,8 +1832,7 @@ fun DriveListItem(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .background(if (isSelected) Color(0xFF2B4380).copy(alpha = 0.3f) else Color.Transparent),
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surface)
     )
 }
 
@@ -1433,7 +1864,7 @@ fun DriveGridItem(
             ),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.outlinedCardColors(
-            containerColor = if (isSelected) Color(0xFF2B4380).copy(alpha = 0.3f) else Color(0xFF1E1E22)
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surface
         )
     ) {
         Box {
@@ -1481,19 +1912,17 @@ fun DriveGridItem(
                         style = MaterialTheme.typography.bodyMedium,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                        color = Color.White
+                        modifier = Modifier.weight(1f)
                     )
                     if (isSecure) {
-                        Icon(Icons.Default.Lock, null, modifier = Modifier.size(12.dp).padding(horizontal = 2.dp), tint = Color.Gray)
+                        Icon(Icons.Default.Lock, null, modifier = Modifier.size(12.dp).padding(horizontal = 2.dp), tint = MaterialTheme.colorScheme.outline)
                     }
                     Box {
                         IconButton(onClick = { showItemMenu = true }, modifier = Modifier.size(24.dp)) {
                             Icon(
                                 imageVector = Icons.Default.MoreVert,
                                 contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = Color.White
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                         val isVirtual = item is DriveItem.Folder && item.isVirtual
@@ -1514,7 +1943,7 @@ fun DriveGridItem(
                                         Icon(
                                             imageVector = if (item.isStarred) Icons.Default.Star else Icons.Outlined.StarOutline,
                                             contentDescription = null,
-                                            tint = if (item.isStarred) Color(0xFFFFC107) else Color.Gray
+                                            tint = if (item.isStarred) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
                                         ) 
                                     }
                                 )
@@ -1561,7 +1990,7 @@ fun DriveGridItem(
                 Icon(
                     Icons.Default.CheckCircle,
                     contentDescription = null,
-                    tint = Color(0xFF81D4FA),
+                    tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
                 )
             }
@@ -1676,12 +2105,13 @@ fun ShareDialog(
     )
 }
 
+@Composable
 private fun getFileIconAndColor(item: DriveItem): Pair<ImageVector, Color> {
     if (item is DriveItem.Folder) {
         return when {
             item.isSecure -> Icons.Default.Folder to Color(0xFF2196F3)
-            item.isVirtual -> Icons.Default.Folder to Color(0xFF24A1DE)
-            else -> Icons.Default.Folder to Color(0xFF24A1DE)
+            item.isVirtual -> Icons.Default.Folder to MaterialTheme.colorScheme.primary
+            else -> Icons.Default.Folder to MaterialTheme.colorScheme.primary
         }
     } else {
         val file = item as DriveItem.File
@@ -1694,7 +2124,7 @@ private fun getFileIconAndColor(item: DriveItem): Pair<ImageVector, Color> {
             file.mimeType.startsWith("audio/") -> Icons.Default.AudioFile to Color(0xFFFF9800)
             file.mimeType == "application/pdf" || lowerName.endsWith(".pdf") -> Icons.Default.PictureAsPdf to Color(0xFFF44336)
             file.mimeType.contains("text/") || lowerName.endsWith(".txt") -> Icons.AutoMirrored.Filled.Article to Color(0xFF607D8B)
-            else -> Icons.AutoMirrored.Filled.InsertDriveFile to Color.Gray
+            else -> Icons.AutoMirrored.Filled.InsertDriveFile to MaterialTheme.colorScheme.onSurfaceVariant
         }
     }
 }
