@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -40,7 +41,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Article
-import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
@@ -53,18 +53,19 @@ import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InsertDriveFile
@@ -83,6 +84,7 @@ import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -92,7 +94,6 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -123,16 +124,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.domain.model.DriveItem
-import com.awd.teledrive.ui.theme.TeledriveTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -257,7 +257,6 @@ fun HomeContent(
     var selectedItems by remember { mutableStateOf(setOf<Long>()) }
     val isSelectionMode = selectedItems.isNotEmpty()
     var showFolderDialog by remember { mutableStateOf(false) }
-    var showMoveDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf<List<DriveItem>?>(null) }
     var itemToRename by remember { mutableStateOf<DriveItem?>(null) }
     var renameValue by remember { mutableStateOf("") }
@@ -286,14 +285,12 @@ fun HomeContent(
             }
         )
     }
+
     var shareItem by remember { mutableStateOf<DriveItem?>(null) }
-    var folderToMove by remember { mutableStateOf<DriveItem.Folder?>(null) }
     var folderToDownload by remember { mutableStateOf<DriveItem.Folder?>(null) }
     var largeFileToUpload by remember { mutableStateOf<Pair<File, String>?>(null) }
     var isPreparingFile by remember { mutableStateOf(false) }
     var newFolderName by remember { mutableStateOf("") }
-    var isVirtualFolder by remember { mutableStateOf(true) }
-    var isSecureFolder by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
 
     val multiFilePickerLauncher = rememberLauncherForActivityResult(
@@ -362,6 +359,7 @@ fun HomeContent(
             showNewSheet -> showNewSheet = false
             isSearchActive -> isSearchActive = false
             isSelectionMode -> selectedItems = emptySet()
+            filterType != FilterType.ALL -> onSetFilterType(FilterType.ALL)
             (currentFolderId != null || currentVirtualFolderId != "0") -> onNavigateBack()
             else -> {
                 if (backPressedOnce) {
@@ -403,25 +401,6 @@ fun HomeContent(
             onGetInviteLink = onGetInviteLink,
             onGetMembers = onGetMembers,
             onShareFile = onShareFile
-        )
-    }
-
-    if (folderToMove != null) {
-        AlertDialog(
-            onDismissRequest = { folderToMove = null },
-            title = { Text(stringResource(R.string.folder_move_warning_title)) },
-            text = { Text(stringResource(R.string.folder_move_warning_message, folderToMove?.name ?: "")) },
-            confirmButton = {
-                Button(onClick = {
-                    folderToMove?.let { folder ->
-                        onMoveFolderContents(folder.telegramChatId, currentFolderId ?: 0L)
-                    }
-                    folderToMove = null
-                }) { Text(stringResource(R.string.move_contents)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { folderToMove = null }) { Text(stringResource(R.string.cancel)) }
-            }
         )
     }
 
@@ -493,15 +472,9 @@ fun HomeContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceAround
                 ) {
-                    val isInsidePhysicalFolder = currentFolderId != null && currentVirtualFolderId == "0"
-                    val isInsideVirtualFolder = currentVirtualFolderId != "0"
-                    
-                    if (!isInsidePhysicalFolder) {
-                        NewActionItem(Icons.Default.CreateNewFolder, stringResource(R.string.folder)) {
-                            isVirtualFolder = isInsideVirtualFolder // Force virtual if already in virtual
-                            showNewSheet = false
-                            showFolderDialog = true
-                        }
+                    NewActionItem(Icons.Default.CreateNewFolder, stringResource(R.string.folder)) {
+                        showNewSheet = false
+                        showFolderDialog = true
                     }
                     NewActionItem(Icons.Default.FileUpload, stringResource(R.string.upload)) {
                         showNewSheet = false
@@ -516,6 +489,7 @@ fun HomeContent(
         }
     }
 
+    // ক্লিন ফোল্ডার তৈরির ডায়ালগ (চ্যানেল তৈরির জটিল অপশন বাদ দেওয়া হয়েছে)
     if (showFolderDialog) {
         AlertDialog(
             onDismissRequest = { showFolderDialog = false },
@@ -529,46 +503,14 @@ fun HomeContent(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(Modifier.height(16.dp))
-                    val isAtRoot = currentFolderId == null && currentVirtualFolderId == "0"
-                    
-                    if (isAtRoot) {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                androidx.compose.material3.Switch(
-                                    checked = isVirtualFolder,
-                                    onCheckedChange = { isVirtualFolder = it }
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Column {
-                                    Text(if (isVirtualFolder) stringResource(R.string.virtual_folder) else stringResource(R.string.channel_folder), style = MaterialTheme.typography.bodyMedium)
-                                    Text(
-                                        if (isVirtualFolder) stringResource(R.string.sync_across_devices_desc) else stringResource(R.string.create_channel_telegram_desc),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        // Reset to virtual if not at root
-                        isVirtualFolder = true
-                        isSecureFolder = false
-                        Text(
-                            stringResource(R.string.create_new) + " " + stringResource(R.string.virtual_folder) + " " + stringResource(R.string.in_label) + " " + (currentFolderName ?: stringResource(R.string.this_folder)),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         if (newFolderName.isNotBlank()) {
-                            onCreateFolder(newFolderName, isVirtualFolder, isSecureFolder)
+                            onCreateFolder(newFolderName, true, false)
                             newFolderName = ""
-                            isSecureFolder = false
                             showFolderDialog = false
                         }
                     }
@@ -580,72 +522,6 @@ fun HomeContent(
                 TextButton(onClick = { showFolderDialog = false }) {
                     Text(stringResource(R.string.cancel))
                 }
-            }
-        )
-    }
-
-    if (showMoveDialog) {
-        val folders = items.filterIsInstance<DriveItem.Folder>()
-        AlertDialog(
-            onDismissRequest = { showMoveDialog = false },
-            title = { Text(stringResource(R.string.move_to_folder)) },
-            text = {
-                Column {
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.root_storage)) },
-                        leadingContent = { Icon(Icons.Default.Home, null, tint = MaterialTheme.colorScheme.primary) },
-                        modifier = Modifier.clickable {
-                            val selectedFileIds = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>().map { it.id }
-                            val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
-                            
-                            if (selectedFileIds.isNotEmpty()) {
-                                onMoveItems(selectedFileIds.toSet(), 0L)
-                            }
-                            
-                            selectedFolders.forEach { folder ->
-                                onMoveFolderContents(folder.telegramChatId, 0L)
-                            }
-                            
-                            selectedItems = emptySet()
-                            showMoveDialog = false
-                        }
-                    )
-                    HorizontalDivider()
-
-                    if (folders.isEmpty()) {
-                        Text(stringResource(R.string.no_folders_found), modifier = Modifier.padding(16.dp))
-                    } else {
-                        LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
-                            items(folders) { folder ->
-                                if (folder.telegramChatId != currentFolderId && !selectedItems.contains(folder.id)) {
-                                    ListItem(
-                                        headlineContent = { Text(folder.name) },
-                                        leadingContent = { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary) },
-                                        modifier = Modifier.clickable {
-                                            val selectedFileIds = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>().map { it.id }
-                                            val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
-                                            
-                                            if (selectedFileIds.isNotEmpty()) {
-                                                onMoveItems(selectedFileIds.toSet(), folder.telegramChatId)
-                                            }
-                                            
-                                            selectedFolders.forEach { sf ->
-                                                onMoveFolderContents(sf.telegramChatId, folder.telegramChatId)
-                                            }
-
-                                            selectedItems = emptySet()
-                                            showMoveDialog = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showMoveDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
         )
     }
@@ -703,20 +579,6 @@ fun HomeContent(
                                     }
                                 ) {
                                     Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
-                                }
-                                val selectedContainsFolder = items.filter { it.id in selectedItems }.any { it is DriveItem.Folder }
-                                if (!selectedContainsFolder) {
-                                    IconButton(
-                                        onClick = {
-                                            if (isOffline) {
-                                                Toast.makeText(context, context.getString(R.string.offline_msg), Toast.LENGTH_SHORT).show()
-                                                return@IconButton
-                                            }
-                                            showMoveDialog = true
-                                        }
-                                    ) {
-                                        Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = stringResource(R.string.move))
-                                    }
                                 }
                                 IconButton(
                                     onClick = {
@@ -792,7 +654,7 @@ fun HomeContent(
                                         Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Text(
-                                            text = stringResource(R.string.search_teledrive),
+                                            text = "Search in MyCloud...",
                                             style = MaterialTheme.typography.bodyLarge,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.weight(1f)
@@ -822,7 +684,7 @@ fun HomeContent(
                                                 modifier = Modifier.fillMaxWidth()
                                             )
                                             if (searchQuery.isEmpty()) {
-                                                Text(stringResource(R.string.search_teledrive), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("Search files...", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             }
                                         }
                                         if (searchQuery.isNotEmpty()) {
@@ -851,9 +713,6 @@ fun HomeContent(
         },
         floatingActionButton = {
             if (!isOffline) {
-                // Restriction: Cannot create any folders inside physical folders (Channels)
-                val isInsidePhysicalFolder = currentFolderId != null && currentVirtualFolderId == "0"
-                
                 ExtendedFloatingActionButton(
                     onClick = { showNewSheet = true },
                     icon = { Icon(Icons.Default.Add, null) },
@@ -898,7 +757,9 @@ fun HomeContent(
                         }
                     }
 
-                    if (items.isEmpty()) {
+                    val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && filterType == FilterType.ALL
+
+                    if (items.isEmpty() && !showDashboard) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(
@@ -932,6 +793,15 @@ fun HomeContent(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
+                                if (showDashboard) {
+                                    item(span = { GridItemSpan(2) }) {
+                                        GoogleFilesCategoriesSection(
+                                            totalStorageUsed = totalStorageUsed,
+                                            allItems = items,
+                                            onSelectCategory = onSetFilterType
+                                        )
+                                    }
+                                }
                                 items(items) { item ->
                                     val isSelected = selectedItems.contains(item.id)
                                     DriveGridItem(
@@ -939,15 +809,10 @@ fun HomeContent(
                                         isSelected = isSelected,
                                         onClick = {
                                             if (isSelectionMode) {
-                                                val hasFiles = items.filter { it.id in selectedItems }.any { it is DriveItem.File }
-                                                if (hasFiles && item is DriveItem.Folder) {
-                                                    Toast.makeText(context, context.getString(R.string.selection_folder_error), Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                                }
+                                                selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
                                             } else {
                                                 if (item is DriveItem.File) onNavigateToPreview(item)
-                                                else if (item is DriveItem.Folder) onNavigateToFolder(if (item.isVirtual) currentFolderId else item.telegramChatId, item.virtualId, item.name)
+                                                else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                                             }
                                         },
                                         onLongClick = {
@@ -964,10 +829,7 @@ fun HomeContent(
                                                 folderToDownload = item
                                             }
                                         },
-                                        onMoveClick = {
-                                            selectedItems = setOf(item.id)
-                                            showMoveDialog = true
-                                        },
+                                        onMoveClick = null,
                                         onRenameClick = {
                                             itemToRename = item
                                             renameValue = item.name
@@ -980,9 +842,20 @@ fun HomeContent(
                             }
                         } else {
                             LazyColumn(
-                                contentPadding = PaddingValues(vertical = 8.dp),
+                                contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
+                                if (showDashboard) {
+                                    item {
+                                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                            GoogleFilesCategoriesSection(
+                                                totalStorageUsed = totalStorageUsed,
+                                                allItems = items,
+                                                onSelectCategory = onSetFilterType
+                                            )
+                                        }
+                                    }
+                                }
                                 items(items) { item ->
                                     val isSelected = selectedItems.contains(item.id)
                                     DriveListItem(
@@ -990,15 +863,10 @@ fun HomeContent(
                                         isSelected = isSelected,
                                         onClick = {
                                             if (isSelectionMode) {
-                                                val hasFiles = items.filter { it.id in selectedItems }.any { it is DriveItem.File }
-                                                if (hasFiles && item is DriveItem.Folder) {
-                                                    Toast.makeText(context, context.getString(R.string.selection_folder_error), Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                                }
+                                                selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
                                             } else {
                                                 if (item is DriveItem.File) onNavigateToPreview(item)
-                                                else if (item is DriveItem.Folder) onNavigateToFolder(if (item.isVirtual) currentFolderId else item.telegramChatId, item.virtualId, item.name)
+                                                else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                                             }
                                         },
                                         onLongClick = {
@@ -1015,10 +883,7 @@ fun HomeContent(
                                                 folderToDownload = item
                                             }
                                         },
-                                        onMoveClick = {
-                                            selectedItems = setOf(item.id)
-                                            showMoveDialog = true
-                                        },
+                                        onMoveClick = null,
                                         onRenameClick = {
                                             itemToRename = item
                                             renameValue = item.name
@@ -1037,55 +902,164 @@ fun HomeContent(
     }
 }
 
-@Preview(showBackground = true)
+// Google Files স্টাইলের স্টোরেজ ও ক্যাটাগরি ড্যাশবোর্ড
 @Composable
-fun HomePreview() {
-    TeledriveTheme {
-        HomeContent(
-            items = listOf(
-                DriveItem.Folder(id = 1L, parentChatId = 0L, name = "Documents", telegramChatId = 123456L, isStarred = false),
-                DriveItem.File(id = 2L, parentChatId = 0L, name = "image.jpg", size = 1024 * 1024, mimeType = "image/jpeg", telegramFileId = 1, thumbnailPath = null, localPath = null, isStarred = false)
-            ),
-            totalStorageUsed = 1024 * 1024,
-            searchQuery = "",
-            sortOrder = SortOrder.NAME,
-            filterType = FilterType.ALL,
-            isRefreshing = false,
-            isInitialLoading = false,
-            currentFolderId = null,
-            currentVirtualFolderId = "0",
-            currentFolderName = null,
-            isGridView = false,
-            connectivityStatus = ConnectivityObserver.Status.Available,
-            onNavigateToTransfers = {},
-            onNavigateToSettings = {},
-            onNavigateToPreview = { _ -> },
-            onSearchQueryChange = { _ -> },
-            onToggleViewMode = {},
-            onSetSortOrder = { _ -> },
-            onSetFilterType = { _ -> },
-            onCreateFolder = { _, _, _ -> },
-            isPasswordSet = true,
-            onUploadFile = { _, _ -> },
-            onDeleteItems = { _ -> },
-            onMoveItems = { _, _ -> },
-            onMoveFolderContents = { _, _ -> },
-            onDownloadFile = { _, _, _ -> },
-            onDownloadFolderContents = { _ -> },
-            onToggleStarred = { _ -> },
-            onNavigateToFolder = { _, _, _ -> },
-            onNavigateBack = {},
-            onRefresh = {},
-            onRenameItem = { _, _ -> },
-            onGetInviteLink = { _, _ -> },
-            onGetMembers = { _, _ -> },
-            onShareFile = { _, _, _ -> },
-            onLogout = {}
+fun GoogleFilesCategoriesSection(
+    totalStorageUsed: Long,
+    allItems: List<DriveItem>,
+    onSelectCategory: (FilterType) -> Unit
+) {
+    val files = allItems.filterIsInstance<DriveItem.File>()
+    val videoCount = files.count { it.mimeType.startsWith("video/") }
+    val photoCount = files.count { it.mimeType.startsWith("image/") }
+    val audioCount = files.count { it.mimeType.startsWith("audio/") }
+    val appCount = files.count { it.mimeType.contains("android.package-archive") || it.name.lowercase().endsWith(".apk") }
+    val archiveCount = files.count { 
+        val n = it.name.lowercase()
+        it.mimeType.contains("zip") || it.mimeType.contains("rar") || it.mimeType.contains("7z") || n.endsWith(".zip") || n.endsWith(".rar") || n.endsWith(".7z")
+    }
+    val docCount = (files.size - (videoCount + photoCount + audioCount + appCount + archiveCount)).coerceAtLeast(0)
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // ক্লাউড স্টোরেজ ব্যানার কার্ড
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = CircleShape,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.CloudDone, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                }
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Telegram Cloud Storage", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                    Text("${formatSize(totalStorageUsed)} used • Unlimited Free Space", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Categories",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
+        )
+
+        // Google Files স্টাইলের ২ কলামের ক্যাটাগরি গ্রিড
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                CategoryCard(
+                    title = "Apps (APK)",
+                    count = "$appCount files",
+                    icon = Icons.Default.Android,
+                    color = Color(0xFF3DDC84),
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCategory(FilterType.APPS) }
+                )
+                CategoryCard(
+                    title = "ZIP & RAR",
+                    count = "$archiveCount files",
+                    icon = Icons.Default.FolderZip,
+                    color = Color(0xFF9C27B0),
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCategory(FilterType.ARCHIVES) }
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                CategoryCard(
+                    title = "Videos",
+                    count = "$videoCount files",
+                    icon = Icons.Default.VideoFile,
+                    color = Color(0xFFE91E63),
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCategory(FilterType.VIDEOS) }
+                )
+                CategoryCard(
+                    title = "Audio",
+                    count = "$audioCount files",
+                    icon = Icons.Default.AudioFile,
+                    color = Color(0xFFFF9800),
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCategory(FilterType.AUDIO) }
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                CategoryCard(
+                    title = "Images",
+                    count = "$photoCount files",
+                    icon = Icons.Default.Image,
+                    color = Color(0xFF4CAF50),
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCategory(FilterType.PHOTOS) }
+                )
+                CategoryCard(
+                    title = "Documents",
+                    count = "$docCount files",
+                    icon = Icons.Default.Description,
+                    color = Color(0xFF2196F3),
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelectCategory(FilterType.DOCUMENTS) }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+        Text(
+            text = "All Folders & Files",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(bottom = 4.dp, start = 4.dp)
         )
     }
 }
 
-
+@Composable
+fun CategoryCard(
+    title: String,
+    count: String,
+    icon: ImageVector,
+    color: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                color = color.copy(alpha = 0.15f),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.size(40.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(title, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(count, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
 
 @Composable
 fun NewActionItem(icon: ImageVector, label: String, onClick: () -> Unit) {
@@ -1140,9 +1114,11 @@ fun FilterSortRow(
                         Text(
                             when (category) {
                                 FilterType.ALL -> stringResource(R.string.filter_all)
-                                FilterType.PHOTOS -> stringResource(R.string.filter_photos)
+                                FilterType.APPS -> "Apps (APK)"
+                                FilterType.ARCHIVES -> "ZIP / RAR"
                                 FilterType.VIDEOS -> stringResource(R.string.filter_videos)
                                 FilterType.AUDIO -> stringResource(R.string.filter_audio)
+                                FilterType.PHOTOS -> stringResource(R.string.filter_photos)
                                 FilterType.DOCUMENTS -> stringResource(R.string.filter_documents)
                             }
                         )
@@ -1228,7 +1204,6 @@ fun DriveListItem(
             }
         },
         leadingContent = {
-            val (icon, color) = getFileIconAndColor(item)
             Surface(
                 color = if (item is DriveItem.Folder) MaterialTheme.colorScheme.primaryContainer else color.copy(alpha = 0.1f),
                 shape = MaterialTheme.shapes.small,
@@ -1277,9 +1252,7 @@ fun DriveListItem(
                 }
                 
                 var showInfoDialog by remember { mutableStateOf(false) }
-                
                 val isVirtual = item is DriveItem.Folder && item.isVirtual
-                val isSecure = (item is DriveItem.Folder && item.isSecure) || (item is DriveItem.File && item.isEncrypted)
 
                 DropdownMenu(expanded = showItemMenu, onDismissRequest = { showItemMenu = false }) {
                     if (!isVirtual && !isSecure) {
@@ -1347,19 +1320,6 @@ fun DriveListItem(
                                 leadingIcon = { Icon(Icons.Default.Download, null) }
                             )
                         }
-
-                        if (item !is DriveItem.Folder) {
-                            onMoveClick?.let {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.move)) },
-                                    onClick = {
-                                        it()
-                                        showItemMenu = false
-                                    },
-                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.DriveFileMove, null) }
-                                )
-                            }
-                        }
                     }
 
                     onDeleteClick?.let {
@@ -1424,7 +1384,6 @@ fun DriveGridItem(
                 modifier = Modifier.padding(16.dp).fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                val (icon, color) = getFileIconAndColor(item)
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier.size(64.dp)
@@ -1479,7 +1438,6 @@ fun DriveGridItem(
                             )
                         }
                         val isVirtual = item is DriveItem.Folder && item.isVirtual
-                        val isSecure = (item is DriveItem.Folder && item.isSecure) || (item is DriveItem.File && item.isEncrypted)
 
                         DropdownMenu(expanded = showItemMenu, onDismissRequest = { showItemMenu = false }) {
                             if (!isVirtual && !isSecure) {
@@ -1528,15 +1486,6 @@ fun DriveGridItem(
                                         leadingIcon = { Icon(Icons.Default.Download, null) }
                                     )
                                 }
-                                if (item !is DriveItem.Folder) {
-                                    onMoveClick?.let {
-                                        DropdownMenuItem(
-                                            text = { Text(stringResource(R.string.move)) },
-                                            onClick = { it(); showItemMenu = false },
-                                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.DriveFileMove, null) }
-                                        )
-                                    }
-                                }
                             }
                             onDeleteClick?.let {
                                 DropdownMenuItem(
@@ -1584,12 +1533,7 @@ fun InfoDialog(item: DriveItem, onDismiss: () -> Unit) {
                         style = MaterialTheme.typography.bodyMedium
                     )
                 } else {
-                    val folderTypeStr = if (item is DriveItem.Folder && item.isVirtual) {
-                        stringResource(R.string.virtual_folder)
-                    } else {
-                        stringResource(R.string.channel_folder)
-                    }
-                    Text(stringResource(R.string.type_label, folderTypeStr), style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.type_label, stringResource(R.string.folder)), style = MaterialTheme.typography.bodyMedium)
                 }
             }
         },
@@ -1608,25 +1552,8 @@ fun ShareDialog(
     onShareFile: (String, Long, (Boolean, String?) -> Unit) -> Unit
 ) {
     val context = LocalContext.current
-    var inviteLink by remember { mutableStateOf<String?>(null) }
-    var members by remember { mutableStateOf<List<TdApi.User>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
     var shareToPhone by remember { mutableStateOf("") }
     var isSharingFile by remember { mutableStateOf(false) }
-
-    LaunchedEffect(item) {
-        if (item is DriveItem.Folder) {
-            onGetInviteLink(item.telegramChatId) { link ->
-                inviteLink = link
-                onGetMembers(item.telegramChatId) { userList ->
-                    members = userList
-                    isLoading = false
-                }
-            }
-        } else {
-            isLoading = false
-        }
-    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1643,60 +1570,12 @@ fun ShareDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                if (item is DriveItem.Folder) {
-                    if (isLoading) {
-                        Box(Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator()
-                        }
-                    } else {
-                        Text(stringResource(R.string.private_share_link), style = MaterialTheme.typography.labelLarge)
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = MaterialTheme.shapes.small,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
-                        ) {
-                            Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    inviteLink ?: stringResource(R.string.link_gen_failed),
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                IconButton(onClick = {
-                                    inviteLink?.let {
-                                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Link Folder", it))
-                                        Toast.makeText(context, context.getString(R.string.copy_success), Toast.LENGTH_SHORT).show()
-                                    }
-                                }) {
-                                    Icon(Icons.Default.ContentPaste, contentDescription = "Copy")
-                                }
-                            }
-                        }
-                        
-                        Spacer(Modifier.height(16.dp))
-                        Text(stringResource(R.string.people_with_access), style = MaterialTheme.typography.labelLarge)
-                        if (members.isEmpty()) {
-                            Text(stringResource(R.string.no_one_joined), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                        } else {
-                            LazyColumn(Modifier.heightIn(max = 150.dp)) {
-                                items(members) { user ->
-                                    ListItem(
-                                        headlineContent = { Text("${user.firstName} ${user.lastName}") },
-                                        supportingContent = { Text(user.phoneNumber.ifEmpty { "@${user.usernames?.activeUsernames?.firstOrNull() ?: "no_username"}" }) },
-                                        leadingContent = { Icon(Icons.Default.Person, null) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } else if (item is DriveItem.File) {
+                if (item is DriveItem.File) {
                     Text(stringResource(R.string.share_to_telegram), style = MaterialTheme.typography.labelLarge)
                     OutlinedTextField(
                         value = shareToPhone,
                         onValueChange = { shareToPhone = it },
-                        placeholder = { Text("+62...") },
+                        placeholder = { Text("+880...") },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         singleLine = true,
@@ -1742,20 +1621,21 @@ fun ShareDialog(
 private fun getFileIconAndColor(item: DriveItem): Pair<ImageVector, Color> {
     if (item is DriveItem.Folder) {
         return when {
-            item.isSecure -> Icons.Default.Folder to Color(0xFF2196F3) // Blue for secure
-            item.isVirtual -> Icons.Default.Folder to MaterialTheme.colorScheme.tertiary
+            item.isSecure -> Icons.Default.Folder to Color(0xFF2196F3)
+            item.isVirtual -> Icons.Default.Folder to MaterialTheme.colorScheme.primary
             else -> Icons.Default.Folder to MaterialTheme.colorScheme.primary
         }
     } else {
         val file = item as DriveItem.File
+        val lowerName = file.name.lowercase()
         return when {
+            file.mimeType.contains("android.package-archive") || lowerName.endsWith(".apk") -> Icons.Default.Android to Color(0xFF3DDC84)
+            file.mimeType.contains("zip") || file.mimeType.contains("rar") || file.mimeType.contains("7z") || lowerName.endsWith(".zip") || lowerName.endsWith(".rar") || lowerName.endsWith(".7z") -> Icons.Default.FolderZip to Color(0xFF9C27B0)
             file.mimeType.startsWith("image/") -> Icons.Default.Image to Color(0xFF4CAF50)
             file.mimeType.startsWith("video/") -> Icons.Default.VideoFile to Color(0xFFE91E63)
             file.mimeType.startsWith("audio/") -> Icons.Default.AudioFile to Color(0xFFFF9800)
-            file.mimeType == "application/pdf" -> Icons.Default.PictureAsPdf to Color(0xFFF44336)
-            file.mimeType.contains("zip") || file.mimeType.contains("rar") || file.mimeType.contains("7z") -> Icons.Default.FolderZip to Color(0xFF9C27B0)
-            file.mimeType.contains("text/") -> Icons.AutoMirrored.Filled.Article to Color(0xFF607D8B)
-            file.mimeType.contains("android.package-archive") -> Icons.Default.Android to Color(0xFF3DDC84)
+            file.mimeType == "application/pdf" || lowerName.endsWith(".pdf") -> Icons.Default.PictureAsPdf to Color(0xFFF44336)
+            file.mimeType.contains("text/") || lowerName.endsWith(".txt") -> Icons.AutoMirrored.Filled.Article to Color(0xFF607D8B)
             else -> Icons.AutoMirrored.Filled.InsertDriveFile to MaterialTheme.colorScheme.onSurfaceVariant
         }
     }
