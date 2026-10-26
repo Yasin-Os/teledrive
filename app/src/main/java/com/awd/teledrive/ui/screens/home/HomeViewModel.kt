@@ -1,3 +1,4 @@
+// File: app/src/main/java/com/awd/teledrive/ui/screens/home/HomeViewModel.kt
 package com.awd.teledrive.ui.screens.home
 
 import androidx.lifecycle.ViewModel
@@ -26,8 +27,14 @@ enum class SortOrder {
     NAME, DATE, SIZE
 }
 
+// প্রজেক্টের অন্য ফাইলের সাথে সংঘর্ষ এড়াতে মূল ৫টি অপশন অক্ষত রাখা হলো
 enum class FilterType {
-    ALL, PHOTOS, VIDEOS, AUDIO, DOCUMENTS, APPS, ARCHIVES
+    ALL, PHOTOS, VIDEOS, AUDIO, DOCUMENTS
+}
+
+// আমাদের গুগল ফাইলস ক্যাটাগরির জন্য নতুন ফিল্টার
+enum class CustomCategory {
+    NONE, APPS, ARCHIVES
 }
 
 @HiltViewModel
@@ -50,6 +57,9 @@ class HomeViewModel @Inject constructor(
 
     private val _filterType = MutableStateFlow(FilterType.ALL)
     val filterType = _filterType.asStateFlow()
+
+    private val _customCategory = MutableStateFlow(CustomCategory.NONE)
+    val customCategory = _customCategory.asStateFlow()
 
     private val _currentFolderId = MutableStateFlow<Long?>(null)
     val currentFolderId = _currentFolderId.asStateFlow()
@@ -88,16 +98,18 @@ class HomeViewModel @Inject constructor(
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val items: StateFlow<List<DriveItem>> = combine(
-        listOf(_currentFolderId, _currentVirtualFolderId, _searchQuery, _sortOrder, _filterType, driveRepository.getSavedMessagesChatIdFlow())
+        listOf(_currentFolderId, _currentVirtualFolderId, _searchQuery, _sortOrder, _filterType, _customCategory, driveRepository.getSavedMessagesChatIdFlow())
     ) { arr ->
         val folderId = arr[0] as? Long
         val virtualId = arr[1] as String
         val query = arr[2] as String
         val order = arr[3] as SortOrder
         val filter = arr[4] as FilterType
+        val customCat = arr[5] as CustomCategory
 
-        // যখন কোনো নির্দিষ্ট ক্যাটাগরি (যেমন: APPS বা VIDEOS) সিলেক্ট করা হবে, তখন সব ফোল্ডারের ভেতর থেকেও ওই ক্যাটাগরির ফাইল খুঁজে দেখাবে
-        val baseFlow = if (filter != FilterType.ALL && virtualId == "0" && query.isEmpty()) {
+        val isGlobalCategoryActive = (filter != FilterType.ALL || customCat != CustomCategory.NONE) && virtualId == "0" && query.isEmpty()
+
+        val baseFlow = if (isGlobalCategoryActive) {
             driveRepository.getAllFiles().map { files -> files as List<DriveItem> }
         } else {
             driveRepository.getItems(folderId, virtualId, query)
@@ -110,14 +122,14 @@ class HomeViewModel @Inject constructor(
                 !(item is DriveItem.Folder && !item.isVirtual)
             }
 
-            val filteredByType = when (filter) {
-                FilterType.ALL -> items
-                FilterType.PHOTOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("image/") }
-                FilterType.VIDEOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("video/") }
-                FilterType.AUDIO -> items.filter { it is DriveItem.File && it.mimeType.startsWith("audio/") }
-                FilterType.APPS -> items.filter { it is DriveItem.File && isAppFile(it) }
-                FilterType.ARCHIVES -> items.filter { it is DriveItem.File && isArchiveFile(it) }
-                FilterType.DOCUMENTS -> items.filter { 
+            val filteredByType = when {
+                customCat == CustomCategory.APPS -> items.filter { it is DriveItem.File && isAppFile(it) }
+                customCat == CustomCategory.ARCHIVES -> items.filter { it is DriveItem.File && isArchiveFile(it) }
+                filter == FilterType.ALL -> items
+                filter == FilterType.PHOTOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("image/") }
+                filter == FilterType.VIDEOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("video/") }
+                filter == FilterType.AUDIO -> items.filter { it is DriveItem.File && it.mimeType.startsWith("audio/") }
+                filter == FilterType.DOCUMENTS -> items.filter { 
                     it is DriveItem.File && 
                     !it.mimeType.startsWith("image/") && 
                     !it.mimeType.startsWith("video/") && 
@@ -125,6 +137,7 @@ class HomeViewModel @Inject constructor(
                     !isAppFile(it) && 
                     !isArchiveFile(it) 
                 }
+                else -> items
             }
 
             val (folders, files) = filteredByType.partition { it is DriveItem.Folder }
@@ -155,7 +168,13 @@ class HomeViewModel @Inject constructor(
     }
 
     fun setFilterType(type: FilterType) {
+        _customCategory.value = CustomCategory.NONE
         _filterType.value = type
+    }
+
+    fun setCustomCategory(category: CustomCategory) {
+        _filterType.value = FilterType.ALL
+        _customCategory.value = category
     }
 
     fun onSearchQueryChange(query: String) {
@@ -173,7 +192,8 @@ class HomeViewModel @Inject constructor(
     }
 
     fun navigateBack() {
-        if (_filterType.value != FilterType.ALL) {
+        if (_customCategory.value != CustomCategory.NONE || _filterType.value != FilterType.ALL) {
+            _customCategory.value = CustomCategory.NONE
             _filterType.value = FilterType.ALL
             return
         }
