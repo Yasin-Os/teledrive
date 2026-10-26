@@ -108,11 +108,56 @@ fun NavGraph(navController: NavHostController) {
     val loginUiState by loginViewModel.uiState.collectAsState()
     val isSecureActive by securityViewModel.isSecureModeActive.collectAsState(false)
     val showCacheWarning by settingsViewModel.showCacheWarning.collectAsState()
-    
-    val savedMessagesId by hiltViewModel<com.awd.teledrive.ui.screens.home.HomeViewModel>().totalStorageUsed.collectAsState() // Just to trigger something? No.
-    // Let's just use a better way to check if ready.
 
     var showUnlockDialog by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val activity = context as? FragmentActivity
+    val executor = remember { ContextCompat.getMainExecutor(context) }
+
+    val biometricPrompt = remember {
+        if (activity != null) {
+            BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    if (securityViewModel.unlockWithBiometric()) {
+                        navController.navigate(Screen.SecureStorage.route)
+                    } else {
+                        android.widget.Toast.makeText(context, context.getString(R.string.password_unsynced_toast), android.widget.Toast.LENGTH_LONG).show()
+                        showUnlockDialog = true
+                    }
+                }
+            })
+        } else null
+    }
+
+    val promptInfo = remember {
+        BiometricPrompt.PromptInfo.Builder()
+            .setTitle(context.getString(R.string.unlock_secure_folder))
+            .setSubtitle(context.getString(R.string.biometric_subtitle))
+            .setNegativeButtonText(context.getString(R.string.use_password))
+            .build()
+    }
+
+    val triggerSafeFolderOpen = {
+        val isPasswordSet = securityViewModel.isPasswordSet.value
+        if (!isPasswordSet) {
+            android.widget.Toast.makeText(context, context.getString(R.string.set_password_first), android.widget.Toast.LENGTH_LONG).show()
+            navController.navigate(Screen.Settings.route)
+        } else if (isSecureActive) {
+            navController.navigate(Screen.SecureStorage.route)
+        } else {
+            val isBiometricEnabled = securityViewModel.isBiometricEnabled.value
+            if (isBiometricEnabled && biometricPrompt != null) {
+                try {
+                    biometricPrompt.authenticate(promptInfo)
+                } catch (e: Exception) {
+                    showUnlockDialog = true
+                }
+            } else {
+                showUnlockDialog = true
+            }
+        }
+    }
 
     LaunchedEffect(isLocked) {
         if (isLocked && currentRoute != Screen.Security.route) {
@@ -122,7 +167,6 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
-    // Auto-navigate to Login if session is lost (Logged Out)
     LaunchedEffect(loginUiState, currentRoute) {
         if (currentRoute != null &&
             loginUiState !is com.awd.teledrive.ui.screens.auth.LoginUiState.Success &&
@@ -142,33 +186,6 @@ fun NavGraph(navController: NavHostController) {
     Scaffold(
         bottomBar = {
             if (shouldShowBottomBar) {
-                val context = LocalContext.current
-                val activity = context as? FragmentActivity
-                val executor = remember { ContextCompat.getMainExecutor(context) }
-                
-                val biometricPrompt = remember {
-                    if (activity != null) {
-                        BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
-                            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                                if (securityViewModel.unlockWithBiometric()) {
-                                    navController.navigate(Screen.SecureStorage.route)
-                                } else {
-                                    android.widget.Toast.makeText(context, context.getString(R.string.password_unsynced_toast), android.widget.Toast.LENGTH_LONG).show()
-                                    showUnlockDialog = true
-                                }
-                            }
-                        })
-                    } else null
-                }
-
-                val promptInfo = remember {
-                    BiometricPrompt.PromptInfo.Builder()
-                        .setTitle(context.getString(R.string.unlock_secure_folder))
-                        .setSubtitle(context.getString(R.string.biometric_subtitle))
-                        .setNegativeButtonText(context.getString(R.string.use_password))
-                        .build()
-                }
-
                 NavigationBar {
                     bottomNavScreens.forEach { screen ->
                         val isHome = screen == Screen.Home
@@ -187,27 +204,7 @@ fun NavGraph(navController: NavHostController) {
                                                 }
                                             },
                                             onLongClick = {
-                                                val isPasswordSet = securityViewModel.isPasswordSet.value
-                                                if (!isPasswordSet) {
-                                                    android.widget.Toast.makeText(navController.context, navController.context.getString(R.string.set_password_first), android.widget.Toast.LENGTH_LONG).show()
-                                                    return@combinedClickable
-                                                }
-
-                                                if (isSecureActive) {
-                                                    securityViewModel.lockSecureMode()
-                                                    android.widget.Toast.makeText(navController.context, navController.context.getString(R.string.secure_mode_disabled), android.widget.Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    val isBiometricEnabled = securityViewModel.isBiometricEnabled.value
-                                                    if (isBiometricEnabled && biometricPrompt != null) {
-                                                        try {
-                                                            biometricPrompt.authenticate(promptInfo)
-                                                        } catch (e: Exception) {
-                                                            showUnlockDialog = true
-                                                        }
-                                                    } else {
-                                                        showUnlockDialog = true
-                                                    }
-                                                }
+                                                triggerSafeFolderOpen()
                                             }
                                         )
                                     } else Modifier
@@ -234,7 +231,7 @@ fun NavGraph(navController: NavHostController) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Login.route, // Default, will be redirected by LaunchedEffects if needed
+            startDestination = Screen.Login.route,
             modifier = Modifier.padding(
                 bottom = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
             )
@@ -261,6 +258,15 @@ fun NavGraph(navController: NavHostController) {
                 HomeScreen(
                     onNavigateToTransfers = { navController.navigate(Screen.Transfers.route) },
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
+                    onNavigateToStarred = {
+                        navController.navigate(Screen.Starred.route) {
+                            popUpTo(Screen.Home.route) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onNavigateToSafeFolder = { triggerSafeFolderOpen() },
+                    onNavigateToCloudAnalysis = { navController.navigate(Screen.CloudAnalysis.route) },
                     onNavigateToPreview = { file -> 
                         navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, virtualParentId = file.virtualParentId ?: "0"))
                     }
@@ -364,7 +370,6 @@ fun NavGraph(navController: NavHostController) {
     if (showUnlockDialog) {
         var password by remember { mutableStateOf("") }
         var error by remember { mutableStateOf<String?>(null) }
-        val context = navController.context
         
         AlertDialog(
             onDismissRequest = { showUnlockDialog = false },
