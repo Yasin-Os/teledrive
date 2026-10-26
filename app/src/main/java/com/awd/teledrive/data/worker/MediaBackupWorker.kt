@@ -1,9 +1,11 @@
+// File: app/src/main/java/com/awd/teledrive/data/worker/MediaBackupWorker.kt
 package com.awd.teledrive.data.worker
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
+import android.media.MediaScannerConnection
 import android.os.Build
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
@@ -54,7 +56,10 @@ class MediaBackupWorker(
             val backupFolders = secureSettings.getStringList("backup_folders")
             if (backupFolders.isEmpty()) return@withContext Result.success()
 
-            // Update status to Scanning
+            // সেটিংস থেকে চেক করা হচ্ছে ব্যবহারকারী অটো-ডিলিট চালু রেখেছেন কিনা
+            val customPrefs = applicationContext.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            val deleteAfterBackup = customPrefs.getBoolean("delete_after_backup", false)
+
             setForeground(createForegroundInfo(0, 0))
 
             val lastBackupTime = inputData.getLong("last_backup_time", 0L)
@@ -63,10 +68,11 @@ class MediaBackupWorker(
             if (newMedia.isEmpty()) return@withContext Result.success()
 
             newMedia.forEachIndexed { index, file ->
+                if (!file.exists()) return@forEachIndexed
+
                 val currentCount = index + 1
                 val totalCount = newMedia.size
                 
-                // Set progress for UI
                 setProgress(workDataOf(
                     "progress" to index.toFloat() / totalCount, 
                     "fileName" to file.name,
@@ -74,18 +80,30 @@ class MediaBackupWorker(
                     "total" to totalCount
                 ))
                 
-                // Show notification "File X of Y"
                 setForeground(createForegroundInfo(currentCount, totalCount))
                 
-                // Upload and wait for it to be registered
-                driveRepository.uploadFile(file.absolutePath, file.name)
-                
-                // Add a small delay between starting uploads to prevent spamming the system
-                // and allow TDLib to process the file metadata
-                delay(2000)
-                
-                // Note: We don't wait for completion here because uploads can be very slow.
-                // We just ensure we don't spam the initial SendMessage requests.
+                if (deleteAfterBackup) {
+                    // যদি ফোন থেকে মুছে ফেলার অপশন চালু থাকে, তবে ক্যাশে কপি করে আপলোড দেবে এবং মূল ফাইলটি ফোন থেকে মুছে ফেলবে
+                    val tempBackupFile = File(applicationContext.cacheDir, "bkp_${System.currentTimeMillis()}_${file.name}")
+                    try {
+                        file.copyTo(tempBackupFile, overwrite = true)
+                        driveRepository.uploadFile(tempBackupFile.absolutePath, file.name)
+                        delay(2500)
+                        
+                        // ফোন স্টোরেজ থেকে মূল ফাইলটি ডিলিট করা হচ্ছে
+                        val originalPath = file.absolutePath
+                        if (file.delete()) {
+                            MediaScannerConnection.scanFile(applicationContext, arrayOf(originalPath), null, null)
+                        }
+                    } catch (e: Exception) {
+                        driveRepository.uploadFile(file.absolutePath, file.name)
+                        delay(2000)
+                    }
+                } else {
+                    // সাধারণ ব্যাকআপ (ফোনেও থাকবে, ক্লাউডেও যাবে)
+                    driveRepository.uploadFile(file.absolutePath, file.name)
+                    delay(2000)
+                }
             }
             
             secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
@@ -133,7 +151,6 @@ class MediaBackupWorker(
     private fun scanNewMedia(sinceTimestamp: Long, folders: List<String>): List<File> {
         val files = mutableListOf<File>()
         
-        // 1. Scan via MediaStore (fast for Gallery folders)
         val projection = arrayOf(MediaStore.Images.Media.DATA)
         val selection = "${MediaStore.Images.Media.DATE_MODIFIED} > ?"
         val selectionArgs = arrayOf((sinceTimestamp / 1000).toString())
@@ -156,7 +173,6 @@ class MediaBackupWorker(
             }
         }
 
-        // 2. Scan recursively for all files in the selected folders (handles non-media and sub-folders)
         folders.forEach { folderPath ->
             val rootFolder = File(folderPath)
             if (rootFolder.exists() && rootFolder.isDirectory) {
