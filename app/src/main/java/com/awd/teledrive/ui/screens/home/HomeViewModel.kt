@@ -27,7 +27,7 @@ enum class SortOrder {
 }
 
 enum class FilterType {
-    ALL, PHOTOS, VIDEOS, AUDIO, DOCUMENTS
+    ALL, PHOTOS, VIDEOS, AUDIO, DOCUMENTS, APPS, ARCHIVES
 }
 
 @HiltViewModel
@@ -75,6 +75,17 @@ class HomeViewModel @Inject constructor(
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
+    private fun isAppFile(file: DriveItem.File): Boolean {
+        val ext = file.name.lowercase()
+        return file.mimeType.contains("android.package-archive") || ext.endsWith(".apk") || ext.endsWith(".apks") || ext.endsWith(".xapk")
+    }
+
+    private fun isArchiveFile(file: DriveItem.File): Boolean {
+        val ext = file.name.lowercase()
+        return file.mimeType.contains("zip") || file.mimeType.contains("rar") || file.mimeType.contains("7z") || file.mimeType.contains("tar") || file.mimeType.contains("gzip") ||
+               ext.endsWith(".zip") || ext.endsWith(".rar") || ext.endsWith(".7z") || ext.endsWith(".tar") || ext.endsWith(".gz")
+    }
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val items: StateFlow<List<DriveItem>> = combine(
         listOf(_currentFolderId, _currentVirtualFolderId, _searchQuery, _sortOrder, _filterType, driveRepository.getSavedMessagesChatIdFlow())
@@ -85,8 +96,14 @@ class HomeViewModel @Inject constructor(
         val order = arr[3] as SortOrder
         val filter = arr[4] as FilterType
 
-        driveRepository.getItems(folderId, virtualId, query).map { allItems ->
-            // সিকিউর ফাইল এবং যেকোনো নন-ভার্চুয়াল চ্যানেল ফোল্ডার হাইড করা হলো
+        // যখন কোনো নির্দিষ্ট ক্যাটাগরি (যেমন: APPS বা VIDEOS) সিলেক্ট করা হবে, তখন সব ফোল্ডারের ভেতর থেকেও ওই ক্যাটাগরির ফাইল খুঁজে দেখাবে
+        val baseFlow = if (filter != FilterType.ALL && virtualId == "0" && query.isEmpty()) {
+            driveRepository.getAllFiles().map { files -> files as List<DriveItem> }
+        } else {
+            driveRepository.getItems(folderId, virtualId, query)
+        }
+
+        baseFlow.map { allItems ->
             val items = allItems.filter { item ->
                 !(item is DriveItem.Folder && item.isSecure) && 
                 !(item is DriveItem.File && item.isEncrypted) &&
@@ -98,7 +115,16 @@ class HomeViewModel @Inject constructor(
                 FilterType.PHOTOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("image/") }
                 FilterType.VIDEOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("video/") }
                 FilterType.AUDIO -> items.filter { it is DriveItem.File && it.mimeType.startsWith("audio/") }
-                FilterType.DOCUMENTS -> items.filter { it is DriveItem.File && !it.mimeType.startsWith("image/") && !it.mimeType.startsWith("video/") && !it.mimeType.startsWith("audio/") }
+                FilterType.APPS -> items.filter { it is DriveItem.File && isAppFile(it) }
+                FilterType.ARCHIVES -> items.filter { it is DriveItem.File && isArchiveFile(it) }
+                FilterType.DOCUMENTS -> items.filter { 
+                    it is DriveItem.File && 
+                    !it.mimeType.startsWith("image/") && 
+                    !it.mimeType.startsWith("video/") && 
+                    !it.mimeType.startsWith("audio/") && 
+                    !isAppFile(it) && 
+                    !isArchiveFile(it) 
+                }
             }
 
             val (folders, files) = filteredByType.partition { it is DriveItem.Folder }
@@ -141,12 +167,16 @@ class HomeViewModel @Inject constructor(
     }
 
     fun navigateToFolder(folderId: Long?, virtualId: String?, folderName: String?) {
-        _currentFolderId.value = null // সবসময় Saved Messages রুট থাকবে
+        _currentFolderId.value = null
         _currentVirtualFolderId.value = virtualId ?: "0"
         _currentFolderName.value = folderName
     }
 
     fun navigateBack() {
+        if (_filterType.value != FilterType.ALL) {
+            _filterType.value = FilterType.ALL
+            return
+        }
         if (_currentVirtualFolderId.value != "0") {
             val parentId = driveRepository.getParentVirtualId(_currentVirtualFolderId.value)
             val parentName = if (parentId == "0") null else driveRepository.getVirtualFolderName(parentId)
@@ -175,7 +205,6 @@ class HomeViewModel @Inject constructor(
             
             driveRepository.fetchFiles(null)
             
-            // আগের ৩ সেকেন্ডের অযথা ডিলে (delay) কমিয়ে মাত্র ৩০০ মিলিসেকেন্ড করা হলো
             kotlinx.coroutines.delay(300)
             _isSyncingMetadata.value = false
             _isInitialLoading.value = false
