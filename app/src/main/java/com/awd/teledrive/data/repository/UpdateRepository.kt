@@ -31,8 +31,8 @@ class UpdateRepository @Inject constructor(
 
     private var hasDismissedUpdate = false
 
-    // এখানে নিচের লাইনে YOUR_GITHUB_USERNAME কেটে আপনার গিটহাব ইউজারনেম লিখুন (যেমন: "Yasin-Os/teledrive")
-    private val GITHUB_REPO = "Yasin-Os/teledrive"
+    // নিচের লাইনে YOUR_GITHUB_USERNAME কেটে আপনার গিটহাব ইউজারনেম লিখুন (যেমন: "Yasin-Os/teledrive")
+    private val GITHUB_REPO = "YOUR_GITHUB_USERNAME/teledrive"
 
     private val prefs by lazy {
         context.getSharedPreferences("app_auto_update_prefs", Context.MODE_PRIVATE)
@@ -61,29 +61,17 @@ class UpdateRepository @Inject constructor(
                 val responseBody = connection.inputStream.bufferedReader().readText()
                 val latestRelease = json.decodeFromString<GitHubRelease>(responseBody)
                 
-                // শুধুমাত্র universal APK ফাইলটি ফিল্টার করা হচ্ছে যাতে ফোনে ইনস্টল হতে কখনো সমস্যা না হয়
-                val universalAssets = latestRelease.assets.filter { 
-                    it.name.contains("universal", ignoreCase = true) && it.name.endsWith(".apk", ignoreCase = true)
-                }
-                val filteredRelease = if (universalAssets.isNotEmpty()) {
-                    latestRelease.copy(assets = universalAssets)
-                } else {
-                    latestRelease
-                }
-
                 val lastKnownTag = prefs.getString("last_installed_tag", null)
 
                 if (lastKnownTag == null) {
-                    // প্রথমবার অ্যাপ চালু হলে বর্তমান রিলিজ ট্যাগটি সেভ করে রাখবে
-                    prefs.edit().putString("last_installed_tag", filteredRelease.tag_name).apply()
+                    prefs.edit().putString("last_installed_tag", latestRelease.tag_name).apply()
                     if (manual) {
-                        _updateState.value = UpdateState.NewVersionAvailable(filteredRelease)
+                        _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
                     } else {
                         _updateState.value = UpdateState.UpToDate
                     }
-                } else if (filteredRelease.tag_name != lastKnownTag || manual) {
-                    // গিটহাবে নতুন যেকোনো রিলিজ আসলেই সাথে সাথে আপডেট দেখাবে!
-                    _updateState.value = UpdateState.NewVersionAvailable(filteredRelease)
+                } else if (latestRelease.tag_name != lastKnownTag || manual) {
+                    _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
                 } else {
                     _updateState.value = UpdateState.UpToDate
                 }
@@ -100,15 +88,11 @@ class UpdateRepository @Inject constructor(
         }
     }
 
-    fun markUpdateSeen(tagName: String) {
-        prefs.edit().putString("last_installed_tag", tagName).apply()
-    }
-
     fun resetState() {
         val currentState = _updateState.value
         if (currentState is UpdateState.NewVersionAvailable) {
             hasDismissedUpdate = true
-            markUpdateSeen(currentState.release.tag_name)
+            prefs.edit().putString("last_installed_tag", currentState.release.tag_name).apply()
         }
         _updateState.value = UpdateState.Idle
     }
