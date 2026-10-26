@@ -21,6 +21,12 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Create Fixed Debug Keystore (যাতে বারবার আনইনস্টল করতে না হয়)
+        run: |
+          mkdir -p ~/.android
+          rm -f ~/.android/debug.keystore
+          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
       - name: Create local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
@@ -33,6 +39,6 @@ jobs:
       - name: Publish to Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: MyCloud v1.0.${{ github.run_number }}
-          files: app/build/outputs/apk/debug/*.apk
+          tag_name: v2.0.${{ github.run_number }}
+          name: MyCloud v2.0.${{ github.run_number }}
+          files: app/build/outputs/apk/debug/*universal*.apk
