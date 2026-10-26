@@ -1,3 +1,4 @@
+// File: app/src/main/java/com/awd/teledrive/ui/screens/settings/SettingsScreen.kt
 package com.awd.teledrive.ui.screens.settings
 
 import android.content.Context
@@ -29,14 +30,14 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -428,7 +429,7 @@ fun SettingsContent(
             )
             
             SettingsToggleRow(
-                icon = Icons.Default.DeleteSweep,
+                icon = Icons.Default.Delete,
                 title = "Delete from phone after backup",
                 subtitle = "ক্লাউডে আপলোড হওয়ার পর ফোনের মেমোরি থেকে ফাইলটি নিজে থেকেই মুছে যাবে",
                 checked = deleteAfterBackup,
@@ -572,7 +573,7 @@ fun SettingsContent(
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             SettingsCategory(title = "App Update")
             SettingsClickableRow(
-                icon = Icons.Default.SystemUpdate,
+                icon = Icons.Default.Info,
                 title = "Download Latest App Update",
                 subtitle = "লগইন অক্ষত রেখে সরাসরি নতুন আপডেট ডাউনলোড ও ইনস্টল করতে এখানে ট্যাপ করুন",
                 onClick = {
