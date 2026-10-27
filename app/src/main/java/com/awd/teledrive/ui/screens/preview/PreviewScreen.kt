@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Article
@@ -60,6 +61,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -80,13 +82,17 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.FileSharingHelper
 import com.awd.teledrive.data.model.TransferInfo
+import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.domain.model.DriveItem
+import java.io.File
+import java.util.Locale
 import kotlin.math.log10
 import kotlin.math.pow
 
@@ -114,7 +120,6 @@ fun PreviewScreen(
         val initialPage = remember { viewModel.getInitialIndex() }
         val pagerState = rememberPagerState(initialPage = initialPage) { items.size }
 
-        // Sync pager with items list to prevent jumping when list updates
         LaunchedEffect(items) {
             if (items.isNotEmpty()) {
                 val currentFileId = items.getOrNull(pagerState.currentPage)?.id
@@ -224,7 +229,6 @@ fun PreviewPager(
                         }
                     )
                     HorizontalDivider()
-
                     if (folders.isEmpty()) {
                         Text(stringResource(R.string.no_folders_found), modifier = Modifier.padding(16.dp))
                     } else {
@@ -272,13 +276,13 @@ fun PreviewPager(
                         IconButton(onClick = { isZoomEnabled = !isZoomEnabled }) {
                             Icon(
                                 imageVector = if (isZoomEnabled) Icons.Default.ZoomInMap else Icons.Default.ZoomOutMap,
-                                contentDescription = if (isZoomEnabled) "Disable Zoom" else "Enable Zoom",
+                                contentDescription = null,
                                 tint = if (isZoomEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
 
-                    if (currentFile.localPath != null) {
+                    if (currentFile.localPath != null && File(currentFile.localPath).exists()) {
                         IconButton(onClick = { 
                             onSaveToDevice(currentFile)
                             Toast.makeText(context, context.getString(R.string.save_success), Toast.LENGTH_SHORT).show()
@@ -286,7 +290,7 @@ fun PreviewPager(
                             Icon(Icons.Default.DownloadForOffline, contentDescription = stringResource(R.string.save_success))
                         }
                         IconButton(onClick = { 
-                            FileSharingHelper.shareFile(context, currentFile.localPath!!, currentFile.mimeType)
+                            FileSharingHelper.shareFile(context, currentFile.localPath, currentFile.mimeType)
                         }) {
                             Icon(Icons.Default.Share, contentDescription = stringResource(R.string.share))
                         }
@@ -309,11 +313,11 @@ fun PreviewPager(
                                 ) 
                             }
                         )
-                        if (currentFile.localPath != null) {
+                        if (currentFile.localPath != null && File(currentFile.localPath).exists()) {
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.open_with_other)) },
                                 onClick = { 
-                                    FileSharingHelper.openFileExternally(context, currentFile.localPath!!, currentFile.mimeType)
+                                    FileSharingHelper.openFileExternally(context, currentFile.localPath, currentFile.mimeType)
                                     showMenu = false 
                                 },
                                 leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, null) }
@@ -336,18 +340,14 @@ fun PreviewPager(
     ) { padding ->
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+            modifier = Modifier.fillMaxSize().padding(padding),
             userScrollEnabled = true,
             beyondViewportPageCount = 1
         ) { pageIndex ->
             val file = items[pageIndex]
             val transfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId == file.telegramFileId }
-            
-            // CRITICAL FIX: If file is encrypted, NEVER use localPath (it's scrambled bytes). 
-            // Wait until decryptedPaths has the clean file.
-            val displayPath = if (file.isEncrypted) decryptedPaths[file.id] else file.localPath
+            val validLocalPath = file.localPath?.takeIf { File(it).exists() }
+            val displayPath = if (file.isEncrypted) decryptedPaths[file.id] else validLocalPath
             
             val decrypting = isDecrypting[file.id] ?: false
             val opening = isOpening[file.id] ?: false
@@ -380,10 +380,11 @@ fun PreviewPager(
                     Text(stringResource(R.string.name_label, currentFile.name), style = MaterialTheme.typography.bodyMedium)
                     Text(stringResource(R.string.size_label, formatSize(currentFile.size)), style = MaterialTheme.typography.bodyMedium)
                     Text(stringResource(R.string.type_label, currentFile.mimeType), style = MaterialTheme.typography.bodyMedium)
+                    val isOfflineReady = currentFile.localPath != null && File(currentFile.localPath).exists()
                     Text(
                         stringResource(
                             R.string.status_label,
-                            if (currentFile.localPath != null) stringResource(R.string.available_offline) else stringResource(R.string.cloud_only)
+                            if (isOfflineReady) stringResource(R.string.available_offline) else stringResource(R.string.cloud_only)
                         ),
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -411,23 +412,28 @@ fun PreviewContent(
 ) {
     val context = LocalContext.current
     val isImage = file.mimeType.startsWith("image/")
-    
-    // Explicitly track if the media is currently being decoded/rendered by Coil
+    val isStreamableMedia = !file.isEncrypted && (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/"))
+
     var isMediaRendering by remember(displayPath) { mutableStateOf(false) }
-    
-    // Check for waiting-for-decryption state to avoid blank screen
     val isWaitingForDecryption = file.isEncrypted && file.localPath != null && displayPath == null
-    
-    val isTransferring = transfer != null && (transfer.status == com.awd.teledrive.data.repository.TransferRepository.Status.DOWNLOADING || transfer.status == com.awd.teledrive.data.repository.TransferRepository.Status.UPLOADING)
-    
-    // isLoading is true if we are transferring, decrypting, or if the image loader is still working
+    val isTransferring = transfer != null && (transfer.status == TransferRepository.Status.DOWNLOADING || transfer.status == TransferRepository.Status.UPLOADING)
     val isLoading = isTransferring || isDecrypting || isOpening || isMediaRendering || isWaitingForDecryption
     
     var scale by remember(file.id, isZoomEnabled) { mutableStateOf(1f) }
     var offset by remember(file.id, isZoomEnabled) { mutableStateOf(Offset.Zero) }
 
+    val triggerStreamOrPlay = {
+        if (displayPath != null && File(displayPath).exists()) {
+            onOpenPlayer(displayPath)
+        } else {
+            onLoadFile()
+            val streamToken = "tdstream://${file.parentChatId}|${file.id}|${file.telegramFileId}|${file.size}|${file.name}"
+            onOpenPlayer(streamToken)
+        }
+    }
+
     Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black), // Background black for focus
+        modifier = Modifier.fillMaxSize().background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -437,11 +443,7 @@ fun PreviewContent(
                     .pointerInput(file.id) {
                         detectTransformGestures { _, pan, zoom, _ ->
                             scale = (scale * zoom).coerceIn(1f, 5f)
-                            if (scale > 1f) {
-                                offset += pan
-                            } else {
-                                offset = Offset.Zero
-                            }
+                            if (scale > 1f) offset += pan else offset = Offset.Zero
                         }
                     }
             } else Modifier.padding(24.dp)
@@ -451,15 +453,9 @@ fun PreviewContent(
                 contentAlignment = Alignment.Center, 
                 modifier = if (isImage) {
                     Modifier.weight(1f).fillMaxWidth()
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = offset.x,
-                            translationY = offset.y
-                        )
+                        .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)
                 } else {
-                    Modifier.size(280.dp)
-                        .background(color.copy(alpha = 0.1f), MaterialTheme.shapes.medium)
+                    Modifier.size(280.dp).background(color.copy(alpha = 0.1f), MaterialTheme.shapes.medium)
                 }
             ) {
                 androidx.compose.animation.Crossfade(targetState = displayPath, label = "PreviewCrossfade") { path ->
@@ -477,51 +473,43 @@ fun PreviewContent(
                         val thumbnailModel = file.thumbnailPath
                         if (thumbnailModel != null) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = icon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(if (isImage) 120.dp else 160.dp),
-                                    tint = color.copy(alpha = 0.3f)
-                                )
-                                AsyncImage(
-                                    model = thumbnailModel,
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Fit
-                                )
+                                Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(if (isImage) 120.dp else 160.dp), tint = color.copy(alpha = 0.3f))
+                                AsyncImage(model = thumbnailModel, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
                             }
                         } else {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                modifier = Modifier.size(if (isImage) 120.dp else 160.dp),
-                                tint = color.copy(alpha = 0.3f)
-                            )
+                            Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(if (isImage) 120.dp else 160.dp), tint = color.copy(alpha = 0.3f))
                         }
                     }
                 }
-                
-                // Centered Loading Overlay
-                if (isLoading) {
+
+                // ভিডিও বা অডিও হলে ডাউনলোড শেষ হওয়ার আগেই মাঝখানে বড় Play বাটন দেখাবে
+                if (isStreamableMedia) {
+                    Surface(
+                        onClick = triggerStreamOrPlay,
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+                        modifier = Modifier.size(72.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = "Play Now",
+                                tint = Color.White,
+                                modifier = Modifier.size(42.dp)
+                            )
+                        }
+                    }
+                } else if (isLoading) {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator(
-                                progress = { 
-                                    if (isDecrypting || isOpening || isMediaRendering || isWaitingForDecryption) 1f else (transfer?.progress ?: 0f)
-                                },
-                                modifier = Modifier.size(if (isImage) 80.dp else 120.dp),
+                                progress = { if (isDecrypting || isOpening || isMediaRendering || isWaitingForDecryption) 1f else (transfer?.progress ?: 0f) },
+                                modifier = Modifier.size(if (isImage) 80.dp else 100.dp),
                                 strokeWidth = 6.dp,
-                                color = if (isDecrypting || isWaitingForDecryption) MaterialTheme.colorScheme.secondary 
-                                        else if (isOpening || isMediaRendering) MaterialTheme.colorScheme.tertiary 
-                                        else MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             val statusText = when {
@@ -530,11 +518,7 @@ fun PreviewContent(
                                 isTransferring -> stringResource(R.string.loading_percentage, (transfer?.progress?.times(100))?.toInt() ?: 0)
                                 else -> stringResource(R.string.loading)
                             }
-                            Text(
-                                text = statusText,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = Color.White
-                            )
+                            Text(text = statusText, style = MaterialTheme.typography.titleMedium, color = Color.White)
                         }
                     }
                 }
@@ -545,68 +529,45 @@ fun PreviewContent(
                 Text(
                     text = file.name,
                     style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
                     modifier = Modifier.padding(bottom = 8.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
                 
-                if (displayPath == null && isLoading) {
+                if (displayPath != null) {
+                    Text(
+                        text = "${file.mimeType} • Offline Ready",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF4CAF50)
+                    )
+                } else if (isLoading) {
                     Text(
                         text = if (isDecrypting) stringResource(R.string.decrypting) 
-                               else if (isOpening) stringResource(R.string.preparing_media)
                                else stringResource(R.string.loading_percentage, (transfer?.progress?.times(100))?.toInt() ?: 0),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
-                } else if (displayPath == null) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = if (file.isEncrypted && file.localPath != null) stringResource(R.string.decrypt_to_view) else stringResource(R.string.not_loaded),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedButton(
-                            onClick = onLoadFile,
-                            shape = MaterialTheme.shapes.medium
-                        ) {
-                            val buttonIcon = if (file.isEncrypted && file.localPath != null) Icons.Default.Lock else Icons.Default.CloudDownload
-                            val buttonText = if (file.isEncrypted && file.localPath != null) stringResource(R.string.decrypt) else stringResource(R.string.load_file)
-                            
-                            Icon(buttonIcon, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(buttonText)
-                        }
-                    }
-                } else {
-                    Text(
-                        text = file.mimeType,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
-                
-                Spacer(modifier = Modifier.height(48.dp))
-                
-                if (displayPath != null) {
-                    val isInternalSupported = file.mimeType.startsWith("video/") || 
-                                              file.mimeType.startsWith("audio/") || 
-                                              file.mimeType == "application/pdf" ||
-                                              file.mimeType == "text/plain"
-                    
-                    if (isInternalSupported) {
+
+                Spacer(modifier = Modifier.height(36.dp))
+
+                if (isStreamableMedia) {
+                    Button(
+                        onClick = triggerStreamOrPlay,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(if (displayPath != null) "Play Offline (PLAYit)" else "Play / Stream Now (PLAYit)")
+                    }
+                } else if (displayPath != null) {
+                    val isInternalDoc = file.mimeType == "application/pdf" || file.mimeType.startsWith("text/") || file.name.endsWith(".txt", true)
+                    if (isInternalDoc) {
                         Button(
                             onClick = {
-                                when {
-                                    file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/") -> {
-                                        onOpenPlayer(displayPath)
-                                    }
-                                    file.mimeType == "application/pdf" -> {
-                                        onOpenPdf(displayPath)
-                                    }
-                                    file.mimeType == "text/plain" -> {
-                                        onOpenText(displayPath)
-                                    }
-                                }
+                                if (file.mimeType == "application/pdf") onOpenPdf(displayPath)
+                                else onOpenText(displayPath)
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = MaterialTheme.shapes.medium
@@ -632,44 +593,15 @@ fun PreviewContent(
                             Text(stringResource(R.string.open_with_other))
                         }
                     }
-                }
-            } else if (displayPath == null) {
-                if (isLoading) {
-                    // Show floating progress for image
-                    Text(
-                        text = if (isDecrypting) stringResource(R.string.decrypting) 
-                               else if (isOpening) stringResource(R.string.preparing_media)
-                               else "${(transfer?.progress?.times(100))?.toInt()}%",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
-                } else {
+                } else if (!isLoading) {
                     OutlinedButton(
                         onClick = onLoadFile,
-                        shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.padding(bottom = 16.dp)
+                        shape = MaterialTheme.shapes.medium
                     ) {
-                        val buttonIcon = if (file.isEncrypted && file.localPath != null) Icons.Default.Lock else Icons.Default.CloudDownload
-                        val buttonText = if (file.isEncrypted && file.localPath != null) stringResource(R.string.decrypt) else stringResource(R.string.load_image)
-
-                        Icon(buttonIcon, contentDescription = null)
+                        Icon(Icons.Default.CloudDownload, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(buttonText)
+                        Text(stringResource(R.string.load_file))
                     }
-                }
-            }
-        }
-
-        if (file.isEncrypted && displayPath == null && !isLoading && file.localPath == null) {
-            Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.Lock, null, tint = Color.White, modifier = Modifier.size(48.dp))
-                    Spacer(Modifier.height(16.dp))
-                    Text(stringResource(R.string.decrypt_to_view), color = Color.White)
                 }
             }
         }
@@ -699,14 +631,8 @@ fun SplitFilePreviewPlaceholder(file: DriveItem.File) {
             Text(
                 text = stringResource(R.string.split_file_preview_desc, file.totalParts),
                 style = MaterialTheme.typography.bodyMedium,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = stringResource(R.string.download_to_view_full),
-                style = MaterialTheme.typography.bodySmall,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
         }
     }
@@ -716,7 +642,7 @@ private fun formatSize(size: Long): String {
     if (size <= 0) return "0 B"
     val units = arrayOf("B", "KB", "MB", "GB", "TB")
     val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt()
-    return String.format(java.util.Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
+    return String.format(Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
 }
 
 @Composable
