@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
+import java.io.File
 import javax.inject.Inject
 
 enum class SortOrder {
@@ -35,7 +36,7 @@ enum class FilterType {
 }
 
 enum class CustomCategory {
-    NONE, APPS, ARCHIVES, RECENTS, ALL_STORAGE
+    NONE, APPS, ARCHIVES, DOWNLOADS, RECENTS, ALL_STORAGE
 }
 
 @HiltViewModel
@@ -104,15 +105,21 @@ class HomeViewModel @Inject constructor(
         .map { list -> list.filterIsInstance<DriveItem.Folder>().filter { it.isVirtual && !it.isSecure } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // রিসেন্টের মধ্যে শুধুমাত্র প্লে করা, ডাউনলোড করা বা আপলোড করা ভিডিও এবং ফটো দেখাবে
     val recentFiles: StateFlow<List<DriveItem.File>> = combine(
         allCloudFiles,
         _recentOpenedIds
     ) { files, recentIds ->
-        if (recentIds.isEmpty()) emptyList()
-        else {
-            val fileMap = files.associateBy { it.id }
-            recentIds.mapNotNull { fileMap[it] }
+        val mediaOnly = files.filter {
+            it.mimeType.startsWith("video/") || it.mimeType.startsWith("image/")
         }
+        val mediaMap = mediaOnly.associateBy { it.id }
+
+        val playedMedia = recentIds.mapNotNull { mediaMap[it] }
+        val downloadedMedia = mediaOnly.filter { it.localPath != null && File(it.localPath).exists() }
+        val recentUploadedMedia = mediaOnly.take(15)
+
+        (playedMedia + downloadedMedia + recentUploadedMedia).distinctBy { it.id }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
@@ -136,10 +143,8 @@ class HomeViewModel @Inject constructor(
         return file.mimeType.contains("android.package-archive") || ext.endsWith(".apk") || ext.endsWith(".apks") || ext.endsWith(".xapk")
     }
 
-    private fun isArchiveFile(file: DriveItem.File): Boolean {
-        val ext = file.name.lowercase()
-        return file.mimeType.contains("zip") || file.mimeType.contains("rar") || file.mimeType.contains("7z") || file.mimeType.contains("tar") || file.mimeType.contains("gzip") ||
-               ext.endsWith(".zip") || ext.endsWith(".rar") || ext.endsWith(".7z") || ext.endsWith(".tar") || ext.endsWith(".gz")
+    private fun isDownloadedFile(file: DriveItem.File): Boolean {
+        return file.localPath != null && File(file.localPath).exists()
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -182,24 +187,32 @@ class HomeViewModel @Inject constructor(
             }
 
             if (customCat == CustomCategory.RECENTS) {
-                val fileMap = items.filterIsInstance<DriveItem.File>().associateBy { it.id }
-                val recentsList = recentIds.mapNotNull { fileMap[it] }
-                return@map if (selectedCatFolder == "ALL") recentsList else recentsList.filter { (it.virtualParentId ?: "0") == selectedCatFolder }
+                val mediaOnly = items.filterIsInstance<DriveItem.File>().filter {
+                    it.mimeType.startsWith("video/") || it.mimeType.startsWith("image/")
+                }
+                val fileMap = mediaOnly.associateBy { it.id }
+                val played = recentIds.mapNotNull { fileMap[it] }
+                val downloaded = mediaOnly.filter { isDownloadedFile(it) }
+                val combined = (played + downloaded + mediaOnly.take(15)).distinctBy { it.id }
+                return@map if (selectedCatFolder == "ALL") combined else combined.filter { (it.virtualParentId ?: "0") == selectedCatFolder }
             }
 
             val filteredByType = when {
                 customCat == CustomCategory.APPS -> items.filter { it is DriveItem.File && isAppFile(it) }
-                customCat == CustomCategory.ARCHIVES -> items.filter { it is DriveItem.File && isArchiveFile(it) }
+                customCat == CustomCategory.DOWNLOADS || customCat == CustomCategory.ARCHIVES -> {
+                    // Downloads বক্সে ডাউনলোড হওয়া সকল ডেটা দেখাবে
+                    items.filter { it is DriveItem.File && isDownloadedFile(it) }
+                }
                 filter == FilterType.PHOTOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("image/") }
                 filter == FilterType.VIDEOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("video/") }
                 filter == FilterType.AUDIO -> items.filter { it is DriveItem.File && it.mimeType.startsWith("audio/") }
                 filter == FilterType.DOCUMENTS -> items.filter { 
+                    // ভিডিও, অডিও, ফটো ও অ্যাপস ছাড়া বাকি সব (জিপ/রার সহ) Documents বক্সে দেখাবে
                     it is DriveItem.File && 
                     !it.mimeType.startsWith("image/") && 
                     !it.mimeType.startsWith("video/") && 
                     !it.mimeType.startsWith("audio/") && 
-                    !isAppFile(it) && 
-                    !isArchiveFile(it) 
+                    !isAppFile(it)
                 }
                 else -> items
             }
