@@ -35,6 +35,8 @@ class AuthRepository @Inject constructor(
     private val _codeResentMessage = MutableStateFlow<String?>(null)
     val codeResentMessage = _codeResentMessage.asStateFlow()
 
+    private var lastSubmittedPhone: String = ""
+
     private fun getApiId(): Int {
         val stored = secureSettings.getInt("api_id", 0)
         if (stored != 0) return stored
@@ -81,7 +83,9 @@ class AuthRepository @Inject constructor(
     }
 
     private fun sendTdlibParameters(apiId: Int, apiHash: String) {
-        val deviceManufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
+        val deviceManufacturer = Build.MANUFACTURER.replaceFirstChar {
+            if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString()
+        }
         val deviceModelName = "$deviceManufacturer ${Build.MODEL}".trim()
         val sysLang = Locale.getDefault().language.ifEmpty { "en" }
 
@@ -140,15 +144,8 @@ class AuthRepository @Inject constructor(
     fun setPhoneNumber(phoneNumber: String) {
         _authError.value = null
         _codeResentMessage.value = null
-        val authSettings = TdApi.PhoneNumberAuthenticationSettings(
-            false,
-            false,
-            false,
-            false,
-            null,
-            emptyArray()
-        )
-        telegramClient.send(TdApi.SetAuthenticationPhoneNumber(phoneNumber, authSettings)) { result ->
+        lastSubmittedPhone = phoneNumber
+        telegramClient.send(TdApi.SetAuthenticationPhoneNumber(phoneNumber, null)) { result ->
             if (result is TdApi.Error) {
                 _authError.value = result.message
             }
@@ -157,11 +154,13 @@ class AuthRepository @Inject constructor(
 
     fun resendAuthenticationCode() {
         _authError.value = null
-        telegramClient.send(TdApi.ResendAuthenticationCode()) { result ->
-            if (result is TdApi.Error) {
-                _authError.value = result.message
-            } else {
-                _codeResentMessage.value = "Verification code sent again"
+        if (lastSubmittedPhone.isNotEmpty()) {
+            telegramClient.send(TdApi.SetAuthenticationPhoneNumber(lastSubmittedPhone, null)) { result ->
+                if (result is TdApi.Error) {
+                    _authError.value = result.message
+                } else {
+                    _codeResentMessage.value = "Verification code sent again"
+                }
             }
         }
     }
