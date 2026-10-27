@@ -207,7 +207,7 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 
     val strokeProgress by animateFloatAsState(
         targetValue = if (drawIconPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing),
         label = "StrokeProgress"
     )
     val fillAlpha by animateFloatAsState(
@@ -216,7 +216,7 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
         label = "FillAlpha"
     )
     val iconScale by animateFloatAsState(
-        targetValue = if (fillIconPhase) 1f else 0.85f,
+        targetValue = if (fillIconPhase) 1f else 0.84f,
         animationSpec = tween(durationMillis = 550, easing = FastOutSlowInEasing),
         label = "IconScale"
     )
@@ -245,81 +245,75 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 
     LaunchedEffect(Unit) {
         drawIconPhase = true
-        delay(480)
+        delay(450)
         fillIconPhase = true
         delay(180)
         showTitlePhase = true
-        delay(220)
+        delay(200)
         showDevPhase = true
-        delay(900)
+        delay(850)
         onFinished()
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color(0xFF070B14), Color(0xFF0B1322))
-                )
-            ),
+            .background(Color(0xFF070B14)),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // নতুন প্রফেশনাল আইকন ড্রয়িং অ্যানিমেশন
             Canvas(
                 modifier = Modifier
-                    .size(106.dp)
+                    .size(104.dp)
                     .scale(iconScale)
             ) {
                 val w = size.width
                 val h = size.height
                 val s = w / 108f
 
-                // Ambient Glow
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFF00E5FF).copy(alpha = 0.25f * strokeProgress), Color.Transparent),
-                        center = Offset(w / 2f, h / 2f),
-                        radius = w * 0.55f
-                    ),
-                    radius = w * 0.55f
-                )
-
-                // Squircle Frame
-                drawRoundRect(
-                    color = Color(0xFF0F2942).copy(alpha = 0.85f * fillAlpha),
-                    topLeft = Offset(14f * s, 14f * s),
-                    size = Size(80f * s, 80f * s),
-                    cornerRadius = CornerRadius(22f * s, 22f * s)
-                )
-
+                // Vibrant Sky-Blue to Royal Sapphire Squircle Card
                 drawRoundRect(
                     brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color(0xFF00F2FE).copy(alpha = strokeProgress),
-                            Color(0xFF0284C7).copy(alpha = 0.4f * strokeProgress)
-                        )
+                        colors = listOf(Color(0xFF00D2FF), Color(0xFF0078FF), Color(0xFF0038A8)),
+                        start = Offset(12f * s, 10f * s),
+                        end = Offset(96f * s, 98f * s)
                     ),
-                    topLeft = Offset(14f * s, 14f * s),
-                    size = Size(80f * s, 80f * s),
-                    cornerRadius = CornerRadius(22f * s, 22f * s),
-                    style = Stroke(width = 2.2f * s)
+                    cornerRadius = CornerRadius(26f * s, 26f * s),
+                    size = Size(w, h),
+                    alpha = 0.2f + (0.8f * fillAlpha)
                 )
 
-                // Main Cloud Path
+                // Back 3D Glass Cloud Layer
+                if (fillAlpha > 0f) {
+                    val backCloud = Path().apply {
+                        moveTo(42f * s, 64f * s)
+                        lineTo(80f * s, 64f * s)
+                        cubicTo(86f * s, 64f * s, 91f * s, 59f * s, 91f * s, 52.5f * s)
+                        cubicTo(91f * s, 46.5f * s, 86.5f * s, 41.5f * s, 80.5f * s, 41f * s)
+                        cubicTo(78.5f * s, 32f * s, 70.5f * s, 25.5f * s, 61f * s, 25.5f * s)
+                        cubicTo(51.5f * s, 25.5f * s, 43.5f * s, 32f * s, 41.5f * s, 41f * s)
+                        close()
+                    }
+                    drawPath(
+                        path = backCloud,
+                        color = Color.White.copy(alpha = 0.38f * fillAlpha)
+                    )
+                }
+
+                // Main Large Sculpted Cloud Path
                 val cloudPath = Path().apply {
-                    moveTo(39.5f * s, 67f * s)
-                    lineTo(68.8f * s, 67f * s)
-                    cubicTo(73.9f * s, 67f * s, 78f * s, 62.9f * s, 78f * s, 57.8f * s)
-                    cubicTo(78f * s, 52.9f * s, 74.3f * s, 48.9f * s, 69.5f * s, 48.5f * s)
-                    cubicTo(68f * s, 41.2f * s, 61.5f * s, 36f * s, 53.8f * s, 36f * s)
-                    cubicTo(46.8f * s, 36f * s, 40.8f * s, 40.3f * s, 38.4f * s, 46.4f * s)
-                    cubicTo(33.6f * s, 47.2f * s, 30f * s, 51.4f * s, 30f * s, 56.5f * s)
-                    cubicTo(30f * s, 62.3f * s, 34.7f * s, 67f * s, 39.5f * s, 67f * s)
+                    moveTo(31f * s, 75.5f * s)
+                    lineTo(77f * s, 75.5f * s)
+                    cubicTo(84.5f * s, 75.5f * s, 90.5f * s, 69.5f * s, 90.5f * s, 62f * s)
+                    cubicTo(90.5f * s, 55.2f * s, 85.5f * s, 49.6f * s, 78.8f * s, 48.7f * s)
+                    cubicTo(78.2f * s, 41.5f * s, 72.3f * s, 36.0f * s, 65.2f * s, 36.3f * s)
+                    cubicTo(61.5f * s, 28.2f * s, 53.3f * s, 22.8f * s, 43.8f * s, 22.8f * s)
+                    cubicTo(31.5f * s, 22.8f * s, 21.8f * s, 32.0f * s, 21.2f * s, 43.8f * s)
+                    cubicTo(15.2f * s, 45.8f * s, 11.0f * s, 51.5f * s, 11.0f * s, 58.2f * s)
+                    cubicTo(11.0f * s, 67.8f * s, 19.5f * s, 75.5f * s, 31f * s, 75.5f * s)
                     close()
                 }
 
@@ -330,8 +324,8 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 
                 drawPath(
                     path = partialCloud,
-                    color = Color(0xFF00F2FE),
-                    style = Stroke(width = 3.2f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    color = Color.White,
+                    style = Stroke(width = 3.5f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
 
                 if (fillAlpha > 0f) {
@@ -340,35 +334,15 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
                         brush = Brush.verticalGradient(
                             colors = listOf(
                                 Color.White.copy(alpha = fillAlpha),
-                                Color(0xFFDFF6FF).copy(alpha = fillAlpha)
+                                Color(0xFFD6EEFF).copy(alpha = fillAlpha)
                             )
                         )
-                    )
-
-                    // Minimalist Upward Chevron inside Cloud
-                    val chevron = Path().apply {
-                        moveTo(47.5f * s, 54.5f * s)
-                        lineTo(54f * s, 48f * s)
-                        lineTo(60.5f * s, 54.5f * s)
-                    }
-                    drawPath(
-                        path = chevron,
-                        color = Color(0xFF0284C7).copy(alpha = fillAlpha),
-                        style = Stroke(width = 3.4f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                    )
-                    drawLine(
-                        color = Color(0xFF0284C7).copy(alpha = fillAlpha),
-                        start = Offset(54f * s, 48.5f * s),
-                        end = Offset(54f * s, 61.5f * s),
-                        strokeWidth = 3.4f * s,
-                        cap = StrokeCap.Round
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(22.dp))
 
-            // অ্যাপের নাম সুন্দর ক্লিন ফন্টে
             Text(
                 text = stringResource(R.string.app_name),
                 color = Color.White,
@@ -382,10 +356,9 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // অ্যাপ নামের ঠিক নিচেই ডেভেলপারের নাম সুন্দর অ্যানিমেশনে
             Text(
                 text = "Developer: Yasin Adnan",
-                color = Color(0xFF38BDF8).copy(alpha = 0.85f),
+                color = Color(0xFF38BDF8).copy(alpha = 0.9f),
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 0.8.sp,
