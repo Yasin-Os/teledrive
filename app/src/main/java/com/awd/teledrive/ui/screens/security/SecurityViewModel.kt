@@ -17,9 +17,14 @@ class SecurityViewModel @Inject constructor(
     private val secureSessionManager: SecureSessionManager
 ) : ViewModel() {
 
-    private val _isPasswordSet = MutableStateFlow(masterPasswordService.isPasswordSet())
+    private val SAFE_FOLDER_PASS_KEY = "safe_folder_separate_password"
+
+    private val _isPasswordSet = MutableStateFlow(
+        !secureSettings.getString(SAFE_FOLDER_PASS_KEY).isNullOrEmpty() || masterPasswordService.isPasswordSet()
+    )
     val isPasswordSet = _isPasswordSet.asStateFlow()
 
+    // এটি শুধুমাত্র পুরো অ্যাপ লক করার সুইচ (Safe Folder-এর সাথে এটি চালু হবে না)
     private val _isSecurityEnabled = MutableStateFlow(secureSettings.isSecurityEnabled())
     val isSecurityEnabled = _isSecurityEnabled.asStateFlow()
 
@@ -29,35 +34,40 @@ class SecurityViewModel @Inject constructor(
     private val _isLocked = MutableStateFlow(false)
     val isLocked = _isLocked.asStateFlow()
 
-    fun setSecurityEnabled(enabled: Boolean) {
-        if (enabled && !_isPasswordSet.value) {
-            // Requirement: If enabling and no password, trigger set password flow
-            // This is a UI state trigger usually, but we update the preference
-            // and the UI should react to !isPasswordSet
-        }
-        secureSettings.setSecurityEnabled(enabled)
-        _isSecurityEnabled.value = enabled
-    }
-
-    fun setLocked(locked: Boolean) {
-        if (_isSecurityEnabled.value && _isPasswordSet.value) {
-            _isLocked.value = locked
-            if (locked) {
-                secureSessionManager.clearSession()
-            }
-        }
-    }
-
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
 
+    fun setSecurityEnabled(enabled: Boolean) {
+        secureSettings.setSecurityEnabled(enabled)
+        _isSecurityEnabled.value = enabled
+        if (!enabled) {
+            _isLocked.value = false
+        }
+    }
+
+    fun setLocked(locked: Boolean) {
+        // শুধুমাত্র সেটিংসে পুরো অ্যাপ লক (Master Password) চালু থাকলেই অ্যাপ লক হবে
+        if (_isSecurityEnabled.value && masterPasswordService.isPasswordSet()) {
+            _isLocked.value = locked
+        }
+    }
+
     fun unlockSecureMode(password: String): Boolean {
-        return if (masterPasswordService.verifyPassword(password)) {
+        val savedSafePass = secureSettings.getString(SAFE_FOLDER_PASS_KEY)
+        val isMatch = if (!savedSafePass.isNullOrEmpty()) {
+            savedSafePass == password
+        } else {
+            masterPasswordService.verifyPassword(password)
+        }
+
+        return if (isMatch) {
+            secureSettings.saveString(SAFE_FOLDER_PASS_KEY, password)
             secureSessionManager.setSessionPassword(password)
-            // Ensure raw password is saved for future biometric use
-            masterPasswordService.setPassword(password) 
+            _isPasswordSet.value = true
             true
-        } else false
+        } else {
+            false
+        }
     }
 
     fun lockSecureMode() {
@@ -65,19 +75,20 @@ class SecurityViewModel @Inject constructor(
     }
 
     fun unlockWithBiometric(): Boolean {
-        val storedPassword = masterPasswordService.getStoredPassword()
-        return if (storedPassword != null) {
-            secureSessionManager.setSessionPassword(storedPassword)
+        val savedSafePass = secureSettings.getString(SAFE_FOLDER_PASS_KEY) ?: masterPasswordService.getStoredPassword()
+        return if (!savedSafePass.isNullOrEmpty()) {
+            secureSessionManager.setSessionPassword(savedSafePass)
             true
         } else false
     }
 
     val isSecureModeActive = secureSessionManager.decryptedPassword.map { it != null }
 
+    // Safe Folder বা পাসওয়ার্ড সেট করলে পুরো অ্যাপ লক (setSecurityEnabled) চালু হবে না
     fun setPassword(password: String) {
+        secureSettings.saveString(SAFE_FOLDER_PASS_KEY, password)
         masterPasswordService.setPassword(password)
         _isPasswordSet.value = true
-        setSecurityEnabled(true)
     }
 
     fun setBiometricEnabled(enabled: Boolean) {
@@ -86,14 +97,13 @@ class SecurityViewModel @Inject constructor(
     }
 
     fun verifyPassword(password: String): Boolean {
-        val isValid = masterPasswordService.verifyPassword(password)
+        val isValid = masterPasswordService.verifyPassword(password) ||
+                      secureSettings.getString(SAFE_FOLDER_PASS_KEY) == password
         if (!isValid) {
             _error.value = "Incorrect password"
         } else {
             _error.value = null
             _isLocked.value = false
-            // Re-save to ensure biometric has access to the raw key
-            masterPasswordService.setPassword(password)
         }
         return isValid
     }
