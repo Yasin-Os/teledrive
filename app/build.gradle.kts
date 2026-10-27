@@ -11,14 +11,30 @@ android {
     compileSdk = 37
 
     signingConfigs {
+        getByName("debug") {
+            val fixedKeystore = rootProject.file("fixed-debug.keystore")
+            if (fixedKeystore.exists()) {
+                storeFile = fixedKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         create("release") {
-            // Membaca dari Environment Variables yang disiapkan oleh GitHub Actions
             val keystorePath = System.getenv("KEYSTORE_PATH")
             if (keystorePath != null && file(keystorePath).exists()) {
                 storeFile = file(keystorePath)
                 storePassword = System.getenv("KEY_STORE_PASSWORD")
                 keyAlias = System.getenv("ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
+            } else {
+                val fixedKeystore = rootProject.file("fixed-debug.keystore")
+                if (fixedKeystore.exists()) {
+                    storeFile = fixedKeystore
+                    storePassword = "android"
+                    keyAlias = "androiddebugkey"
+                    keyPassword = "android"
+                }
             }
         }
     }
@@ -32,7 +48,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Hanya sertakan arsitektur yang umum digunakan untuk mengurangi ukuran APK
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
         }
@@ -48,18 +63,19 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             
-            // Gunakan konfigurasi signing release jika tersedia dan valid
             val releaseSigning = signingConfigs.findByName("release")
             if (releaseSigning != null && releaseSigning.storeFile != null) {
                 signingConfig = releaseSigning
             }
 
-            // Tambahkan optimasi tambahan
             ndk {
                 debugSymbolLevel = "none"
             }
@@ -89,7 +105,6 @@ android {
     }
 }
 
-// Kustomisasi Nama APK Output
 androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
@@ -121,33 +136,26 @@ dependencies {
     kapt(libs.hilt.compiler)
     implementation(libs.androidx.hilt.navigation.compose)
 
-    // Telegram and Security
     implementation(libs.tdlibx)
     implementation(libs.lazysodium.android)
     implementation(libs.jna)
 
-    // Media & Image
     implementation(libs.coilCompose)
     implementation(libs.coilVideo)
     implementation(libs.media3Exoplayer)
     implementation(libs.media3Ui)
 
-    // Room & SQLite
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     kapt(libs.androidx.room.compiler)
     implementation(libs.sqlcipher)
 
-    // Security & Crypto
     implementation(libs.androidx.security.crypto)
     implementation(libs.argon2kt)
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.documentfile)
 
-    // WorkManager
     implementation(libs.androidx.work.runtime.ktx)
-
-    // Kotlin Serialization
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
@@ -158,4 +166,3 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
-
