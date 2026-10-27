@@ -12,6 +12,7 @@ import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.data.secure.SecureSettings
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -301,7 +302,7 @@ class HomeViewModel @Inject constructor(
             
             driveRepository.fetchFiles(null)
             
-            kotlinx.coroutines.delay(300)
+            delay(300)
             _isSyncingMetadata.value = false
             _isInitialLoading.value = false
             _isRefreshing.value = false
@@ -349,6 +350,14 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun pauseTransfer(uniqueId: String) {
+        transferRepository.pauseTransfer(uniqueId)
+    }
+
+    fun resumeTransfer(uniqueId: String) {
+        transferRepository.resumeTransfer(uniqueId)
+    }
+
     fun cancelTransfer(uniqueId: String) {
         transferRepository.cancelTransfer(uniqueId)
     }
@@ -359,6 +368,10 @@ class HomeViewModel @Inject constructor(
 
     fun clearCompletedTransfers() {
         transferRepository.clearCompleted()
+    }
+
+    fun saveAsPhone(localPath: String, fileName: String) {
+        transferRepository.saveToPublicDownloads(localPath, fileName)
     }
 
     fun getFolderInviteLink(chatId: Long, onResult: (String?) -> Unit) {
