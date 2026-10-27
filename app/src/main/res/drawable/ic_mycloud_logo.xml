@@ -1,0 +1,50 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Background Gradient Squircle -->
+    <path
+        android:pathData="M24,0L84,0A24,24 0,0 1,108 24L108,84A24,24 0,0 1,84 108L24,108A24,24 0,0 1,0 84L0,24A24,24 0,0 1,24 0z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF0F172A" />
+                <item android:offset="0.5" android:color="#FF0284C7" />
+                <item android:offset="1.0" android:color="#FF38BDF8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle Inner Glow Circle -->
+    <path
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0"
+        android:fillColor="#1AFFFFFF" />
+
+    <!-- Main White Cloud Shape -->
+    <path
+        android:pathData="M74.5,46.2C72.8,35.9 63.9,28 53,28C43.9,28 36.1,33.6 32.9,41.5C25.6,42.5 20,48.8 20,56.5C20,65.1 26.9,72 35.5,72L73.5,72C80.4,72 86,66.4 86,59.5C86,52.8 81,47.2 74.5,46.2Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- Cloud Upload / Sync Arrow Emblem (Gradient Cutout) -->
+    <path
+        android:pathData="M54,42L43,53H49.5V65H58.5V53H65L54,42Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="54"
+                android:startY="42"
+                android:endX="54"
+                android:endY="65"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF0284C7" />
+                <item android:offset="1.0" android:color="#FF0F172A" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
