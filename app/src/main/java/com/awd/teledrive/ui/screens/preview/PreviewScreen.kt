@@ -64,7 +64,6 @@ import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -99,6 +98,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -234,7 +234,6 @@ fun PreviewPager(
     val validLocalPath = editedOverridePath ?: currentFile.localPath?.takeIf { File(it).exists() }
     val currentDisplayPath = if (currentFile.isEncrypted) (editedOverridePath ?: decryptedPaths[currentFile.id]) else validLocalPath
 
-    // বিল্ট-ইন ফটো ক্রপ ও এডিটর চালু থাকলে সেটি দেখাবে
     if (editingImagePath != null) {
         PhotoEditorScreen(
             imagePath = editingImagePath!!,
@@ -316,7 +315,6 @@ fun PreviewPager(
             }
         }
 
-        // উপরের গ্যালারি বার
         AnimatedVisibility(
             visible = showGalleryBars,
             enter = fadeIn(),
@@ -358,7 +356,6 @@ fun PreviewPager(
             }
         }
 
-        // নিচের ফোনের গ্যালারি স্টাইল অ্যাকশন টুলবার (Share, Edit/Crop, Star, Save, Delete)
         AnimatedVisibility(
             visible = showGalleryBars,
             enter = fadeIn(),
@@ -457,7 +454,6 @@ private fun GalleryActionButton(
     }
 }
 
-// বিল্ট-ইন ফটো ক্রপ ও বেসিক এডিটর স্ক্রিন
 @Composable
 fun PhotoEditorScreen(
     imagePath: String,
@@ -472,17 +468,16 @@ fun PhotoEditorScreen(
         BitmapFactory.decodeFile(imagePath)
     }
 
-    var activeTab by remember { mutableIntStateOf(0) } // 0=Crop, 1=Adjust, 2=Filters
+    var activeTab by remember { mutableIntStateOf(0) }
     var rotationDegrees by remember { mutableFloatStateOf(0f) }
     var flipHorizontal by remember { mutableStateOf(false) }
 
-    var brightness by remember { mutableFloatStateOf(0f) } // -100..100
-    var contrast by remember { mutableFloatStateOf(1f) }   // 0.5..1.8
-    var saturation by remember { mutableFloatStateOf(1f) } // 0..2
+    var brightness by remember { mutableFloatStateOf(0f) }
+    var contrast by remember { mutableFloatStateOf(1f) }
+    var saturation by remember { mutableFloatStateOf(1f) }
 
     var selectedFilter by remember { mutableStateOf("Original") }
 
-    // নরমালাইজড ক্রপ বক্স (0f..1f)
     var cropLeft by remember { mutableFloatStateOf(0.05f) }
     var cropTop by remember { mutableFloatStateOf(0.05f) }
     var cropRight by remember { mutableFloatStateOf(0.95f) }
@@ -516,7 +511,6 @@ fun PhotoEditorScreen(
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // Top Editor Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -559,7 +553,6 @@ fun PhotoEditorScreen(
             }
         }
 
-        // Image Preview + Interactive Crop Box
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -614,7 +607,6 @@ fun PhotoEditorScreen(
                     val rectW = rightPx - leftPx
                     val rectH = bottomPx - topPx
 
-                    // Crop Frame Border
                     drawRect(
                         color = Color(0xFF00E5FF),
                         topLeft = Offset(leftPx, topPx),
@@ -622,7 +614,6 @@ fun PhotoEditorScreen(
                         style = Stroke(width = 2.5.dp.toPx())
                     )
 
-                    // Rule of Thirds Grid Lines
                     drawLine(
                         color = Color.White.copy(alpha = 0.4f),
                         start = Offset(leftPx + rectW / 3f, topPx),
@@ -648,7 +639,6 @@ fun PhotoEditorScreen(
                         strokeWidth = 1.dp.toPx()
                     )
 
-                    // 4 Corner Handles
                     val r = 6.dp.toPx()
                     drawCircle(Color.White, r, Offset(leftPx, topPx))
                     drawCircle(Color.White, r, Offset(rightPx, topPx))
@@ -658,7 +648,6 @@ fun PhotoEditorScreen(
             }
         }
 
-        // Editor Controls Area
         Surface(
             color = Color(0xFF141923),
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
@@ -667,7 +656,6 @@ fun PhotoEditorScreen(
             Column(modifier = Modifier.padding(16.dp)) {
                 when (activeTab) {
                     0 -> {
-                        // Crop & Rotate Tools
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly
@@ -711,7 +699,6 @@ fun PhotoEditorScreen(
                         }
                     }
                     1 -> {
-                        // Brightness, Contrast, Saturation Sliders
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("Brightness", color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
@@ -743,7 +730,6 @@ fun PhotoEditorScreen(
                         }
                     }
                     2 -> {
-                        // Color Filters
                         val filters = listOf("Original", "Vivid", "Warm", "Cool", "B&W")
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -763,7 +749,6 @@ fun PhotoEditorScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Bottom Mode Selector Tabs
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
