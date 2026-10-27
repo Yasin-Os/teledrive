@@ -11,6 +11,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -738,16 +739,8 @@ private fun SettingsSectionBar(
     }
 }
 
-@Composable
 private fun Modifier.ClickableOrStaticBg(color: Color): Modifier {
-    return this.then(
-        Modifier.drawWithCacheOrBg(color)
-    )
-}
-
-@Composable
-private fun Modifier.drawWithCacheOrBg(color: Color): Modifier {
-    return androidx.compose.foundation.background(color, CircleShape)
+    return this.background(color, CircleShape)
 }
 
 @Composable
