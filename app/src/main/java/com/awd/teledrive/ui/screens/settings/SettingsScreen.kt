@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -33,14 +34,15 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SystemUpdate
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -51,6 +53,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -70,6 +73,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
@@ -86,6 +91,7 @@ data class SettingsUiState(
     val isDarkMode: Boolean,
     val themeColor: Color,
     val isSecurityEnabled: Boolean,
+    val isAppPinSet: Boolean,
     val isBiometricEnabled: Boolean,
     val totalStorageUsed: Long,
     val internalCacheSize: Long,
@@ -117,6 +123,7 @@ fun SettingsScreen(
     val isDarkMode by themeViewModel.isDarkMode.collectAsState()
     val themeColor by themeViewModel.themeColor.collectAsState()
     val isSecurityEnabled by securityViewModel.isSecurityEnabled.collectAsState()
+    val isAppPinSet by securityViewModel.isPasswordSet.collectAsState()
     val isBiometricEnabled by securityViewModel.isBiometricEnabled.collectAsState()
     val totalStorageUsed by homeViewModel.totalStorageUsed.collectAsState()
     val internalCacheSize by viewModel.internalCacheSize.collectAsState()
@@ -148,6 +155,7 @@ fun SettingsScreen(
         isDarkMode = isDarkMode ?: isSystemInDarkTheme(),
         themeColor = themeColor,
         isSecurityEnabled = isSecurityEnabled,
+        isAppPinSet = isAppPinSet,
         isBiometricEnabled = isBiometricEnabled,
         totalStorageUsed = totalStorageUsed,
         internalCacheSize = internalCacheSize,
@@ -184,6 +192,8 @@ fun SettingsScreen(
         onSetDarkMode = { themeViewModel.setDarkMode(it) },
         onSetThemeColor = { themeViewModel.setThemeColor(it) },
         onSetSecurityEnabled = { securityViewModel.setSecurityEnabled(it) },
+        onCreateAppPin = { pin -> securityViewModel.setPassword(pin) },
+        onChangeAppPin = { oldPin, newPin -> securityViewModel.changeAppLockPin(oldPin, newPin) },
         onSetBiometricEnabled = { securityViewModel.setBiometricEnabled(it) },
         onSetAutoBackupEnabled = { backupViewModel.setAutoBackupEnabled(it) },
         onSetBackupWifiOnly = { backupViewModel.setBackupWifiOnly(it) },
@@ -211,6 +221,8 @@ fun SettingsContent(
     onSetDarkMode: (Boolean) -> Unit,
     onSetThemeColor: (Color) -> Unit,
     onSetSecurityEnabled: (Boolean) -> Unit,
+    onCreateAppPin: (String) -> Unit,
+    onChangeAppPin: (String, String) -> Boolean,
     onSetBiometricEnabled: (Boolean) -> Unit,
     onSetAutoBackupEnabled: (Boolean) -> Unit,
     onSetBackupWifiOnly: (Boolean) -> Unit,
@@ -221,7 +233,8 @@ fun SettingsContent(
     onSetThumbnailAutoDownload: (Boolean) -> Unit,
     onCheckForUpdates: () -> Unit
 ) {
-    var showSetPasswordConfirm by remember { mutableStateOf(false) }
+    var showCreateAppPinDialog by remember { mutableStateOf(false) }
+    var showChangeAppPinDialog by remember { mutableStateOf(false) }
     var showCacheSizeDialog by remember { mutableStateOf(false) }
     var showCacheAgeDialog by remember { mutableStateOf(false) }
 
@@ -242,25 +255,119 @@ fun SettingsContent(
         }
     }
 
-    if (showSetPasswordConfirm) {
+    // প্রথমবার অ্যাপ লক চালু করার সময় ৪ সংখ্যার পিন তৈরি ডায়ালগ
+    if (showCreateAppPinDialog) {
+        var newPin by remember { mutableStateOf("") }
+        var confirmPin by remember { mutableStateOf("") }
+        var err by remember { mutableStateOf<String?>(null) }
+
         AlertDialog(
-            onDismissRequest = { showSetPasswordConfirm = false },
-            title = { Text(stringResource(R.string.set_password_title)) },
-            text = { Text(stringResource(R.string.set_password_message)) },
+            onDismissRequest = { showCreateAppPinDialog = false },
+            title = { Text("Set 4-Digit App PIN") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = newPin,
+                        onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(4); err = null },
+                        label = { Text("Enter 4-Digit PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = confirmPin,
+                        onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(4); err = null },
+                        label = { Text("Confirm 4-Digit PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        isError = err != null,
+                        supportingText = err?.let { { Text(it) } },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
             confirmButton = {
-                TextButton(onClick = {
-                    showSetPasswordConfirm = false
-                    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                    intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                    (context as? android.app.Activity)?.finish()
-                }) { Text(stringResource(R.string.confirm)) }
+                Button(onClick = {
+                    if (newPin.length != 4) {
+                        err = "PIN must be 4 digits"
+                    } else if (newPin != confirmPin) {
+                        err = "PIN did not match"
+                    } else {
+                        onCreateAppPin(newPin)
+                        showCreateAppPinDialog = false
+                        Toast.makeText(context, "App PIN Lock enabled", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Save PIN") }
             },
             dismissButton = {
-                TextButton(onClick = { 
-                    showSetPasswordConfirm = false
-                    onSetSecurityEnabled(false) 
-                }) { Text(stringResource(R.string.cancel)) }
+                TextButton(onClick = { showCreateAppPinDialog = false }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
+
+    // অ্যাপ লক পিন পরিবর্তন করার ডায়ালগ
+    if (showChangeAppPinDialog) {
+        var oldPin by remember { mutableStateOf("") }
+        var newPin by remember { mutableStateOf("") }
+        var confirmPin by remember { mutableStateOf("") }
+        var err by remember { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { showChangeAppPinDialog = false },
+            title = { Text("Change App Lock PIN") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (uiState.isAppPinSet) {
+                        OutlinedTextField(
+                            value = oldPin,
+                            onValueChange = { oldPin = it.filter { c -> c.isDigit() }.take(4); err = null },
+                            label = { Text("Current 4-Digit PIN") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    OutlinedTextField(
+                        value = newPin,
+                        onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(4); err = null },
+                        label = { Text("New 4-Digit PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = confirmPin,
+                        onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(4); err = null },
+                        label = { Text("Confirm New PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        isError = err != null,
+                        supportingText = err?.let { { Text(it) } },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newPin.length != 4) {
+                        err = "New PIN must be 4 digits"
+                    } else if (newPin != confirmPin) {
+                        err = "New PIN did not match"
+                    } else if (onChangeAppPin(oldPin, newPin)) {
+                        showChangeAppPinDialog = false
+                        Toast.makeText(context, "App Lock PIN updated", Toast.LENGTH_SHORT).show()
+                    } else {
+                        err = "Current PIN is incorrect"
+                    }
+                }) { Text("Update PIN") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showChangeAppPinDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
         )
     }
@@ -424,7 +531,7 @@ fun SettingsContent(
             SettingsToggleRow(
                 icon = Icons.Default.Folder,
                 title = stringResource(R.string.auto_backup),
-                subtitle = if (isBackupWifiOnly && uiState.isAutoBackupEnabled) stringResource(R.string.waiting_for_wifi) else "Automatically sync selected folders to cloud",
+                subtitle = "Automatically sync selected folders to cloud",
                 checked = uiState.isAutoBackupEnabled,
                 onCheckedChange = onSetAutoBackupEnabled
             )
@@ -498,21 +605,40 @@ fun SettingsContent(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             SettingsCategory(title = stringResource(R.string.security))
+            
+            // পুরো অ্যাপ লক করার পিন সুইচ (Safe Folder থেকে আলাদা)
             SettingsToggleRow(
-                icon = Icons.Default.VpnKey,
-                title = stringResource(R.string.master_password),
-                subtitle = stringResource(R.string.require_password),
+                icon = Icons.Default.Lock,
+                title = "App PIN Lock",
+                subtitle = "Require 4-digit PIN to open MyCloud",
                 checked = uiState.isSecurityEnabled,
                 onCheckedChange = { enabled ->
-                    if (enabled && !uiState.isSecurityEnabled) {
-                        showSetPasswordConfirm = true
+                    if (enabled && !uiState.isAppPinSet) {
+                        showCreateAppPinDialog = true
+                    } else {
+                        onSetSecurityEnabled(enabled)
                     }
-                    onSetSecurityEnabled(enabled)
                 }
             )
+
+            // অ্যাপ লক পিন পরিবর্তন করার অপশন
+            SettingsClickableRow(
+                icon = Icons.Default.Edit,
+                title = "Change App Lock PIN",
+                subtitle = if (uiState.isAppPinSet) "Update your 4-digit app lock PIN" else "Set a 4-digit app lock PIN",
+                onClick = {
+                    if (!uiState.isAppPinSet) {
+                        showCreateAppPinDialog = true
+                    } else {
+                        showChangeAppPinDialog = true
+                    }
+                }
+            )
+
             SettingsToggleRow(
                 icon = Icons.Default.Fingerprint,
                 title = stringResource(R.string.biometric_unlock),
+                subtitle = "Use fingerprint to unlock MyCloud app",
                 checked = uiState.isBiometricEnabled,
                 enabled = uiState.isSecurityEnabled,
                 onCheckedChange = onSetBiometricEnabled
@@ -572,7 +698,6 @@ fun SettingsContent(
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             SettingsCategory(title = "App Update")
 
-            // নতুন প্রফেশনাল ইন-অ্যাপ আপডেট কার্ড (ব্রাউজারে না গিয়ে অ্যাপের ভেতরেই আপডেট হবে)
             Surface(
                 onClick = onCheckForUpdates,
                 shape = RoundedCornerShape(16.dp),
@@ -635,7 +760,6 @@ fun SettingsContent(
                 modifier = Modifier.clickable { showLogoutConfirm = true }
             )
 
-            // সেটিংসের শেষের দিকে কপিরাইট স্বত্বাধিকার
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
