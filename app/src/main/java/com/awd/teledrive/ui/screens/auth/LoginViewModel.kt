@@ -34,6 +34,11 @@ class LoginViewModel @Inject constructor(
     private val _isProcessing = MutableStateFlow(false)
     val isProcessing = _isProcessing.asStateFlow()
 
+    private val _submittedPhone = MutableStateFlow("")
+    val submittedPhone = _submittedPhone.asStateFlow()
+
+    val codeResentMessage: StateFlow<String?> = authRepository.codeResentMessage
+
     val authError: StateFlow<String?> = authRepository.authError
         .map { error ->
             if (error.isNullOrEmpty()) null else mapTechnicalError(error)
@@ -49,7 +54,7 @@ class LoginViewModel @Inject constructor(
             error.contains("FLOOD_WAIT", ignoreCase = true) -> context.getString(R.string.err_flood_wait)
             error.contains("API_ID_INVALID", ignoreCase = true) || error.contains("API_HASH_INVALID", ignoreCase = true) -> context.getString(R.string.err_api_invalid)
             error.contains("Connection error", ignoreCase = true) -> context.getString(R.string.err_connection)
-            else -> context.getString(R.string.err_unknown, error)
+            else -> error
         }
     }
 
@@ -62,8 +67,6 @@ class LoginViewModel @Inject constructor(
                 is TdApi.AuthorizationStateWaitPassword -> LoginUiState.EnteringPassword
                 is TdApi.AuthorizationStateReady -> LoginUiState.Success
                 null -> {
-                    // Jika state belum ada, cek apakah API sudah siap. 
-                    // Jika belum, jangan loading, langsung tampilkan setup.
                     if (!authRepository.isApiConfigured()) LoginUiState.InitialSetup
                     else LoginUiState.Loading
                 }
@@ -75,7 +78,6 @@ class LoginViewModel @Inject constructor(
     private var pendingPhoneNumber: String? = null
 
     init {
-        // Watch for state changes to auto-submit phone number after API success
         viewModelScope.launch {
             authRepository.authState.collect { state ->
                 if (state is TdApi.AuthorizationStateWaitPhoneNumber && pendingPhoneNumber != null) {
@@ -83,13 +85,12 @@ class LoginViewModel @Inject constructor(
                     pendingPhoneNumber = null
                     authRepository.setPhoneNumber(phone)
                 }
-                if (state is TdApi.AuthorizationStateWaitCode) {
+                if (state is TdApi.AuthorizationStateWaitCode || state is TdApi.AuthorizationStateWaitPassword || state is TdApi.AuthorizationStateReady) {
                     _isProcessing.value = false
                 }
             }
         }
 
-        // Watch for errors to stop loading
         viewModelScope.launch {
             authRepository.authError.collect { error ->
                 if (error != null) {
@@ -112,24 +113,36 @@ class LoginViewModel @Inject constructor(
             return
         }
 
-        if (apiHash.trim().length < 10) {
-            authRepository.setLocalError(context.getString(R.string.err_api_invalid))
-            return
-        }
-
         _isProcessing.value = true
         val phone = phoneNumber.trim()
+        _submittedPhone.value = phone
         pendingPhoneNumber = phone
         
         val currentState = authRepository.authState.value
-        if (currentState is TdApi.AuthorizationStateWaitPhoneNumber) {
-            // If already in WaitPhoneNumber, submit phone directly
+        if (currentState is TdApi.AuthorizationStateWaitPhoneNumber || currentState is TdApi.AuthorizationStateWaitCode) {
             pendingPhoneNumber = null
             authRepository.setPhoneNumber(phone)
         } else {
-            // Otherwise, save API credentials and wait for state update
             authRepository.saveApiCredentials(id, apiHash.trim())
         }
+    }
+
+    fun onBackToPhoneInput() {
+        _isProcessing.value = false
+        pendingPhoneNumber = null
+        authRepository.returnToPhoneInput()
+    }
+
+    fun onResendCode() {
+        val phone = _submittedPhone.value
+        authRepository.resendAuthenticationCode()
+        if (phone.isNotEmpty() && authRepository.authError.value != null) {
+            authRepository.setPhoneNumber(phone)
+        }
+    }
+
+    fun clearResentMessage() {
+        authRepository.clearResentMessage()
     }
 
     fun onResetApi() {
@@ -139,10 +152,14 @@ class LoginViewModel @Inject constructor(
     }
 
     fun onCodeSubmit(code: String) {
-        authRepository.checkAuthenticationCode(code)
+        if (code.isBlank()) return
+        _isProcessing.value = true
+        authRepository.checkAuthenticationCode(code.trim())
     }
 
     fun onPasswordSubmit(password: String) {
+        if (password.isBlank()) return
+        _isProcessing.value = true
         authRepository.checkPassword(password)
     }
 }
