@@ -48,6 +48,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
 import com.awd.teledrive.R
+import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.auth.LoginScreen
 import com.awd.teledrive.ui.screens.home.HomeScreen
 import com.awd.teledrive.ui.screens.logs.LogsScreen
@@ -65,6 +66,7 @@ import com.awd.teledrive.ui.screens.settings.CloudAnalysisScreen
 import com.awd.teledrive.ui.screens.settings.SettingsScreen
 import com.awd.teledrive.ui.screens.starred.StarredScreen
 import com.awd.teledrive.ui.screens.transfers.TransfersScreen
+import java.io.File
 import java.net.URLDecoder
 import java.net.URLEncoder
 
@@ -161,6 +163,29 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
+    // ভিডিও বা অডিওতে ট্যাপ করলে মাঝখানের পপআপ ছাড়াই সরাসরি প্লেয়ার চালু হবে
+    val openFileOrPlayVideo: (DriveItem.File, Boolean) -> Unit = { file, isMediaOnly ->
+        val isDirectPlayable = !file.isEncrypted && (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/"))
+        if (isDirectPlayable) {
+            val localFile = file.localPath?.let { File(it) }
+            val playTarget = if (localFile != null && localFile.exists()) {
+                localFile.absolutePath
+            } else {
+                "tdstream://${file.parentChatId}|${file.id}|${file.telegramFileId}|${file.size}|${file.name}"
+            }
+            navController.navigate(Screen.VideoPlayer.createRoute(playTarget))
+        } else {
+            navController.navigate(
+                Screen.Preview.createRoute(
+                    chatId = file.parentChatId,
+                    fileId = file.id,
+                    isMediaOnly = isMediaOnly,
+                    virtualParentId = file.virtualParentId ?: "0"
+                )
+            )
+        }
+    }
+
     LaunchedEffect(isLocked) {
         if (isLocked && currentRoute != Screen.Security.route) {
             navController.navigate(Screen.Security.route) {
@@ -182,7 +207,6 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
-    // নিচের হেডার/নেভিগেশন মেনু থেকে Starred রিমুভ করা হয়েছে
     val bottomNavScreens = listOf(Screen.Home, Screen.Media, Screen.Settings)
     val shouldShowBottomBar = currentRoute in bottomNavScreens.map { it.route } && currentRoute != Screen.SecureStorage.route
 
@@ -206,9 +230,7 @@ fun NavGraph(navController: NavHostController) {
                                                     }
                                                 }
                                             },
-                                            onLongClick = {
-                                                triggerSafeFolderOpen()
-                                            }
+                                            onLongClick = { triggerSafeFolderOpen() }
                                         )
                                     } else Modifier
                                 ) {
@@ -264,24 +286,18 @@ fun NavGraph(navController: NavHostController) {
                     onNavigateToStarred = { navController.navigate(Screen.Starred.route) },
                     onNavigateToSafeFolder = { triggerSafeFolderOpen() },
                     onNavigateToCloudAnalysis = { navController.navigate(Screen.CloudAnalysis.route) },
-                    onNavigateToPreview = { file -> 
-                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, virtualParentId = file.virtualParentId ?: "0"))
-                    }
+                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, false) }
                 )
             }
             composable(Screen.Starred.route) {
                 StarredScreen(
                     onBack = { navController.popBackStack() },
-                    onNavigateToPreview = { file -> 
-                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, virtualParentId = file.virtualParentId ?: "0"))
-                    }
+                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, false) }
                 )
             }
             composable(Screen.Media.route) {
                 MediaScreen(
-                    onNavigateToPreview = { file -> 
-                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, isMediaOnly = true))
-                    }
+                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, true) }
                 )
             }
             composable(Screen.Transfers.route) {
@@ -318,9 +334,7 @@ fun NavGraph(navController: NavHostController) {
                         navController.popBackStack()
                         securityViewModel.lockSecureMode()
                     },
-                    onNavigateToPreview = { file ->
-                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, virtualParentId = file.virtualParentId ?: "0"))
-                    },
+                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, false) },
                     onNavigateToTransfers = { navController.navigate(Screen.Transfers.route) }
                 )
             }
@@ -364,6 +378,7 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
+    // ক্লিন Safe Folder পাসওয়ার্ড তৈরি ডায়ালগ (অতিরিক্ত লেখা রিমুভ করা হয়েছে)
     if (showCreateSafePasswordDialog) {
         var newPass by remember { mutableStateOf("") }
         var confirmPass by remember { mutableStateOf("") }
@@ -371,11 +386,8 @@ fun NavGraph(navController: NavHostController) {
 
         AlertDialog(
             onDismissRequest = { showCreateSafePasswordDialog = false },
-            title = { Text("Setup Safe Folder Password") },
             text = {
                 Column {
-                    Text("ফটো, ভিডিও ও অডিও লক করে রাখতে একটি পাসওয়ার্ড বা পিন সেট করুন:")
-                    Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = newPass,
                         onValueChange = { newPass = it; error = null },
@@ -384,7 +396,7 @@ fun NavGraph(navController: NavHostController) {
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     OutlinedTextField(
                         value = confirmPass,
                         onValueChange = { confirmPass = it; error = null },
@@ -400,9 +412,9 @@ fun NavGraph(navController: NavHostController) {
             confirmButton = {
                 Button(onClick = {
                     if (newPass.length < 4) {
-                        error = "কমপক্ষে ৪ সংখ্যার পাসওয়ার্ড দিন"
+                        error = "Min 4 characters"
                     } else if (newPass != confirmPass) {
-                        error = "পাসওয়ার্ড দুটি মেলেনি"
+                        error = "Password mismatch"
                     } else {
                         securityViewModel.setPassword(newPass)
                         securityViewModel.unlockSecureMode(newPass)
@@ -423,10 +435,8 @@ fun NavGraph(navController: NavHostController) {
         
         AlertDialog(
             onDismissRequest = { showUnlockDialog = false },
-            title = { Text(stringResource(R.string.unlock_secure_title)) },
             text = {
                 Column {
-                    Text(stringResource(R.string.unlock_secure_desc))
                     OutlinedTextField(
                         value = password,
                         onValueChange = { password = it; error = null },
@@ -434,6 +444,7 @@ fun NavGraph(navController: NavHostController) {
                         visualTransformation = PasswordVisualTransformation(),
                         isError = error != null,
                         supportingText = error?.let { { Text(it) } },
+                        singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
