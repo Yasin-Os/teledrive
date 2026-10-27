@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 
 @Dao
 interface DriveDao {
@@ -50,14 +51,17 @@ interface DriveDao {
     suspend fun refreshChatItems(chatId: Long, items: List<DriveItemEntity>, preserveFolders: Boolean = false) {
         val newItemIds = items.map { it.id }.toSet()
         val existingItems = getItemsSync(chatId)
-        val starredItemIds = existingItems.filter { it.isStarred }.map { it.id }.toSet()
+        val existingMap = existingItems.associateBy { it.id }
         
         val updatedItems = items.map { item ->
-            if (item.id in starredItemIds) {
-                item.copy(isStarred = true)
-            } else {
-                item
-            }
+            val existing = existingMap[item.id]
+            val savedLocalPath = item.localPath ?: existing?.localPath?.takeIf { File(it).exists() }
+            val savedThumbPath = item.thumbnailPath ?: existing?.thumbnailPath?.takeIf { File(it).exists() }
+            item.copy(
+                isStarred = existing?.isStarred == true,
+                localPath = savedLocalPath,
+                thumbnailPath = savedThumbPath
+            )
         }
 
         val toDelete = existingItems.filter { item ->
@@ -72,17 +76,15 @@ interface DriveDao {
 
     @Transaction
     suspend fun insertItemsPreservingStarred(items: List<DriveItemEntity>) {
-        val ids = items.map { it.id }
-        // Note: This only works if parentChatId is also considered or if IDs are unique enough.
-        // The table has primaryKeys = ["id", "parentChatId"]
-        
         val updatedItems = items.map { item ->
             val existing = getItemById(item.id, item.parentChatId)
-            if (existing?.isStarred == true) {
-                item.copy(isStarred = true)
-            } else {
-                item
-            }
+            val savedLocalPath = item.localPath ?: existing?.localPath?.takeIf { File(it).exists() }
+            val savedThumbPath = item.thumbnailPath ?: existing?.thumbnailPath?.takeIf { File(it).exists() }
+            item.copy(
+                isStarred = existing?.isStarred == true,
+                localPath = savedLocalPath,
+                thumbnailPath = savedThumbPath
+            )
         }
         insertItems(updatedItems)
     }
