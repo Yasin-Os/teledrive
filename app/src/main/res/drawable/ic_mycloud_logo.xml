@@ -5,87 +5,145 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 1. Vibrant Eye-Catching Sky-Cyan to Royal Sapphire Background -->
+    <!-- 1. Vibrant Royal Blue to Luminous Cyan-Aqua Diagonal Gradient -->
     <path android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="12"
-                android:startY="10"
-                android:endX="96"
-                android:endY="98"
+                android:startX="10"
+                android:startY="98"
+                android:endX="98"
+                android:endY="10"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FF00D2FF" />
-                <item android:offset="0.45" android:color="#FF0078FF" />
-                <item android:offset="1.0" android:color="#FF0038A8" />
+                <item android:offset="0.0" android:color="#FF003894" />
+                <item android:offset="0.45" android:color="#FF0074D9" />
+                <item android:offset="0.82" android:color="#FF00B8E6" />
+                <item android:offset="1.0" android:color="#FF00E5CE" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 2. Subtle Top-Left Glass Highlight Glow -->
-    <path android:pathData="M28,22m-38,0a38,38 0,1 1,76 0a38,38 0,1 1,-76 0">
+    <!-- 2. Two Bold White Wireless Signal Waves at Top-Right -->
+    <path
+        android:pathData="M69,28 A14,14 0 0,1 82,41"
+        android:strokeWidth="4.8"
+        android:strokeColor="#FFFFFFFF"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round" />
+
+    <path
+        android:pathData="M71,18 A24,24 0 0,1 92,39"
+        android:strokeWidth="4.8"
+        android:strokeColor="#FFFFFFFF"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round" />
+
+    <!-- 3. Main Fluffy White Cloud (Centered & Enlarged Without Text) -->
+    <path
+        android:pathData="M34,74 L76,74 C83.5,74 89.5,68.2 89.5,60.8 C89.5,54.3 84.8,48.9 78.5,47.9 C77.3,40.0 70.5,34.0 62.2,34.0 C59.7,34.0 57.3,34.6 55.2,35.6 C51.4,29.0 44.3,24.6 36.0,24.6 C24.0,24.6 14.2,34.1 13.8,46.0 C8.8,48.0 5.5,53.0 5.5,58.8 C5.5,66.2 11.2,72.2 18.5,73.2 C22.5,73.8 28.0,74.0 34,74 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- 4. Translucent Swoosh Ribbon Trails at Bottom-Left -->
+    <path
+        android:pathData="M11,55 C12,76 29,88 53,75 L64,58 C44,77 19,75 11,55 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:centerX="28"
-                android:centerY="22"
-                android:gradientRadius="38"
-                android:type="radial">
-                <item android:offset="0.0" android:color="#4DFFFFFF" />
-                <item android:offset="1.0" android:color="#00FFFFFF" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- 3. Back 3D Glass Cloud Layer (Gives Rich iCloud / OneDrive Depth) -->
-    <path
-        android:pathData="M42,64 L82,64 A13,13 0 0,0 82,38 A12,12 0 0,0 79.5,38.3 A17,17 0 0,0 47.5,34.5 A14.5,14.5 0 0,0 42,64 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="62"
-                android:startY="24"
-                android:endX="62"
-                android:endY="64"
-                android:type="linear">
-                <item android:offset="0.0" android:color="#88FFFFFF" />
-                <item android:offset="1.0" android:color="#33B3E5FC" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- 4. Soft Drop Shadow Under Main Cloud -->
-    <path
-        android:pathData="M31,79 L77,79 A13.5,13.5 0 0,0 78.8,52.2 A15,15 0 0,0 65.2,39.8 A21,21 0 0,0 26.8,46.5 A16.5,16.5 0 0,0 31,79 Z"
-        android:fillColor="#26001848" />
-
-    <!-- 5. Main Large Sculpted White 3D Cloud (Perfect Circular Arcs) -->
-    <path
-        android:pathData="M31,75.5 L77,75.5 A13.5,13.5 0 0,0 78.8,48.7 A15,15 0 0,0 65.2,36.3 A21,21 0 0,0 26.8,43.0 A16.5,16.5 0 0,0 31,75.5 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="54"
-                android:startY="26"
-                android:endX="54"
-                android:endY="76"
-                android:type="linear">
-                <item android:offset="0.0" android:color="#FFFFFFFF" />
-                <item android:offset="0.7" android:color="#FFF5FBFF" />
-                <item android:offset="1.0" android:color="#FFD6EEFF" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- 6. 3D Inner Contour Fold on Cloud (OneDrive / iCloud Pro Style) -->
-    <path
-        android:pathData="M31,75.5 L62,75.5 C62,61 50,51 35.5,51 C24.5,51 16,58.5 16,66.5 C16,71.8 22.5,75.5 31,75.5 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="16"
-                android:startY="51"
+                android:startX="11"
+                android:startY="75"
                 android:endX="60"
-                android:endY="75.5"
+                android:endY="55"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FFFFFFFF" />
-                <item android:offset="1.0" android:color="#FFE1F3FF" />
+                <item android:offset="0.0" android:color="#40FFFFFF" />
+                <item android:offset="0.5" android:color="#99B3ECFF" />
+                <item android:offset="1.0" android:color="#FFFFFFFF" />
             </gradient>
         </aapt:attr>
     </path>
+
+    <!-- 5. Left Curved Swoosh Arrow (1st Main Arrow) -->
+    <path
+        android:pathData="M12,53 C15,72 30,70 46,48"
+        android:strokeWidth="4.2"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="12"
+                android:startY="68"
+                android:endX="48"
+                android:endY="44"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF0047A8" />
+                <item android:offset="1.0" android:color="#FF0088E0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M50,43 L40,46.5 L47.5,52.5 Z"
+        android:fillColor="#FF0088E0" />
+
+    <!-- 6. Inner Secondary Arrow 1 -->
+    <path
+        android:pathData="M24,72 C32,71 40,64 47,55"
+        android:strokeWidth="2.4"
+        android:strokeColor="#800077D6"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M49.5,52 L43.5,54.5 L47.5,58 Z"
+        android:fillColor="#800077D6" />
+
+    <!-- 7. Center Longest Curved Swoosh Arrow (2nd Main Arrow) -->
+    <path
+        android:pathData="M15,62 C23,80 43,71 64,42"
+        android:strokeWidth="4.6"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="15"
+                android:startY="75"
+                android:endX="66"
+                android:endY="38"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF004BB0" />
+                <item android:offset="1.0" android:color="#FF009CE8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M68,37 L57.5,40.5 L65.5,47 Z"
+        android:fillColor="#FF009CE8" />
+
+    <!-- 8. Inner Secondary Arrow 2 -->
+    <path
+        android:pathData="M34,77 C43,75 50,68 57,59"
+        android:strokeWidth="2.4"
+        android:strokeColor="#800088DE"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M59.5,56 L53.5,58.5 L57.5,62 Z"
+        android:fillColor="#800088DE" />
+
+    <!-- 9. Right Bottom Curved Swoosh Arrow (3rd Main Arrow) -->
+    <path
+        android:pathData="M24,74 C38,84 53,74 65,57"
+        android:strokeWidth="4.2"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="24"
+                android:startY="80"
+                android:endX="67"
+                android:endY="53"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF005BC0" />
+                <item android:offset="1.0" android:color="#FF00AEEF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M69,52 L58.5,55.5 L66.5,62 Z"
+        android:fillColor="#FF00AEEF" />
 </vector>
