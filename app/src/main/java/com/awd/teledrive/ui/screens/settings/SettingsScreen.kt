@@ -1,4 +1,3 @@
-// File: app/src/main/java/com/awd/teledrive/ui/screens/settings/SettingsScreen.kt
 package com.awd.teledrive.ui.screens.settings
 
 import android.content.Context
@@ -11,6 +10,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,11 +18,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -35,13 +37,15 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -65,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
@@ -166,7 +171,6 @@ fun SettingsScreen(
             deleteAfterBackup = enabled
             customPrefs.edit().putBoolean("delete_after_backup", enabled).apply()
         },
-        onBack = onBack,
         onLogout = {
             viewModel.logout()
             val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
@@ -184,12 +188,11 @@ fun SettingsScreen(
         onSetAutoBackupEnabled = { backupViewModel.setAutoBackupEnabled(it) },
         onSetBackupWifiOnly = { backupViewModel.setBackupWifiOnly(it) },
         onTriggerManualBackup = { backupViewModel.triggerManualBackup() },
-        onClearCache = viewModel::clearCache,
-        onSetLanguage = viewModel::setLanguage,
         onSetDownloadUri = viewModel::setDownloadUri,
         onSetCacheSizeLimit = viewModel::setCacheSizeLimit,
         onSetCacheAgeLimit = viewModel::setCacheAgeLimit,
-        onSetThumbnailAutoDownload = viewModel::setThumbnailAutoDownloadEnabled
+        onSetThumbnailAutoDownload = viewModel::setThumbnailAutoDownloadEnabled,
+        onCheckForUpdates = viewModel::checkForUpdates
     )
 }
 
@@ -201,7 +204,6 @@ fun SettingsContent(
     isBackupWifiOnly: Boolean,
     deleteAfterBackup: Boolean,
     onSetDeleteAfterBackup: (Boolean) -> Unit,
-    onBack: () -> Unit,
     onLogout: () -> Unit,
     onNavigateToBackupFolders: () -> Unit,
     onNavigateToCacheDetails: () -> Unit,
@@ -213,12 +215,11 @@ fun SettingsContent(
     onSetAutoBackupEnabled: (Boolean) -> Unit,
     onSetBackupWifiOnly: (Boolean) -> Unit,
     onTriggerManualBackup: () -> Unit,
-    onClearCache: () -> Unit,
-    onSetLanguage: (String) -> Unit,
     onSetDownloadUri: (String?) -> Unit,
     onSetCacheSizeLimit: (Long) -> Unit,
     onSetCacheAgeLimit: (Int) -> Unit,
-    onSetThumbnailAutoDownload: (Boolean) -> Unit
+    onSetThumbnailAutoDownload: (Boolean) -> Unit,
+    onCheckForUpdates: () -> Unit
 ) {
     var showSetPasswordConfirm by remember { mutableStateOf(false) }
     var showCacheSizeDialog by remember { mutableStateOf(false) }
@@ -423,15 +424,15 @@ fun SettingsContent(
             SettingsToggleRow(
                 icon = Icons.Default.Folder,
                 title = stringResource(R.string.auto_backup),
-                subtitle = if (isBackupWifiOnly && uiState.isAutoBackupEnabled) stringResource(R.string.waiting_for_wifi) else "ফোনের নির্দিষ্ট ফোল্ডার থেকে অটোমেটিক ক্লাউডে ব্যাকআপ হবে",
+                subtitle = if (isBackupWifiOnly && uiState.isAutoBackupEnabled) stringResource(R.string.waiting_for_wifi) else "Automatically sync selected folders to cloud",
                 checked = uiState.isAutoBackupEnabled,
                 onCheckedChange = onSetAutoBackupEnabled
             )
             
             SettingsToggleRow(
                 icon = Icons.Default.Delete,
-                title = "Delete from phone after backup",
-                subtitle = "ক্লাউডে আপলোড হওয়ার পর ফোনের মেমোরি থেকে ফাইলটি নিজে থেকেই মুছে যাবে",
+                title = "Auto-delete from Phone Storage",
+                subtitle = "Automatically remove local file after cloud upload",
                 checked = deleteAfterBackup,
                 onCheckedChange = onSetDeleteAfterBackup
             )
@@ -557,9 +558,7 @@ fun SettingsContent(
                 icon = Icons.Default.FolderOpen,
                 title = stringResource(R.string.download_location),
                 subtitle = downloadPath,
-                onClick = { 
-                    folderLauncher.launch(null)
-                }
+                onClick = { folderLauncher.launch(null) }
             )
             if (!uiState.downloadUri.isNullOrEmpty()) {
                 TextButton(
@@ -572,27 +571,89 @@ fun SettingsContent(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             SettingsCategory(title = "App Update")
-            SettingsClickableRow(
-                icon = Icons.Default.Info,
-                title = "Download Latest App Update",
-                subtitle = "লগইন অক্ষত রেখে সরাসরি নতুন আপডেট ডাউনলোড ও ইনস্টল করতে এখানে ট্যাপ করুন",
-                onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Yasin-Os/teledrive/releases/latest"))
-                    context.startActivity(intent)
-                }
-            )
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            // নতুন প্রফেশনাল ইন-অ্যাপ আপডেট কার্ড (ব্রাউজারে না গিয়ে অ্যাপের ভেতরেই আপডেট হবে)
+            Surface(
+                onClick = onCheckForUpdates,
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (uiState.updateState is UpdateState.Checking) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.SystemUpdate,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "System Update",
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = "Version ${uiState.versionName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(onClick = onCheckForUpdates) {
+                        Text("Check")
+                    }
+                }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
             ListItem(
                 headlineContent = { 
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.logout), color = MaterialTheme.colorScheme.error) 
+                        Text(stringResource(R.string.logout), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold) 
                     }
                 },
                 modifier = Modifier.clickable { showLogoutConfirm = true }
             )
-            
-            Spacer(modifier = Modifier.height(64.dp))
+
+            // সেটিংসের শেষের দিকে কপিরাইট স্বত্বাধিকার
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 24.dp, bottom = 48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "© 2026 MyCloud • All Rights Reserved",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Developed by Yasin Adnan",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     }
 }
