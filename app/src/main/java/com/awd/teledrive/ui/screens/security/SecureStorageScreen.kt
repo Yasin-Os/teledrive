@@ -10,9 +10,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,11 +23,15 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -204,21 +211,30 @@ fun SecureStorageScreen(
             sheetState = sheetState
         ) {
             Column(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp, start = 16.dp, end = 16.dp)) {
-                Text(stringResource(R.string.create_new), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+                Text("Lock Media & Files in Safe Folder", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                    val isAtRoot = currentVirtualFolderId == "0" && currentFolderId == null
-                    
-                    if (isAtRoot) {
-                        NewActionItem(Icons.Default.CreateNewFolder, stringResource(R.string.folder)) {
-                            showNewSheet = false
-                            showFolderDialog = true
-                        }
-                    } else {
-                        NewActionItem(Icons.Default.FileUpload, stringResource(R.string.upload)) {
-                            showNewSheet = false
-                            multiFilePickerLauncher.launch("*/*")
-                        }
-                        // Remove Camera option to restrict to upload only as requested
+                    NewActionItem(Icons.Default.PhotoLibrary, "Photos") {
+                        showNewSheet = false
+                        multiFilePickerLauncher.launch("image/*")
+                    }
+                    NewActionItem(Icons.Default.VideoLibrary, "Videos") {
+                        showNewSheet = false
+                        multiFilePickerLauncher.launch("video/*")
+                    }
+                    NewActionItem(Icons.Default.AudioFile, "Audio") {
+                        showNewSheet = false
+                        multiFilePickerLauncher.launch("audio/*")
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    NewActionItem(Icons.Default.FileUpload, "All Files") {
+                        showNewSheet = false
+                        multiFilePickerLauncher.launch("*/*")
+                    }
+                    NewActionItem(Icons.Default.CreateNewFolder, "New Folder") {
+                        showNewSheet = false
+                        showFolderDialog = true
                     }
                 }
             }
@@ -246,7 +262,7 @@ fun SecureStorageScreen(
                 TopAppBar(
                     title = {
                         if (!isSearchActive) {
-                            Text(currentFolderName ?: stringResource(R.string.secure_folder_label))
+                            Text(currentFolderName ?: "Safe folder")
                         } else {
                             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
                                 BasicTextField(
@@ -308,7 +324,7 @@ fun SecureStorageScreen(
             ExtendedFloatingActionButton(
                 onClick = { showNewSheet = true },
                 icon = { Icon(Icons.Default.Add, null) },
-                text = { Text(stringResource(R.string.new_label)) },
+                text = { Text("Lock Files") },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 elevation = FloatingActionButtonDefaults.elevation(8.dp)
@@ -326,7 +342,17 @@ fun SecureStorageScreen(
                 }
             } else if (items.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(stringResource(R.string.no_files_secure), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Default.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(stringResource(R.string.no_files_secure), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Tap 'Lock Files' to encrypt photos, videos or audio", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    }
                 }
             } else {
                 LazyColumn(
