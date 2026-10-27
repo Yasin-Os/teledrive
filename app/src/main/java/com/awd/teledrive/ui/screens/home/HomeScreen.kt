@@ -9,12 +9,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -22,7 +19,6 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -321,7 +317,6 @@ fun HomeContent(
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState()
     var showNewSheet by remember { mutableStateOf(false) }
-
     var showUploadPopup by remember { mutableStateOf(false) }
     var showDownloadPopup by remember { mutableStateOf(false) }
 
@@ -344,17 +339,13 @@ fun HomeContent(
     }
 
     val uploadProgress = remember(activeUploads) {
-        if (activeUploads.isEmpty()) null
-        else (activeUploads.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
+        if (activeUploads.isEmpty()) null else (activeUploads.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
     }
     val downloadProgress = remember(activeDownloads) {
-        if (activeDownloads.isEmpty()) null
-        else (activeDownloads.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
+        if (activeDownloads.isEmpty()) null else (activeDownloads.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
     }
 
-    val isOffline = connectivityStatus == ConnectivityObserver.Status.Unavailable || 
-                    connectivityStatus == ConnectivityObserver.Status.Lost
-
+    val isOffline = connectivityStatus == ConnectivityObserver.Status.Unavailable || connectivityStatus == ConnectivityObserver.Status.Lost
     var selectedItems by remember { mutableStateOf(setOf<Long>()) }
     val isSelectionMode = selectedItems.isNotEmpty()
     var showFolderDialog by remember { mutableStateOf(false) }
@@ -362,7 +353,6 @@ fun HomeContent(
     var itemToRename by remember { mutableStateOf<DriveItem?>(null) }
     var renameValue by remember { mutableStateOf("") }
 
-    // মিডিয়া ছাড়া বাকি সব ফাইল আগে ডাউনলোড হবে এবং মেইন ইন্টারফেসে পার্সেন্টেজ দেখাবে; ডাউনলোড হয়ে গেলে সরাসরি ওপেন হবে
     val handleFileItemClick: (DriveItem.File) -> Unit = { file ->
         if (isMediaStreamOrImage(file)) {
             onNavigateToPreview(file)
@@ -370,11 +360,8 @@ fun HomeContent(
             val localFile = file.localPath?.let { File(it) }
             if (localFile != null && localFile.exists()) {
                 val isPdfOrTxt = file.mimeType == "application/pdf" || file.mimeType.startsWith("text/") || file.name.endsWith(".txt", true)
-                if (isPdfOrTxt) {
-                    onNavigateToPreview(file)
-                } else {
-                    FileSharingHelper.openFileExternally(context, localFile.absolutePath, file.mimeType)
-                }
+                if (isPdfOrTxt) onNavigateToPreview(file)
+                else FileSharingHelper.openFileExternally(context, localFile.absolutePath, file.mimeType)
             } else {
                 onDownloadFile(file.id, file.parentChatId, file.name)
                 Toast.makeText(context, "Downloading ${file.name}...", Toast.LENGTH_SHORT).show()
@@ -384,33 +371,19 @@ fun HomeContent(
 
     if (showUploadPopup) {
         TransferPositionedPopup(
-            title = "Uploads",
-            isDownloadPopup = false,
-            transferList = uploadTransfers,
-            allCloudFiles = allCloudFiles,
-            onDismiss = { showUploadPopup = false },
-            onPauseTransfer = onPauseTransfer,
-            onResumeTransfer = onResumeTransfer,
-            onCancelTransfer = onCancelTransfer,
-            onRemoveTransfer = onRemoveTransfer,
-            onClearCompleted = onClearCompletedTransfers,
-            onSaveAsPhone = onSaveAsPhone
+            title = "Uploads", isDownloadPopup = false, transferList = uploadTransfers,
+            onDismiss = { showUploadPopup = false }, onPauseTransfer = onPauseTransfer,
+            onResumeTransfer = onResumeTransfer, onCancelTransfer = onCancelTransfer,
+            onClearCompleted = onClearCompletedTransfers
         )
     }
 
     if (showDownloadPopup) {
         TransferPositionedPopup(
-            title = "Downloads",
-            isDownloadPopup = true,
-            transferList = downloadTransfers,
-            allCloudFiles = allCloudFiles,
-            onDismiss = { showDownloadPopup = false },
-            onPauseTransfer = onPauseTransfer,
-            onResumeTransfer = onResumeTransfer,
-            onCancelTransfer = onCancelTransfer,
-            onRemoveTransfer = onRemoveTransfer,
-            onClearCompleted = onClearCompletedTransfers,
-            onSaveAsPhone = onSaveAsPhone
+            title = "Downloads", isDownloadPopup = true, transferList = downloadTransfers,
+            onDismiss = { showDownloadPopup = false }, onPauseTransfer = onPauseTransfer,
+            onResumeTransfer = onResumeTransfer, onCancelTransfer = onCancelTransfer,
+            onClearCompleted = onClearCompletedTransfers
         )
     }
 
@@ -420,18 +393,15 @@ fun HomeContent(
             title = { Text(stringResource(R.string.rename)) },
             text = {
                 OutlinedTextField(
-                    value = renameValue,
-                    onValueChange = { renameValue = it },
+                    value = renameValue, onValueChange = { renameValue = it },
                     label = { Text(stringResource(R.string.folder_name)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    singleLine = true, modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
-                Button(onClick = {
-                    itemToRename?.let { onRenameItem(it, renameValue) }
-                    itemToRename = null
-                }) { Text(stringResource(R.string.confirm)) }
+                Button(onClick = { itemToRename?.let { onRenameItem(it, renameValue) }; itemToRename = null }) {
+                    Text(stringResource(R.string.confirm))
+                }
             },
             dismissButton = {
                 TextButton(onClick = { itemToRename = null }) { Text(stringResource(R.string.cancel)) }
@@ -463,20 +433,15 @@ fun HomeContent(
                         if (c.moveToFirst() && nameIndex >= 0) c.getString(nameIndex) else null
                     } ?: "File_${System.currentTimeMillis()}"
 
-                    // ফোনের আসল স্টোরেজ পাথ পাওয়া গেলে ডাবল-কপি ছাড়াই সরাসরি ফাস্ট আপলোড হবে
                     val directPhoneFile = resolveDirectFileFromUri(uri)
                     val uploadTargetFile = if (directPhoneFile != null && directPhoneFile.exists() && directPhoneFile.canRead()) {
                         directPhoneFile
                     } else {
                         val tempFile = File(context.cacheDir, fileName)
                         context.contentResolver.openInputStream(uri)?.use { input ->
-                            FileOutputStream(tempFile).use { output ->
-                                input.copyTo(output, bufferSize = 128 * 1024)
-                            }
+                            FileOutputStream(tempFile).use { output -> input.copyTo(output, bufferSize = 128 * 1024) }
                         }
-                        if (shouldDeleteOriginal) {
-                            deleteOriginalUriFromPhone(context, uri)
-                        }
+                        if (shouldDeleteOriginal) deleteOriginalUriFromPhone(context, uri)
                         tempFile
                     }
 
@@ -502,12 +467,8 @@ fun HomeContent(
                 withContext(Dispatchers.IO) {
                     val fileName = "IMG_${System.currentTimeMillis()}.jpg"
                     val file = File(context.cacheDir, fileName)
-                    FileOutputStream(file).use { out ->
-                        it.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
-                    }
-                    withContext(Dispatchers.Main) {
-                        onUploadFile(file.absolutePath, fileName)
-                    }
+                    FileOutputStream(file).use { out -> it.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out) }
+                    withContext(Dispatchers.Main) { onUploadFile(file.absolutePath, fileName) }
                 }
                 isPreparingFile = false
             }
@@ -521,10 +482,7 @@ fun HomeContent(
     BackHandler(enabled = true) {
         when {
             showNewSheet -> showNewSheet = false
-            isSearchActive -> {
-                isSearchActive = false
-                onSearchQueryChange("")
-            }
+            isSearchActive -> { isSearchActive = false; onSearchQueryChange("") }
             isSelectionMode -> selectedItems = emptySet()
             (currentFolderId != null || currentVirtualFolderId != "0" || isCategoryActive) -> onNavigateBack()
             else -> {
@@ -533,10 +491,7 @@ fun HomeContent(
                 } else {
                     backPressedOnce = true
                     Toast.makeText(context, pressBackMsg, Toast.LENGTH_SHORT).show()
-                    scope.launch {
-                        delay(2.seconds)
-                        backPressedOnce = false
-                    }
+                    scope.launch { delay(2.seconds); backPressedOnce = false }
                 }
             }
         }
@@ -562,11 +517,8 @@ fun HomeContent(
 
     if (shareItem != null) {
         ShareDialog(
-            item = shareItem!!,
-            onDismiss = { shareItem = null },
-            onGetInviteLink = onGetInviteLink,
-            onGetMembers = onGetMembers,
-            onShareFile = onShareFile
+            item = shareItem!!, onDismiss = { shareItem = null },
+            onGetInviteLink = onGetInviteLink, onGetMembers = onGetMembers, onShareFile = onShareFile
         )
     }
 
@@ -576,10 +528,9 @@ fun HomeContent(
             title = { Text(stringResource(R.string.folder_download_warning_title)) },
             text = { Text(stringResource(R.string.folder_download_warning_message, folderToDownload?.name ?: "")) },
             confirmButton = {
-                Button(onClick = {
-                    folderToDownload?.let { onDownloadFolderContents(it) }
-                    folderToDownload = null
-                }) { Text(stringResource(R.string.download_contents)) }
+                Button(onClick = { folderToDownload?.let { onDownloadFolderContents(it) }; folderToDownload = null }) {
+                    Text(stringResource(R.string.download_contents))
+                }
             },
             dismissButton = {
                 TextButton(onClick = { folderToDownload = null }) { Text(stringResource(R.string.cancel)) }
@@ -606,7 +557,7 @@ fun HomeContent(
 
     if (isPreparingFile) {
         AlertDialog(
-            onDismissRequest = { },
+            onDismissRequest = {},
             title = { Text(stringResource(R.string.preparing_file)) },
             text = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -620,32 +571,13 @@ fun HomeContent(
     }
 
     if (showNewSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showNewSheet = false },
-            sheetState = sheetState
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 32.dp, start = 16.dp, end = 16.dp)
-            ) {
+        ModalBottomSheet(onDismissRequest = { showNewSheet = false }, sheetState = sheetState) {
+            Column(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp, start = 16.dp, end = 16.dp)) {
                 Text(stringResource(R.string.create_new), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(16.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    NewActionItem(Icons.Default.CreateNewFolder, stringResource(R.string.folder)) {
-                        showNewSheet = false
-                        showFolderDialog = true
-                    }
-                    NewActionItem(Icons.Default.FileUpload, stringResource(R.string.upload)) {
-                        showNewSheet = false
-                        multiFilePickerLauncher.launch("*/*")
-                    }
-                    NewActionItem(Icons.Default.CameraAlt, stringResource(R.string.camera)) {
-                        showNewSheet = false
-                        cameraLauncher.launch(null)
-                    }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                    NewActionItem(Icons.Default.CreateNewFolder, stringResource(R.string.folder)) { showNewSheet = false; showFolderDialog = true }
+                    NewActionItem(Icons.Default.FileUpload, stringResource(R.string.upload)) { showNewSheet = false; multiFilePickerLauncher.launch("*/*") }
+                    NewActionItem(Icons.Default.CameraAlt, stringResource(R.string.camera)) { showNewSheet = false; cameraLauncher.launch(null) }
                 }
             }
         }
@@ -657,23 +589,19 @@ fun HomeContent(
             title = { Text(stringResource(R.string.create_folder)) },
             text = {
                 OutlinedTextField(
-                    value = newFolderName,
-                    onValueChange = { newFolderName = it },
+                    value = newFolderName, onValueChange = { newFolderName = it },
                     label = { Text(stringResource(R.string.folder_name)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    singleLine = true, modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        if (newFolderName.isNotBlank()) {
-                            onCreateFolder(newFolderName, true, false)
-                            newFolderName = ""
-                            showFolderDialog = false
-                        }
+                Button(onClick = {
+                    if (newFolderName.isNotBlank()) {
+                        onCreateFolder(newFolderName, true, false)
+                        newFolderName = ""
+                        showFolderDialog = false
                     }
-                ) { Text(stringResource(R.string.create)) }
+                }) { Text(stringResource(R.string.create)) }
             },
             dismissButton = {
                 TextButton(onClick = { showFolderDialog = false }) { Text(stringResource(R.string.cancel)) }
@@ -685,8 +613,8 @@ fun HomeContent(
         currentFolderName != null -> currentFolderName
         customCategory == CustomCategory.ALL_STORAGE -> "Telegram Cloud"
         customCategory == CustomCategory.RECENTS -> "Recents"
-        customCategory == CustomCategory.APPS -> "Apps (APK)"
-        customCategory == CustomCategory.ARCHIVES -> "ZIP & RAR"
+        customCategory == CustomCategory.APPS -> "Apps"
+        customCategory == CustomCategory.DOWNLOADS || customCategory == CustomCategory.ARCHIVES -> "Downloads"
         filterType == FilterType.PHOTOS -> "Images"
         filterType == FilterType.VIDEOS -> "Videos"
         filterType == FilterType.AUDIO -> "Audio"
@@ -698,9 +626,7 @@ fun HomeContent(
         topBar = {
             AnimatedContent(
                 targetState = if (isSelectionMode) "selection" else if ((currentFolderId != null || currentVirtualFolderId != "0" || isCategoryActive) && !isSearchActive) "folder" else "main",
-                transitionSpec = {
-                    (fadeIn() + slideInVertically { -it / 2 }).togetherWith(fadeOut() + slideOutVertically { -it / 2 })
-                },
+                transitionSpec = { (fadeIn() + slideInVertically { -it / 2 }).togetherWith(fadeOut() + slideOutVertically { -it / 2 }) },
                 label = "TopBarTransition"
             ) { state ->
                 when (state) {
@@ -714,42 +640,26 @@ fun HomeContent(
                                 }
                             },
                             actions = {
-                                IconButton(
-                                    onClick = {
-                                        val files = items.filterIsInstance<DriveItem.File>()
-                                        selectedItems = if (selectedItems.size >= files.size && files.isNotEmpty()) emptySet() else files.map { it.id }.toSet()
-                                    }
-                                ) {
+                                IconButton(onClick = {
+                                    val files = items.filterIsInstance<DriveItem.File>()
+                                    selectedItems = if (selectedItems.size >= files.size && files.isNotEmpty()) emptySet() else files.map { it.id }.toSet()
+                                }) {
                                     val files = items.filterIsInstance<DriveItem.File>()
                                     Icon(
                                         if (selectedItems.size >= files.size && files.isNotEmpty()) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                                         contentDescription = stringResource(R.string.select_all)
                                     )
                                 }
-                                IconButton(
-                                    onClick = {
-                                        if (isOffline) {
-                                            Toast.makeText(context, context.getString(R.string.offline_msg), Toast.LENGTH_SHORT).show()
-                                            return@IconButton
-                                        }
-                                        val selectedFiles = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>()
-                                        val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
-                                        selectedFiles.forEach { onDownloadFile(it.id, it.parentChatId, it.name) }
-                                        selectedFolders.forEach { onDownloadFolderContents(it) }
-                                        selectedItems = emptySet()
-                                    }
-                                ) {
+                                IconButton(onClick = {
+                                    val selectedFiles = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>()
+                                    val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
+                                    selectedFiles.forEach { onDownloadFile(it.id, it.parentChatId, it.name) }
+                                    selectedFolders.forEach { onDownloadFolderContents(it) }
+                                    selectedItems = emptySet()
+                                }) {
                                     Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
                                 }
-                                IconButton(
-                                    onClick = {
-                                        if (isOffline) {
-                                            Toast.makeText(context, context.getString(R.string.offline_msg), Toast.LENGTH_SHORT).show()
-                                            return@IconButton
-                                        }
-                                        showDeleteConfirm = items.filter { it.id in selectedItems }
-                                    }
-                                ) {
+                                IconButton(onClick = { showDeleteConfirm = items.filter { it.id in selectedItems } }) {
                                     Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete))
                                 }
                             }
@@ -760,9 +670,7 @@ fun HomeContent(
                             TopAppBar(
                                 title = {
                                     Text(
-                                        text = activeTitle,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
+                                        text = activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                                     )
                                 },
@@ -783,22 +691,16 @@ fun HomeContent(
                             )
                             if (isCategoryActive && customCategory != CustomCategory.ALL_STORAGE && currentVirtualFolderId == "0") {
                                 CategoryFolderTabsRow(
-                                    virtualFolders = virtualFolders,
-                                    selectedFolderId = selectedCategoryFolderId,
-                                    sortOrder = sortOrder,
-                                    onSelectFolder = onSetSelectedCategoryFolder,
-                                    onSetSortOrder = onSetSortOrder,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                    virtualFolders = virtualFolders, selectedFolderId = selectedCategoryFolderId,
+                                    sortOrder = sortOrder, onSelectFolder = onSetSelectedCategoryFolder,
+                                    onSetSortOrder = onSetSortOrder, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                                 )
                             }
                         }
                     }
                     "main" -> {
                         Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .statusBarsPadding()
-                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                            modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)
                         ) {
                             if (!isSearchActive) {
                                 Row(
@@ -806,15 +708,11 @@ fun HomeContent(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // বাম পাশে ⬆️ ডাউনলোড বার
                                     SplitTransferBarItem(
-                                        icon = Icons.Default.ArrowUpward,
-                                        percentage = downloadProgress,
-                                        hasActiveOrHistory = downloadTransfers.isNotEmpty(),
-                                        onClick = { showDownloadPopup = true }
+                                        icon = Icons.Default.ArrowUpward, percentage = downloadProgress,
+                                        hasActiveOrHistory = downloadTransfers.isNotEmpty(), onClick = { showDownloadPopup = true }
                                     )
 
-                                    // মাঝখানে বড় গ্লাসি সার্চ বার
                                     Surface(
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                                         shape = RoundedCornerShape(26.dp),
@@ -827,68 +725,38 @@ fun HomeContent(
                                                 )
                                             )
                                         ),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(52.dp)
-                                            .clickable { isSearchActive = true }
+                                        modifier = Modifier.weight(1f).height(52.dp).clickable { isSearchActive = true }
                                     ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.padding(horizontal = 16.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Default.Search,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
+                                            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                             Spacer(modifier = Modifier.width(10.dp))
-                                            Text(
-                                                text = "Search",
-                                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1
-                                            )
+                                            Text("Search", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                         }
                                     }
 
-                                    // ডান পাশে ⬇️ আপলোড বার
                                     SplitTransferBarItem(
-                                        icon = Icons.Default.ArrowDownward,
-                                        percentage = uploadProgress,
-                                        hasActiveOrHistory = uploadTransfers.isNotEmpty(),
-                                        onClick = { showUploadPopup = true }
+                                        icon = Icons.Default.ArrowDownward, percentage = uploadProgress,
+                                        hasActiveOrHistory = uploadTransfers.isNotEmpty(), onClick = { showUploadPopup = true }
                                     )
                                 }
                             } else {
                                 Surface(
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                                     shape = RoundedCornerShape(26.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(52.dp)
+                                    modifier = Modifier.fillMaxWidth().height(52.dp)
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 8.dp)
-                                    ) {
-                                        IconButton(onClick = {
-                                            isSearchActive = false
-                                            onSearchQueryChange("")
-                                        }) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+                                        IconButton(onClick = { isSearchActive = false; onSearchQueryChange("") }) {
                                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                                         }
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                                             BasicTextField(
-                                                value = searchQuery,
-                                                onValueChange = onSearchQueryChange,
+                                                value = searchQuery, onValueChange = onSearchQueryChange,
                                                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                                                 modifier = Modifier.fillMaxWidth()
                                             )
-                                            if (searchQuery.isEmpty()) {
-                                                Text("Search", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            }
+                                            if (searchQuery.isEmpty()) Text("Search", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                         if (searchQuery.isNotEmpty()) {
                                             IconButton(onClick = { onSearchQueryChange("") }) {
@@ -917,8 +785,7 @@ fun HomeContent(
         }
     ) { padding ->
         PullToRefreshBox(
-            isRefreshing = isRefreshing,
-            onRefresh = onRefresh,
+            isRefreshing = isRefreshing, onRefresh = onRefresh,
             modifier = Modifier.padding(padding).fillMaxSize()
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
@@ -927,10 +794,8 @@ fun HomeContent(
                         CircularProgressIndicator()
                     }
                 } else {
-                    if (isRefreshing) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                
+                    if (isRefreshing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+
                     if (isOffline) {
                         Surface(
                             color = MaterialTheme.colorScheme.errorContainer,
@@ -982,8 +847,7 @@ fun HomeContent(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(
                                     imageVector = if (searchQuery.isEmpty()) Icons.Default.CloudQueue else Icons.Default.SearchOff,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(80.dp),
+                                    contentDescription = null, modifier = Modifier.size(80.dp),
                                     tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
@@ -1010,20 +874,13 @@ fun HomeContent(
                                     } else null
 
                                     DriveGridItem(
-                                        item = item,
-                                        isSelected = isSelected,
-                                        activeTransfer = itemTransfer,
+                                        item = item, isSelected = isSelected, activeTransfer = itemTransfer,
                                         onClick = {
-                                            if (isSelectionMode) {
-                                                selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                            } else {
-                                                if (item is DriveItem.File) handleFileItemClick(item)
-                                                else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                            }
+                                            if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
+                                            else if (item is DriveItem.File) handleFileItemClick(item)
+                                            else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                                         },
-                                        onLongClick = {
-                                            if (!isSelectionMode) selectedItems = setOf(item.id)
-                                        },
+                                        onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
                                         onStarClick = { onToggleStarred(item) },
                                         onShareClick = { shareItem = item },
                                         onDownloadClick = {
@@ -1031,15 +888,10 @@ fun HomeContent(
                                             else if (item is DriveItem.Folder) folderToDownload = item
                                         },
                                         onSaveAsPhoneClick = {
-                                            if (item is DriveItem.File && item.localPath != null) {
-                                                onSaveAsPhone(item.localPath, item.name)
-                                            }
+                                            if (item is DriveItem.File && item.localPath != null) onSaveAsPhone(item.localPath, item.name)
                                         },
                                         onMoveClick = null,
-                                        onRenameClick = {
-                                            itemToRename = item
-                                            renameValue = item.name
-                                        },
+                                        onRenameClick = { itemToRename = item; renameValue = item.name },
                                         onDeleteClick = { showDeleteConfirm = listOf(item) }
                                     )
                                 }
@@ -1056,20 +908,13 @@ fun HomeContent(
                                     } else null
 
                                     DriveListItem(
-                                        item = item,
-                                        isSelected = isSelected,
-                                        activeTransfer = itemTransfer,
+                                        item = item, isSelected = isSelected, activeTransfer = itemTransfer,
                                         onClick = {
-                                            if (isSelectionMode) {
-                                                selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                            } else {
-                                                if (item is DriveItem.File) handleFileItemClick(item)
-                                                else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                            }
+                                            if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
+                                            else if (item is DriveItem.File) handleFileItemClick(item)
+                                            else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                                         },
-                                        onLongClick = {
-                                            if (!isSelectionMode) selectedItems = setOf(item.id)
-                                        },
+                                        onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
                                         onStarClick = { onToggleStarred(item) },
                                         onShareClick = { shareItem = item },
                                         onDownloadClick = {
@@ -1077,15 +922,10 @@ fun HomeContent(
                                             else if (item is DriveItem.Folder) folderToDownload = item
                                         },
                                         onSaveAsPhoneClick = {
-                                            if (item is DriveItem.File && item.localPath != null) {
-                                                onSaveAsPhone(item.localPath, item.name)
-                                            }
+                                            if (item is DriveItem.File && item.localPath != null) onSaveAsPhone(item.localPath, item.name)
                                         },
                                         onMoveClick = null,
-                                        onRenameClick = {
-                                            itemToRename = item
-                                            renameValue = item.name
-                                        },
+                                        onRenameClick = { itemToRename = item; renameValue = item.name },
                                         onDeleteClick = { showDeleteConfirm = listOf(item) }
                                     )
                                 }
@@ -1131,8 +971,7 @@ fun SplitTransferBarItem(
                     )
                 }
                 Icon(
-                    imageVector = icon,
-                    contentDescription = null,
+                    imageVector = icon, contentDescription = null,
                     tint = if (percentage != null || hasActiveOrHistory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(if (percentage != null) 14.dp else 20.dp)
                 )
@@ -1154,14 +993,11 @@ fun TransferPositionedPopup(
     title: String,
     isDownloadPopup: Boolean,
     transferList: List<TransferInfo>,
-    allCloudFiles: List<DriveItem.File>,
     onDismiss: () -> Unit,
     onPauseTransfer: (String) -> Unit,
     onResumeTransfer: (String) -> Unit,
     onCancelTransfer: (String) -> Unit,
-    onRemoveTransfer: (String) -> Unit,
-    onClearCompleted: () -> Unit,
-    onSaveAsPhone: (String, String) -> Unit
+    onClearCompleted: () -> Unit
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -1172,8 +1008,7 @@ fun TransferPositionedPopup(
                 .fillMaxSize()
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss
+                    indication = null, onClick = onDismiss
                 )
                 .padding(horizontal = 16.dp, vertical = 28.dp),
             contentAlignment = if (isDownloadPopup) Alignment.TopCenter else Alignment.BottomCenter
@@ -1182,15 +1017,10 @@ fun TransferPositionedPopup(
                 shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                tonalElevation = 10.dp,
-                shadowElevation = 16.dp,
+                tonalElevation = 10.dp, shadowElevation = 16.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = {}
-                    )
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Row(
@@ -1201,8 +1031,7 @@ fun TransferPositionedPopup(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = if (isDownloadPopup) Icons.Default.Download else Icons.Default.Upload,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
+                                contentDescription = null, tint = MaterialTheme.colorScheme.primary
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
@@ -1217,10 +1046,7 @@ fun TransferPositionedPopup(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     if (transferList.isEmpty()) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().height(90.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
+                        Box(modifier = Modifier.fillMaxWidth().height(90.dp), contentAlignment = Alignment.Center) {
                             Text(
                                 text = if (isDownloadPopup) "No active downloads" else "No active uploads",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -1242,16 +1068,12 @@ fun TransferPositionedPopup(
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(12.dp)) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(
                                                     text = transfer.fileName,
                                                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
+                                                    maxLines = 1, overflow = TextOverflow.Ellipsis
                                                 )
                                                 Text(
                                                     text = "${transfer.status} • ${formatSize(transfer.downloadedSize)} / ${formatSize(transfer.totalSize)} ($percent%)",
@@ -1259,32 +1081,21 @@ fun TransferPositionedPopup(
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
-
-                                            IconButton(
-                                                onClick = {
-                                                    if (isPaused) onResumeTransfer(transfer.remoteUniqueId)
-                                                    else onPauseTransfer(transfer.remoteUniqueId)
-                                                }
-                                            ) {
+                                            IconButton(onClick = {
+                                                if (isPaused) onResumeTransfer(transfer.remoteUniqueId)
+                                                else onPauseTransfer(transfer.remoteUniqueId)
+                                            }) {
                                                 Icon(
                                                     imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                                    contentDescription = if (isPaused) "Resume" else "Pause",
-                                                    tint = MaterialTheme.colorScheme.primary
+                                                    contentDescription = null, tint = MaterialTheme.colorScheme.primary
                                                 )
                                             }
                                             IconButton(onClick = { onCancelTransfer(transfer.remoteUniqueId) }) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Close,
-                                                    contentDescription = "Cancel",
-                                                    tint = MaterialTheme.colorScheme.error
-                                                )
+                                                Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                                             }
                                         }
                                         Spacer(modifier = Modifier.height(6.dp))
-                                        LinearProgressIndicator(
-                                            progress = { transfer.progress },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
+                                        LinearProgressIndicator(progress = { transfer.progress }, modifier = Modifier.fillMaxWidth())
                                     }
                                 }
                             }
@@ -1292,13 +1103,8 @@ fun TransferPositionedPopup(
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(onClick = onDismiss) {
-                            Text(stringResource(R.string.close))
-                        }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = onDismiss) { Text(stringResource(R.string.close)) }
                     }
                 }
             }
@@ -1315,10 +1121,7 @@ fun CategoryFolderTabsRow(
     onSetSortOrder: (SortOrder) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier.fillMaxWidth()
-    ) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.fillMaxWidth()) {
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(horizontal = 4.dp),
@@ -1327,26 +1130,19 @@ fun CategoryFolderTabsRow(
             item {
                 val isAll = selectedFolderId == "ALL"
                 FilterChip(
-                    selected = isAll,
-                    onClick = { onSelectFolder("ALL") },
-                    label = { Text("All") },
-                    leadingIcon = if (isAll) {
-                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
-                    } else null
+                    selected = isAll, onClick = { onSelectFolder("ALL") }, label = { Text("All") },
+                    leadingIcon = if (isAll) { { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) } } else null
                 )
             }
             items(virtualFolders, key = { it.virtualId ?: it.id.toString() }) { folder ->
                 val vId = folder.virtualId ?: "0"
                 val isSelected = selectedFolderId == vId
                 FilterChip(
-                    selected = isSelected,
-                    onClick = { onSelectFolder(vId) },
-                    label = { Text(folder.name) },
+                    selected = isSelected, onClick = { onSelectFolder(vId) }, label = { Text(folder.name) },
                     leadingIcon = {
                         Icon(
                             if (isSelected) Icons.Default.Check else Icons.Default.Folder,
-                            contentDescription = null,
-                            modifier = Modifier.size(FilterChipDefaults.IconSize)
+                            contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)
                         )
                     }
                 )
@@ -1355,9 +1151,7 @@ fun CategoryFolderTabsRow(
 
         var showSortMenu by remember { mutableStateOf(false) }
         Box {
-            IconButton(onClick = { showSortMenu = true }) {
-                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
-            }
+            IconButton(onClick = { showSortMenu = true }) { Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort") }
             DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.sort_name)) },
@@ -1410,18 +1204,13 @@ fun GoogleFilesDashboardSection(
     val imageSize = allFiles.filter { it.mimeType.startsWith("image/") }.sumOf { it.size }
     val audioSize = allFiles.filter { it.mimeType.startsWith("audio/") }.sumOf { it.size }
     val appSize = allFiles.filter { it.mimeType.contains("android.package-archive") || it.name.lowercase().endsWith(".apk") }.sumOf { it.size }
-    val archiveSize = allFiles.filter {
-        val n = it.name.lowercase()
-        it.mimeType.contains("zip") || it.mimeType.contains("rar") || it.mimeType.contains("7z") || n.endsWith(".zip") || n.endsWith(".rar") || n.endsWith(".7z")
-    }.sumOf { it.size }
-    val docSize = (allFiles.sumOf { it.size } - (videoSize + imageSize + audioSize + appSize + archiveSize)).coerceAtLeast(0L)
+    // Downloads বক্সে ডাউনলোড হওয়া সকল ফাইলের মোট সাইজ দেখাবে
+    val downloadedSize = allFiles.filter { it.localPath != null && File(it.localPath).exists() }.sumOf { it.size }
+    // ভিডিও, অডিও, ফটো এবং অ্যাপস ছাড়া বাকি সব (জিপ/রার সহ) Documents বক্সে দেখাবে
+    val docSize = (allFiles.sumOf { it.size } - (videoSize + imageSize + audioSize + appSize)).coerceAtLeast(0L)
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .scale(sectionScale)
-    ) {
-        // 1. Recents Section
+    Column(modifier = Modifier.fillMaxWidth().scale(sectionScale)) {
+        // 1. Recents (শুধু ভিডিও ও ফটো)
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1454,28 +1243,22 @@ fun GoogleFilesDashboardSection(
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "Recently opened files will appear here",
+                        text = "Recent videos & photos will appear here",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         } else {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 items(recentFiles.take(10), key = { it.id }) { file ->
                     val activeTransfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId == file.telegramFileId || it.fileName == file.name }
                     RecentOpenedFileCard(
-                        file = file,
-                        activeTransfer = activeTransfer,
+                        file = file, activeTransfer = activeTransfer,
                         onClick = { onOpenFile(file) },
                         onShareClick = { onShareFile(file) },
                         onDownloadClick = { onDownloadFile(file) },
-                        onSaveAsPhoneClick = {
-                            if (file.localPath != null) onSaveAsPhone(file.localPath, file.name)
-                        },
+                        onSaveAsPhoneClick = { if (file.localPath != null) onSaveAsPhone(file.localPath, file.name) },
                         onStarClick = { onStarFile(file) },
                         onRemoveRecentClick = { onRemoveRecent(file.id) }
                     )
@@ -1485,7 +1268,7 @@ fun GoogleFilesDashboardSection(
 
         Spacer(modifier = Modifier.height(26.dp))
 
-        // 2. Categories Section with Glassmorphic Cards & Accent Badges
+        // 2. Categories Section (প্রথম বক্সটি Downloads এবং জিপসহ বাকি সব Documents বক্সে)
         Text(
             text = "Categories",
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.3.sp),
@@ -1496,12 +1279,12 @@ fun GoogleFilesDashboardSection(
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 GoogleFilesCategoryCard(
-                    title = "ZIP & RAR",
-                    subtitle = formatSize(archiveSize),
-                    icon = Icons.Default.FolderZip,
+                    title = "Downloads",
+                    subtitle = formatSize(downloadedSize),
+                    icon = Icons.Default.Download,
                     accentColor = Color(0xFFA855F7),
                     modifier = Modifier.weight(1f),
-                    onClick = { onSelectCustom(CustomCategory.ARCHIVES) }
+                    onClick = { onSelectCustom(CustomCategory.DOWNLOADS) }
                 )
                 GoogleFilesCategoryCard(
                     title = "Images",
@@ -1562,17 +1345,13 @@ fun GoogleFilesDashboardSection(
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             GoogleFilesCollectionCard(
-                title = "Starred",
-                icon = Icons.Outlined.StarOutline,
-                accentColor = Color(0xFFEAB308),
-                modifier = Modifier.weight(1f),
+                title = "Starred", icon = Icons.Outlined.StarOutline,
+                accentColor = Color(0xFFEAB308), modifier = Modifier.weight(1f),
                 onClick = onNavigateToStarred
             )
             GoogleFilesCollectionCard(
-                title = "Safe folder",
-                icon = Icons.Outlined.Lock,
-                accentColor = Color(0xFF38BDF8),
-                modifier = Modifier.weight(1f),
+                title = "Safe folder", icon = Icons.Outlined.Lock,
+                accentColor = Color(0xFF38BDF8), modifier = Modifier.weight(1f),
                 onClick = onNavigateToSafeFolder
             )
         }
@@ -1630,52 +1409,31 @@ fun RecentOpenedFileCard(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
         border = BorderStroke(
             1.dp,
-            Brush.linearGradient(
-                colors = listOf(accent.copy(alpha = 0.35f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
-            )
+            Brush.linearGradient(colors = listOf(accent.copy(alpha = 0.35f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)))
         ),
         modifier = Modifier.width(172.dp).height(210.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             if (thumbnailModel != null) {
                 AsyncImage(
-                    model = thumbnailModel,
-                    contentDescription = file.name,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                    model = thumbnailModel, contentDescription = file.name,
+                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                 )
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(Color.Black.copy(alpha = 0.15f), Color.Black.copy(alpha = 0.72f))
-                            )
-                        )
+                    modifier = Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(colors = listOf(Color.Black.copy(alpha = 0.15f), Color.Black.copy(alpha = 0.72f)))
+                    )
                 )
             } else {
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.radialGradient(
-                                colors = listOf(accent.copy(alpha = 0.22f), Color.Transparent)
-                            )
-                        ),
+                    modifier = Modifier.fillMaxSize().background(
+                        Brush.radialGradient(colors = listOf(accent.copy(alpha = 0.22f), Color.Transparent))
+                    ),
                     contentAlignment = Alignment.Center
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = accent.copy(alpha = 0.16f),
-                        modifier = Modifier.size(64.dp)
-                    ) {
+                    Surface(shape = CircleShape, color = accent.copy(alpha = 0.16f), modifier = Modifier.size(64.dp)) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = accent,
-                                modifier = Modifier.size(34.dp)
-                            )
+                            Icon(imageVector = icon, contentDescription = null, tint = accent, modifier = Modifier.size(34.dp))
                         }
                     }
                 }
@@ -1683,53 +1441,35 @@ fun RecentOpenedFileCard(
 
             if (file.mimeType.startsWith("video/") && activeTransfer == null) {
                 Icon(
-                    imageVector = Icons.Default.PlayCircleFilled,
-                    contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.85f),
-                    modifier = Modifier.size(38.dp).align(Alignment.Center)
+                    imageVector = Icons.Default.PlayCircleFilled, contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(38.dp).align(Alignment.Center)
                 )
             }
 
-            // মেইন ইন্টারফেসে লাইভ ডাউনলোড পার্সেন্টেজ ওভারলে
             if (activeTransfer != null) {
                 val pct = (activeTransfer.progress * 100).toInt().coerceIn(0, 100)
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(
                             progress = { activeTransfer.progress },
-                            color = Color(0xFF00E5FF),
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(44.dp)
+                            color = Color(0xFF00E5FF), strokeWidth = 3.dp, modifier = Modifier.size(44.dp)
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "$pct%",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
+                        Text(text = "$pct%", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 }
             }
 
             Box(modifier = Modifier.align(Alignment.TopEnd).padding(10.dp)) {
                 Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                    shape = CircleShape, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
                     modifier = Modifier.size(34.dp)
                 ) {
                     IconButton(onClick = { showMenu = true }, modifier = Modifier.fillMaxSize()) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                     }
                 }
 
@@ -1765,15 +1505,12 @@ fun RecentOpenedFileCard(
                 }
             }
 
-            Column(
-                modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(14.dp)
-            ) {
+            Column(modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(14.dp)) {
                 Text(
                     text = file.name,
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                     color = if (thumbnailModel != null) Color.White else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
@@ -1802,28 +1539,14 @@ fun GoogleFilesCategoryCard(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
         border = BorderStroke(
             1.dp,
-            Brush.linearGradient(
-                colors = listOf(accentColor.copy(alpha = 0.35f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f))
-            )
+            Brush.linearGradient(colors = listOf(accentColor.copy(alpha = 0.35f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f)))
         ),
         modifier = modifier.height(72.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(13.dp),
-                color = accentColor.copy(alpha = 0.16f),
-                modifier = Modifier.size(42.dp)
-            ) {
+        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(13.dp), color = accentColor.copy(alpha = 0.16f), modifier = Modifier.size(42.dp)) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(22.dp)
-                    )
+                    Icon(imageVector = icon, contentDescription = null, tint = accentColor, modifier = Modifier.size(22.dp))
                 }
             }
             Spacer(modifier = Modifier.width(14.dp))
@@ -1831,15 +1554,11 @@ fun GoogleFilesCategoryCard(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
+                    text = subtitle, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1
                 )
             }
         }
@@ -1860,37 +1579,21 @@ fun GoogleFilesCollectionCard(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
         border = BorderStroke(
             1.dp,
-            Brush.linearGradient(
-                colors = listOf(accentColor.copy(alpha = 0.35f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f))
-            )
+            Brush.linearGradient(colors = listOf(accentColor.copy(alpha = 0.35f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f)))
         ),
         modifier = modifier.height(64.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = accentColor.copy(alpha = 0.16f),
-                modifier = Modifier.size(38.dp)
-            ) {
+        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(12.dp), color = accentColor.copy(alpha = 0.16f), modifier = Modifier.size(38.dp)) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    Icon(imageVector = icon, contentDescription = null, tint = accentColor, modifier = Modifier.size(20.dp))
                 }
             }
             Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -1911,28 +1614,14 @@ fun GoogleFilesStorageCard(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
         border = BorderStroke(
             1.dp,
-            Brush.linearGradient(
-                colors = listOf(accentColor.copy(alpha = 0.4f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f))
-            )
+            Brush.linearGradient(colors = listOf(accentColor.copy(alpha = 0.4f), MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f)))
         ),
         modifier = modifier.height(76.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(13.dp),
-                color = accentColor.copy(alpha = 0.16f),
-                modifier = Modifier.size(42.dp)
-            ) {
+        Row(modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(13.dp), color = accentColor.copy(alpha = 0.16f), modifier = Modifier.size(42.dp)) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(22.dp)
-                    )
+                    Icon(imageVector = icon, contentDescription = null, tint = accentColor, modifier = Modifier.size(22.dp))
                 }
             }
             Spacer(modifier = Modifier.width(12.dp))
@@ -1940,17 +1629,12 @@ fun GoogleFilesStorageCard(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text = subtitle, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -1963,11 +1647,7 @@ fun NewActionItem(icon: ImageVector, label: String, onClick: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.clickable(onClick = onClick).padding(16.dp)
     ) {
-        Surface(
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            shape = CircleShape,
-            modifier = Modifier.size(56.dp)
-        ) {
+        Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = CircleShape, modifier = Modifier.size(56.dp)) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(icon, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
             }
@@ -1987,10 +1667,7 @@ fun FilterSortRow(
     onSetSortOrder: (SortOrder) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier.fillMaxWidth()
-    ) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.fillMaxWidth()) {
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(horizontal = 4.dp),
@@ -1999,20 +1676,16 @@ fun FilterSortRow(
             item {
                 val isAllSelected = filterType == FilterType.ALL && customCategory == CustomCategory.NONE
                 FilterChip(
-                    selected = isAllSelected,
-                    onClick = { onSetFilterType(FilterType.ALL) },
+                    selected = isAllSelected, onClick = { onSetFilterType(FilterType.ALL) },
                     label = { Text(stringResource(R.string.filter_all)) },
-                    leadingIcon = if (isAllSelected) {
-                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
-                    } else null
+                    leadingIcon = if (isAllSelected) { { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) } } else null
                 )
             }
             val standardCategories = listOf(FilterType.VIDEOS, FilterType.AUDIO, FilterType.PHOTOS, FilterType.DOCUMENTS)
             items(standardCategories) { category ->
                 val isSelected = customCategory == CustomCategory.NONE && filterType == category
                 FilterChip(
-                    selected = isSelected,
-                    onClick = { onSetFilterType(category) },
+                    selected = isSelected, onClick = { onSetFilterType(category) },
                     label = {
                         Text(
                             when (category) {
@@ -2024,18 +1697,14 @@ fun FilterSortRow(
                             }
                         )
                     },
-                    leadingIcon = if (isSelected) {
-                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
-                    } else null
+                    leadingIcon = if (isSelected) { { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) } } else null
                 )
             }
         }
 
         var showSortMenu by remember { mutableStateOf(false) }
         Box {
-            IconButton(onClick = { showSortMenu = true }) {
-                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
-            }
+            IconButton(onClick = { showSortMenu = true }) { Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort") }
             DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.sort_name)) },
@@ -2079,12 +1748,7 @@ fun DriveListItem(
 
     ListItem(
         headlineContent = { 
-            Text(
-                text = item.name,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Text(text = item.name, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         },
         supportingContent = {
             if (activeTransfer != null) {
@@ -2104,7 +1768,7 @@ fun DriveListItem(
                 }
             } else if (item is DriveItem.File) {
                 Text(
-                    text = if (isDownloaded) "${formatSize(item.size)} • Ready" else formatSize(item.size),
+                    text = if (isDownloaded) "${formatSize(item.size)} • Downloaded" else formatSize(item.size),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (isDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2126,8 +1790,7 @@ fun DriveListItem(
                     if (thumbnailModel != null) {
                         Icon(imageVector = icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
                         AsyncImage(
-                            model = thumbnailModel,
-                            contentDescription = null,
+                            model = thumbnailModel, contentDescription = null,
                             modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)),
                             contentScale = ContentScale.Crop
                         )
@@ -2147,9 +1810,7 @@ fun DriveListItem(
                 var showInfoDialog by remember { mutableStateOf(false) }
                 val isVirtual = item is DriveItem.Folder && item.isVirtual
 
-                IconButton(onClick = { showItemMenu = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "More")
-                }
+                IconButton(onClick = { showItemMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More") }
 
                 DropdownMenu(expanded = showItemMenu, onDismissRequest = { showItemMenu = false }) {
                     if (!isVirtual && !isSecure) {
@@ -2241,10 +1902,7 @@ fun DriveGridItem(
         )
     ) {
         Box {
-            Column(
-                modifier = Modifier.padding(14.dp).fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(modifier = Modifier.padding(14.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier.size(68.dp).background(color.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
@@ -2256,8 +1914,7 @@ fun DriveGridItem(
                     if (thumbnailModel != null) {
                         Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = color)
                         AsyncImage(
-                            model = thumbnailModel,
-                            contentDescription = null,
+                            model = thumbnailModel, contentDescription = null,
                             modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)),
                             contentScale = ContentScale.Crop
                         )
@@ -2276,7 +1933,11 @@ fun DriveGridItem(
                     Text("$pct%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(item.name, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                    )
                     Box {
                         IconButton(onClick = { showItemMenu = true }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.MoreVert, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -2398,13 +2059,11 @@ fun ShareDialog(
                 if (item is DriveItem.File) {
                     Text(stringResource(R.string.share_to_telegram), style = MaterialTheme.typography.labelLarge)
                     OutlinedTextField(
-                        value = shareToPhone,
-                        onValueChange = { shareToPhone = it },
+                        value = shareToPhone, onValueChange = { shareToPhone = it },
                         placeholder = { Text("+880...") },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                        singleLine = true,
-                        leadingIcon = { Icon(Icons.Default.Phone, null) }
+                        singleLine = true, leadingIcon = { Icon(Icons.Default.Phone, null) }
                     )
                     if (isSharingFile) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
