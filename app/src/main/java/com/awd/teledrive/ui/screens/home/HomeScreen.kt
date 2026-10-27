@@ -14,6 +14,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,8 +75,11 @@ import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.Share
@@ -132,13 +136,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.domain.model.DriveItem
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -147,9 +155,15 @@ import org.drinkless.tdlib.TdApi
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import javax.inject.Inject
 import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.time.Duration.Companion.seconds
+
+@HiltViewModel
+class HomeTransferControlViewModel @Inject constructor(
+    val transferRepository: TransferRepository
+) : ViewModel()
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -160,7 +174,8 @@ fun HomeScreen(
     onNavigateToSafeFolder: () -> Unit = {},
     onNavigateToCloudAnalysis: () -> Unit = {},
     onNavigateToPreview: (DriveItem.File) -> Unit,
-    viewModel: HomeViewModel = hiltViewModel()
+    viewModel: HomeViewModel = hiltViewModel(),
+    transferControlVm: HomeTransferControlViewModel = hiltViewModel()
 ) {
     val items by viewModel.items.collectAsState()
     val allCloudFiles by viewModel.allCloudFiles.collectAsState()
@@ -224,9 +239,12 @@ fun HomeScreen(
         onNavigateBack = viewModel::navigateBack,
         onRefresh = viewModel::fetchItems,
         onRenameItem = viewModel::renameItem,
-        onCancelTransfer = viewModel::cancelTransfer,
-        onRemoveTransfer = viewModel::removeTransfer,
-        onClearCompletedTransfers = viewModel::clearCompletedTransfers,
+        onPauseTransfer = transferControlVm.transferRepository::pauseTransfer,
+        onResumeTransfer = transferControlVm.transferRepository::resumeTransfer,
+        onCancelTransfer = transferControlVm.transferRepository::cancelTransfer,
+        onRemoveTransfer = transferControlVm.transferRepository::removeTransfer,
+        onClearCompletedTransfers = transferControlVm.transferRepository::clearCompleted,
+        onSaveAsPhone = transferControlVm.transferRepository::saveToPublicDownloads,
         onGetInviteLink = viewModel::getFolderInviteLink,
         onGetMembers = viewModel::getFolderMembers,
         onShareFile = viewModel::shareFileToPhone
@@ -275,9 +293,12 @@ fun HomeContent(
     onNavigateBack: () -> Unit,
     onRefresh: () -> Unit,
     onRenameItem: (DriveItem, String) -> Unit,
+    onPauseTransfer: (String) -> Unit = {},
+    onResumeTransfer: (String) -> Unit = {},
     onCancelTransfer: (String) -> Unit = {},
     onRemoveTransfer: (String) -> Unit = {},
     onClearCompletedTransfers: () -> Unit = {},
+    onSaveAsPhone: (String, String) -> Unit = { _, _ -> },
     onGetInviteLink: (Long, (String?) -> Unit) -> Unit,
     onGetMembers: (Long, (List<TdApi.User>) -> Unit) -> Unit,
     onShareFile: (String, Long, (Boolean, String?) -> Unit) -> Unit
@@ -327,27 +348,37 @@ fun HomeContent(
     var itemToRename by remember { mutableStateOf<DriveItem?>(null) }
     var renameValue by remember { mutableStateOf("") }
 
+    // আপলোড পপআপ নিচের দিকে ওপেন হবে
     if (showUploadPopup) {
-        TransferPopupDialog(
+        TransferPositionedPopup(
             title = "Uploads",
             isDownloadPopup = false,
             transferList = uploadTransfers,
+            allCloudFiles = allCloudFiles,
             onDismiss = { showUploadPopup = false },
+            onPauseTransfer = onPauseTransfer,
+            onResumeTransfer = onResumeTransfer,
             onCancelTransfer = onCancelTransfer,
             onRemoveTransfer = onRemoveTransfer,
-            onClearCompleted = onClearCompletedTransfers
+            onClearCompleted = onClearCompletedTransfers,
+            onSaveAsPhone = onSaveAsPhone
         )
     }
 
+    // ডাউনলোড পপআপ উপরের দিকে ওপেন হবে
     if (showDownloadPopup) {
-        TransferPopupDialog(
+        TransferPositionedPopup(
             title = "Downloads",
             isDownloadPopup = true,
             transferList = downloadTransfers,
+            allCloudFiles = allCloudFiles,
             onDismiss = { showDownloadPopup = false },
+            onPauseTransfer = onPauseTransfer,
+            onResumeTransfer = onResumeTransfer,
             onCancelTransfer = onCancelTransfer,
             onRemoveTransfer = onRemoveTransfer,
-            onClearCompleted = onClearCompletedTransfers
+            onClearCompleted = onClearCompletedTransfers,
+            onSaveAsPhone = onSaveAsPhone
         )
     }
 
@@ -746,7 +777,7 @@ fun HomeContent(
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = "Search \"MyCloud\"",
+                                            text = "Search",
                                             style = MaterialTheme.typography.bodyLarge,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.weight(1f)
@@ -780,7 +811,7 @@ fun HomeContent(
                                                 modifier = Modifier.fillMaxWidth()
                                             )
                                             if (searchQuery.isEmpty()) {
-                                                Text("Search files...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("Search", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             }
                                         }
                                         if (searchQuery.isNotEmpty()) {
@@ -859,6 +890,7 @@ fun HomeContent(
                                     onOpenFile = onNavigateToPreview,
                                     onShareFile = { shareItem = it },
                                     onDownloadFile = { onDownloadFile(it.id, it.parentChatId, it.name) },
+                                    onSaveAsPhone = onSaveAsPhone,
                                     onStarFile = onToggleStarred,
                                     onRemoveRecent = onRemoveFromRecents,
                                     onNavigateToStarred = onNavigateToStarred,
@@ -916,6 +948,11 @@ fun HomeContent(
                                             if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
                                             else if (item is DriveItem.Folder) folderToDownload = item
                                         },
+                                        onSaveAsPhoneClick = {
+                                            if (item is DriveItem.File && item.localPath != null) {
+                                                onSaveAsPhone(item.localPath, item.name)
+                                            }
+                                        },
                                         onMoveClick = null,
                                         onRenameClick = {
                                             itemToRename = item
@@ -951,6 +988,11 @@ fun HomeContent(
                                         onDownloadClick = {
                                             if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
                                             else if (item is DriveItem.Folder) folderToDownload = item
+                                        },
+                                        onSaveAsPhoneClick = {
+                                            if (item is DriveItem.File && item.localPath != null) {
+                                                onSaveAsPhone(item.localPath, item.name)
+                                            }
                                         },
                                         onMoveClick = null,
                                         onRenameClick = {
@@ -1014,112 +1056,206 @@ fun TransferBadgeButton(
 }
 
 @Composable
-fun TransferPopupDialog(
+fun TransferPositionedPopup(
     title: String,
     isDownloadPopup: Boolean,
     transferList: List<TransferInfo>,
+    allCloudFiles: List<DriveItem.File>,
     onDismiss: () -> Unit,
+    onPauseTransfer: (String) -> Unit,
+    onResumeTransfer: (String) -> Unit,
     onCancelTransfer: (String) -> Unit,
     onRemoveTransfer: (String) -> Unit,
-    onClearCompleted: () -> Unit
+    onClearCompleted: () -> Unit,
+    onSaveAsPhone: (String, String) -> Unit
 ) {
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                )
+                .padding(horizontal = 16.dp, vertical = 28.dp),
+            // ডাউনলোড পপআপ উপরের দিকে (TopCenter) এবং আপলোড পপআপ নিচের দিকে (BottomCenter)
+            contentAlignment = if (isDownloadPopup) Alignment.TopCenter else Alignment.BottomCenter
+        ) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp,
+                shadowElevation = 12.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (isDownloadPopup) Icons.Default.Download else Icons.Default.Upload,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(title, style = MaterialTheme.typography.titleLarge)
-                }
-                if (transferList.isNotEmpty()) {
-                    IconButton(onClick = onClearCompleted) {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = "Clear Completed")
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (isDownloadPopup) Icons.Default.Download else Icons.Default.Upload,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
+                        }
+                        if (transferList.isNotEmpty()) {
+                            IconButton(onClick = onClearCompleted) {
+                                Icon(Icons.Default.DeleteSweep, contentDescription = "Clear Completed")
+                            }
+                        }
                     }
-                }
-            }
-        },
-        text = {
-            if (transferList.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().height(120.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (isDownloadPopup) "কোনো ডাউনলোড চলমান নেই" else "কোনো আপলোড চলমান নেই",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(transferList, key = { it.remoteUniqueId }) { transfer ->
-                        val isTerminal = transfer.status == TransferRepository.Status.COMPLETED ||
-                                         transfer.status == TransferRepository.Status.CANCELLED ||
-                                         transfer.status.startsWith(TransferRepository.Status.FAILED)
-                        val percent = (transfer.progress * 100).toInt().coerceIn(0, 100)
 
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                            modifier = Modifier.fillMaxWidth()
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (transferList.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(100.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
+                            Text(
+                                text = if (isDownloadPopup) "No active downloads" else "No active uploads",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(transferList, key = { it.remoteUniqueId }) { transfer ->
+                                val isCompleted = transfer.status == TransferRepository.Status.COMPLETED
+                                val isPaused = transfer.status == TransferRepository.Status.PAUSED
+                                val isTerminal = isCompleted ||
+                                                 transfer.status == TransferRepository.Status.CANCELLED ||
+                                                 transfer.status.startsWith(TransferRepository.Status.FAILED)
+                                val percent = (transfer.progress * 100).toInt().coerceIn(0, 100)
+                                var showMenu by remember { mutableStateOf(false) }
+
+                                val resolvedPath = transfer.localPath?.takeIf { File(it).exists() }
+                                    ?: allCloudFiles.find { it.remoteUniqueId == transfer.remoteUniqueId || it.telegramFileId == transfer.fileId }?.localPath?.takeIf { File(it).exists() }
+
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = transfer.fileName,
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${transfer.status} • ${formatSize(transfer.downloadedSize)} / ${formatSize(transfer.totalSize)} ($percent%)",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    if (!isTerminal) {
-                                        IconButton(onClick = { onCancelTransfer(transfer.remoteUniqueId) }) {
-                                            Icon(Icons.Default.Close, contentDescription = "Cancel", tint = MaterialTheme.colorScheme.error)
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = transfer.fileName,
+                                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${transfer.status} • ${formatSize(transfer.downloadedSize)} / ${formatSize(transfer.totalSize)} ($percent%)",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+
+                                            if (!isTerminal) {
+                                                // ডাউনলোড বা আপলোড থামানো (Pause / Resume) বাটন
+                                                IconButton(
+                                                    onClick = {
+                                                        if (isPaused) onResumeTransfer(transfer.remoteUniqueId)
+                                                        else onPauseTransfer(transfer.remoteUniqueId)
+                                                    }
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                                        contentDescription = if (isPaused) "Resume" else "Pause",
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                                // ক্যানসেল (Cancel) বাটন
+                                                IconButton(onClick = { onCancelTransfer(transfer.remoteUniqueId) }) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Close,
+                                                        contentDescription = "Cancel",
+                                                        tint = MaterialTheme.colorScheme.error
+                                                    )
+                                                }
+                                            } else if (isDownloadPopup && isCompleted) {
+                                                // ডাউনলোড হওয়া ডেটার সাথে ৩-ডটের ভেতরে Save as Phone অপশন
+                                                Box {
+                                                    IconButton(onClick = { showMenu = true }) {
+                                                        Icon(Icons.Default.MoreVert, contentDescription = "More")
+                                                    }
+                                                    DropdownMenu(
+                                                        expanded = showMenu,
+                                                        onDismissRequest = { showMenu = false }
+                                                    ) {
+                                                        if (resolvedPath != null) {
+                                                            DropdownMenuItem(
+                                                                text = { Text("Save as Phone") },
+                                                                onClick = {
+                                                                    showMenu = false
+                                                                    onSaveAsPhone(resolvedPath, transfer.fileName)
+                                                                },
+                                                                leadingIcon = { Icon(Icons.Default.PhoneAndroid, null) }
+                                                            )
+                                                        }
+                                                        DropdownMenuItem(
+                                                            text = { Text(stringResource(R.string.delete)) },
+                                                            onClick = {
+                                                                showMenu = false
+                                                                onRemoveTransfer(transfer.remoteUniqueId)
+                                                            },
+                                                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
+                                                        )
+                                                    }
+                                                }
+                                            } else {
+                                                IconButton(onClick = { onRemoveTransfer(transfer.remoteUniqueId) }) {
+                                                    Icon(Icons.Default.Delete, contentDescription = "Remove", tint = MaterialTheme.colorScheme.outline)
+                                                }
+                                            }
                                         }
-                                    } else {
-                                        IconButton(onClick = { onRemoveTransfer(transfer.remoteUniqueId) }) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Remove", tint = MaterialTheme.colorScheme.outline)
-                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        LinearProgressIndicator(
+                                            progress = { transfer.progress },
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                LinearProgressIndicator(
-                                    progress = { transfer.progress },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
                             }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = onDismiss) {
+                            Text(stringResource(R.string.close))
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.close))
-            }
         }
-    )
+    }
 }
 
 @Composable
@@ -1205,6 +1341,7 @@ fun GoogleFilesDashboardSection(
     onOpenFile: (DriveItem.File) -> Unit,
     onShareFile: (DriveItem.File) -> Unit,
     onDownloadFile: (DriveItem.File) -> Unit,
+    onSaveAsPhone: (String, String) -> Unit,
     onStarFile: (DriveItem.File) -> Unit,
     onRemoveRecent: (Long) -> Unit,
     onNavigateToStarred: () -> Unit,
@@ -1270,6 +1407,9 @@ fun GoogleFilesDashboardSection(
                         onClick = { onOpenFile(file) },
                         onShareClick = { onShareFile(file) },
                         onDownloadClick = { onDownloadFile(file) },
+                        onSaveAsPhoneClick = {
+                            if (file.localPath != null) onSaveAsPhone(file.localPath, file.name)
+                        },
                         onStarClick = { onStarFile(file) },
                         onRemoveRecentClick = { onRemoveRecent(file.id) }
                     )
@@ -1395,12 +1535,14 @@ fun RecentOpenedFileCard(
     onClick: () -> Unit,
     onShareClick: () -> Unit,
     onDownloadClick: () -> Unit,
+    onSaveAsPhoneClick: () -> Unit = {},
     onStarClick: () -> Unit,
     onRemoveRecentClick: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val (icon, _) = getFileIconAndColor(file)
     val thumbnailModel = file.localPath ?: file.thumbnailPath
+    val isDownloaded = file.localPath != null && File(file.localPath).exists()
 
     Surface(
         onClick = onClick,
@@ -1448,11 +1590,19 @@ fun RecentOpenedFileCard(
                         onClick = { showMenu = false; onStarClick() },
                         leadingIcon = { Icon(if (file.isStarred) Icons.Default.Star else Icons.Outlined.StarOutline, null) }
                     )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.download)) },
-                        onClick = { showMenu = false; onDownloadClick() },
-                        leadingIcon = { Icon(Icons.Default.Download, null) }
-                    )
+                    if (isDownloaded) {
+                        DropdownMenuItem(
+                            text = { Text("Save as Phone") },
+                            onClick = { showMenu = false; onSaveAsPhoneClick() },
+                            leadingIcon = { Icon(Icons.Default.PhoneAndroid, null) }
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.download)) },
+                            onClick = { showMenu = false; onDownloadClick() },
+                            leadingIcon = { Icon(Icons.Default.Download, null) }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.share)) },
                         onClick = { showMenu = false; onShareClick() },
@@ -1679,12 +1829,14 @@ fun DriveListItem(
     onStarClick: () -> Unit,
     onShareClick: () -> Unit,
     onDownloadClick: () -> Unit,
+    onSaveAsPhoneClick: (() -> Unit)? = null,
     onRenameClick: (() -> Unit)? = null,
     onMoveClick: (() -> Unit)? = null,
     onDeleteClick: (() -> Unit)? = null
 ) {
     val (icon, color) = getFileIconAndColor(item)
     val isSecure = (item is DriveItem.Folder && item.isSecure) || (item is DriveItem.File && item.isEncrypted)
+    val isDownloaded = item is DriveItem.File && item.localPath != null && File(item.localPath).exists()
 
     ListItem(
         headlineContent = { 
@@ -1759,11 +1911,19 @@ fun DriveListItem(
                         )
                     }
                     if (!isSecure) {
-                        DropdownMenuItem(
-                            text = { Text(if (item is DriveItem.File) stringResource(R.string.download) else stringResource(R.string.download_contents)) },
-                            onClick = { onDownloadClick(); showItemMenu = false },
-                            leadingIcon = { Icon(Icons.Default.Download, null) }
-                        )
+                        if (isDownloaded && onSaveAsPhoneClick != null) {
+                            DropdownMenuItem(
+                                text = { Text("Save as Phone") },
+                                onClick = { onSaveAsPhoneClick(); showItemMenu = false },
+                                leadingIcon = { Icon(Icons.Default.PhoneAndroid, null) }
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text(if (item is DriveItem.File) stringResource(R.string.download) else stringResource(R.string.download_contents)) },
+                                onClick = { onDownloadClick(); showItemMenu = false },
+                                leadingIcon = { Icon(Icons.Default.Download, null) }
+                            )
+                        }
                     }
                     onDeleteClick?.let {
                         DropdownMenuItem(
@@ -1792,6 +1952,7 @@ fun DriveGridItem(
     onStarClick: () -> Unit,
     onShareClick: () -> Unit,
     onDownloadClick: () -> Unit,
+    onSaveAsPhoneClick: (() -> Unit)? = null,
     onRenameClick: (() -> Unit)? = null,
     onMoveClick: (() -> Unit)? = null,
     onDeleteClick: (() -> Unit)? = null
@@ -1800,6 +1961,7 @@ fun DriveGridItem(
     var showInfoDialog by remember { mutableStateOf(false) }
     val (icon, color) = getFileIconAndColor(item)
     val isSecure = (item is DriveItem.Folder && item.isSecure) || (item is DriveItem.File && item.isEncrypted)
+    val isDownloaded = item is DriveItem.File && item.localPath != null && File(item.localPath).exists()
 
     OutlinedCard(
         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
@@ -1862,11 +2024,19 @@ fun DriveGridItem(
                                 )
                             }
                             if (!isSecure) {
-                                DropdownMenuItem(
-                                    text = { Text(if (item is DriveItem.File) stringResource(R.string.download) else stringResource(R.string.download_contents)) },
-                                    onClick = { onDownloadClick(); showItemMenu = false },
-                                    leadingIcon = { Icon(Icons.Default.Download, null) }
-                                )
+                                if (isDownloaded && onSaveAsPhoneClick != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Save as Phone") },
+                                        onClick = { onSaveAsPhoneClick(); showItemMenu = false },
+                                        leadingIcon = { Icon(Icons.Default.PhoneAndroid, null) }
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = { Text(if (item is DriveItem.File) stringResource(R.string.download) else stringResource(R.string.download_contents)) },
+                                        onClick = { onDownloadClick(); showItemMenu = false },
+                                        leadingIcon = { Icon(Icons.Default.Download, null) }
+                                    )
+                                }
                             }
                             onDeleteClick?.let {
                                 DropdownMenuItem(
