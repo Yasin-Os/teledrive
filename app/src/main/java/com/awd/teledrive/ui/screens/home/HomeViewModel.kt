@@ -3,8 +3,10 @@ package com.awd.teledrive.ui.screens.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.core.ConnectivityObserver
+import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.data.repository.ShareRepository
+import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.data.secure.MasterPasswordService
 import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.data.secure.SecureSettings
@@ -32,13 +34,14 @@ enum class FilterType {
 }
 
 enum class CustomCategory {
-    NONE, APPS, ARCHIVES, RECENTS
+    NONE, APPS, ARCHIVES, RECENTS, ALL_STORAGE
 }
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val driveRepository: DriveRepository,
     private val shareRepository: ShareRepository,
+    private val transferRepository: TransferRepository,
     private val connectivityObserver: ConnectivityObserver,
     private val masterPasswordService: MasterPasswordService,
     private val secureSessionManager: SecureSessionManager,
@@ -47,6 +50,8 @@ class HomeViewModel @Inject constructor(
 
     val connectivityStatus = connectivityObserver.status
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ConnectivityObserver.Status.Available)
+
+    val transfers: StateFlow<Map<String, TransferInfo>> = transferRepository.transfers
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
@@ -59,6 +64,9 @@ class HomeViewModel @Inject constructor(
 
     private val _customCategory = MutableStateFlow(CustomCategory.NONE)
     val customCategory = _customCategory.asStateFlow()
+
+    private val _selectedCategoryFolderId = MutableStateFlow("ALL")
+    val selectedCategoryFolderId = _selectedCategoryFolderId.asStateFlow()
 
     private val _currentFolderId = MutableStateFlow<Long?>(null)
     val currentFolderId = _currentFolderId.asStateFlow()
@@ -87,6 +95,12 @@ class HomeViewModel @Inject constructor(
 
     val allCloudFiles: StateFlow<List<DriveItem.File>> = driveRepository.getAllFiles()
         .map { list -> list.filter { !it.isEncrypted } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val virtualFolders: StateFlow<List<DriveItem.Folder>> = driveRepository.getSavedMessagesChatIdFlow()
+        .flatMapLatest { driveRepository.getItems(null, "0", "") }
+        .map { list -> list.filterIsInstance<DriveItem.Folder>().filter { it.isVirtual && !it.isSecure } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val recentFiles: StateFlow<List<DriveItem.File>> = combine(
@@ -129,7 +143,17 @@ class HomeViewModel @Inject constructor(
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val items: StateFlow<List<DriveItem>> = combine(
-        listOf(_currentFolderId, _currentVirtualFolderId, _searchQuery, _sortOrder, _filterType, _customCategory, driveRepository.getSavedMessagesChatIdFlow(), _recentOpenedIds)
+        listOf(
+            _currentFolderId,
+            _currentVirtualFolderId,
+            _searchQuery,
+            _sortOrder,
+            _filterType,
+            _customCategory,
+            driveRepository.getSavedMessagesChatIdFlow(),
+            _recentOpenedIds,
+            _selectedCategoryFolderId
+        )
     ) { arr ->
         val folderId = arr[0] as? Long
         val virtualId = arr[1] as String
@@ -139,10 +163,11 @@ class HomeViewModel @Inject constructor(
         val customCat = arr[5] as CustomCategory
         @Suppress("UNCHECKED_CAST")
         val recentIds = arr[7] as List<Long>
+        val selectedCatFolder = arr[8] as String
 
-        val isGlobalCategoryActive = (filter != FilterType.ALL || customCat != CustomCategory.NONE) && virtualId == "0" && query.isEmpty()
+        val isFileCategoryActive = (filter != FilterType.ALL || (customCat != CustomCategory.NONE && customCat != CustomCategory.ALL_STORAGE)) && virtualId == "0" && query.isEmpty()
 
-        val baseFlow = if (isGlobalCategoryActive) {
+        val baseFlow = if (isFileCategoryActive) {
             driveRepository.getAllFiles().map { files -> files as List<DriveItem> }
         } else {
             driveRepository.getItems(folderId, virtualId, query)
@@ -157,13 +182,13 @@ class HomeViewModel @Inject constructor(
 
             if (customCat == CustomCategory.RECENTS) {
                 val fileMap = items.filterIsInstance<DriveItem.File>().associateBy { it.id }
-                return@map recentIds.mapNotNull { fileMap[it] }
+                val recentsList = recentIds.mapNotNull { fileMap[it] }
+                return@map if (selectedCatFolder == "ALL") recentsList else recentsList.filter { (it.virtualParentId ?: "0") == selectedCatFolder }
             }
 
             val filteredByType = when {
                 customCat == CustomCategory.APPS -> items.filter { it is DriveItem.File && isAppFile(it) }
                 customCat == CustomCategory.ARCHIVES -> items.filter { it is DriveItem.File && isArchiveFile(it) }
-                filter == FilterType.ALL -> items
                 filter == FilterType.PHOTOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("image/") }
                 filter == FilterType.VIDEOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("video/") }
                 filter == FilterType.AUDIO -> items.filter { it is DriveItem.File && it.mimeType.startsWith("audio/") }
@@ -178,7 +203,13 @@ class HomeViewModel @Inject constructor(
                 else -> items
             }
 
-            val (folders, files) = filteredByType.partition { it is DriveItem.Folder }
+            val folderFiltered = if (isFileCategoryActive && selectedCatFolder != "ALL") {
+                filteredByType.filter { it is DriveItem.File && (it.virtualParentId ?: "0") == selectedCatFolder }
+            } else {
+                filteredByType
+            }
+
+            val (folders, files) = folderFiltered.partition { it is DriveItem.Folder }
             
             val sortedFolders = when (order) {
                 SortOrder.NAME -> folders.sortedBy { it.name }
@@ -207,12 +238,18 @@ class HomeViewModel @Inject constructor(
 
     fun setFilterType(type: FilterType) {
         _customCategory.value = CustomCategory.NONE
+        _selectedCategoryFolderId.value = "ALL"
         _filterType.value = type
     }
 
     fun setCustomCategory(category: CustomCategory) {
         _filterType.value = FilterType.ALL
+        _selectedCategoryFolderId.value = "ALL"
         _customCategory.value = category
+    }
+
+    fun setSelectedCategoryFolder(folderVirtualId: String) {
+        _selectedCategoryFolderId.value = folderVirtualId
     }
 
     fun onSearchQueryChange(query: String) {
@@ -230,15 +267,16 @@ class HomeViewModel @Inject constructor(
     }
 
     fun navigateBack() {
-        if (_customCategory.value != CustomCategory.NONE || _filterType.value != FilterType.ALL) {
-            _customCategory.value = CustomCategory.NONE
-            _filterType.value = FilterType.ALL
-            return
-        }
         if (_currentVirtualFolderId.value != "0") {
             val parentId = driveRepository.getParentVirtualId(_currentVirtualFolderId.value)
             val parentName = if (parentId == "0") null else driveRepository.getVirtualFolderName(parentId)
-            navigateToFolder(null, parentId, parentName) 
+            navigateToFolder(null, parentId, parentName)
+            return
+        }
+        if (_customCategory.value != CustomCategory.NONE || _filterType.value != FilterType.ALL) {
+            _customCategory.value = CustomCategory.NONE
+            _filterType.value = FilterType.ALL
+            _selectedCategoryFolderId.value = "ALL"
         }
     }
 
@@ -309,6 +347,18 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             driveRepository.renameItem(item, newName)
         }
+    }
+
+    fun cancelTransfer(uniqueId: String) {
+        transferRepository.cancelTransfer(uniqueId)
+    }
+
+    fun removeTransfer(uniqueId: String) {
+        transferRepository.removeTransfer(uniqueId)
+    }
+
+    fun clearCompletedTransfers() {
+        transferRepository.clearCompleted()
     }
 
     fun getFolderInviteLink(chatId: Long, onResult: (String?) -> Unit) {
