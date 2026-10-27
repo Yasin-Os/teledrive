@@ -1,7 +1,6 @@
 package com.awd.teledrive.ui.screens.security
 
 import androidx.lifecycle.ViewModel
-import com.awd.teledrive.data.secure.MasterPasswordService
 import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -12,33 +11,53 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SecurityViewModel @Inject constructor(
-    private val masterPasswordService: MasterPasswordService,
     private val secureSettings: SecureSettings,
     private val secureSessionManager: SecureSessionManager
 ) : ViewModel() {
 
-    private val SAFE_FOLDER_PASS_KEY = "safe_folder_separate_password"
+    companion object {
+        private const val KEY_APP_LOCK_PIN = "app_lock_pin_code_v2"
+        private const val KEY_APP_LOCK_ENABLED = "security_enabled"
+        private const val KEY_APP_BIOMETRIC = "biometric_enabled"
 
-    private val _isPasswordSet = MutableStateFlow(
-        !secureSettings.getString(SAFE_FOLDER_PASS_KEY).isNullOrEmpty() || masterPasswordService.isPasswordSet()
-    )
+        private const val KEY_SAFE_FOLDER_PIN = "safe_folder_pin_code_v2"
+        private const val KEY_SAFE_FOLDER_LOCK_ENABLED = "safe_folder_lock_enabled_v2"
+    }
+
+    // ১. পুরো অ্যাপ লক স্টেট (Settings -> Security)
+    private val _isPasswordSet = MutableStateFlow(!secureSettings.getString(KEY_APP_LOCK_PIN).isNullOrEmpty())
     val isPasswordSet = _isPasswordSet.asStateFlow()
 
-    // এটি শুধুমাত্র পুরো অ্যাপ লক করার সুইচ (Safe Folder-এর সাথে এটি চালু হবে না)
-    private val _isSecurityEnabled = MutableStateFlow(secureSettings.isSecurityEnabled())
+    private val _isSecurityEnabled = MutableStateFlow(
+        secureSettings.getBoolean(KEY_APP_LOCK_ENABLED, false) && !secureSettings.getString(KEY_APP_LOCK_PIN).isNullOrEmpty()
+    )
     val isSecurityEnabled = _isSecurityEnabled.asStateFlow()
 
-    private val _isBiometricEnabled = MutableStateFlow(secureSettings.getBoolean("biometric_enabled"))
+    private val _isBiometricEnabled = MutableStateFlow(secureSettings.getBoolean(KEY_APP_BIOMETRIC, false))
     val isBiometricEnabled = _isBiometricEnabled.asStateFlow()
 
-    private val _isLocked = MutableStateFlow(false)
+    private val _isLocked = MutableStateFlow(
+        secureSettings.getBoolean(KEY_APP_LOCK_ENABLED, false) && !secureSettings.getString(KEY_APP_LOCK_PIN).isNullOrEmpty()
+    )
     val isLocked = _isLocked.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
 
+    // ২. Safe Folder-এর সম্পূর্ণ আলাদা ও স্বতন্ত্র পিন লক স্টেট
+    private val _isSafeFolderPinSet = MutableStateFlow(!secureSettings.getString(KEY_SAFE_FOLDER_PIN).isNullOrEmpty())
+    val isSafeFolderPinSet = _isSafeFolderPinSet.asStateFlow()
+
+    private val _isSafeFolderLockEnabled = MutableStateFlow(
+        secureSettings.getBoolean(KEY_SAFE_FOLDER_LOCK_ENABLED, true)
+    )
+    val isSafeFolderLockEnabled = _isSafeFolderLockEnabled.asStateFlow()
+
+    val isSecureModeActive = secureSessionManager.decryptedPassword.map { it != null }
+
+    // --- Whole App Lock Functions ---
     fun setSecurityEnabled(enabled: Boolean) {
-        secureSettings.setSecurityEnabled(enabled)
+        secureSettings.saveBoolean(KEY_APP_LOCK_ENABLED, enabled)
         _isSecurityEnabled.value = enabled
         if (!enabled) {
             _isLocked.value = false
@@ -46,23 +65,23 @@ class SecurityViewModel @Inject constructor(
     }
 
     fun setLocked(locked: Boolean) {
-        // শুধুমাত্র সেটিংসে পুরো অ্যাপ লক (Master Password) চালু থাকলেই অ্যাপ লক হবে
-        if (_isSecurityEnabled.value && masterPasswordService.isPasswordSet()) {
+        if (_isSecurityEnabled.value && _isPasswordSet.value) {
             _isLocked.value = locked
         }
     }
 
-    fun unlockSecureMode(password: String): Boolean {
-        val savedSafePass = secureSettings.getString(SAFE_FOLDER_PASS_KEY)
-        val isMatch = if (!savedSafePass.isNullOrEmpty()) {
-            savedSafePass == password
-        } else {
-            masterPasswordService.verifyPassword(password)
-        }
+    fun setPassword(pin: String) {
+        secureSettings.saveString(KEY_APP_LOCK_PIN, pin)
+        _isPasswordSet.value = true
+        setSecurityEnabled(true)
+        _isLocked.value = false
+        _error.value = null
+    }
 
-        return if (isMatch) {
-            secureSettings.saveString(SAFE_FOLDER_PASS_KEY, password)
-            secureSessionManager.setSessionPassword(password)
+    fun changeAppLockPin(oldPin: String, newPin: String): Boolean {
+        val current = secureSettings.getString(KEY_APP_LOCK_PIN)
+        return if (current == null || current == oldPin) {
+            secureSettings.saveString(KEY_APP_LOCK_PIN, newPin)
             _isPasswordSet.value = true
             true
         } else {
@@ -70,41 +89,69 @@ class SecurityViewModel @Inject constructor(
         }
     }
 
-    fun lockSecureMode() {
-        secureSessionManager.clearSession()
-    }
-
-    fun unlockWithBiometric(): Boolean {
-        val savedSafePass = secureSettings.getString(SAFE_FOLDER_PASS_KEY) ?: masterPasswordService.getStoredPassword()
-        return if (!savedSafePass.isNullOrEmpty()) {
-            secureSessionManager.setSessionPassword(savedSafePass)
-            true
-        } else false
-    }
-
-    val isSecureModeActive = secureSessionManager.decryptedPassword.map { it != null }
-
-    // Safe Folder বা পাসওয়ার্ড সেট করলে পুরো অ্যাপ লক (setSecurityEnabled) চালু হবে না
-    fun setPassword(password: String) {
-        secureSettings.saveString(SAFE_FOLDER_PASS_KEY, password)
-        masterPasswordService.setPassword(password)
-        _isPasswordSet.value = true
-    }
-
-    fun setBiometricEnabled(enabled: Boolean) {
-        secureSettings.saveBoolean("biometric_enabled", enabled)
-        _isBiometricEnabled.value = enabled
-    }
-
-    fun verifyPassword(password: String): Boolean {
-        val isValid = masterPasswordService.verifyPassword(password) ||
-                      secureSettings.getString(SAFE_FOLDER_PASS_KEY) == password
+    fun verifyPassword(pin: String): Boolean {
+        val stored = secureSettings.getString(KEY_APP_LOCK_PIN)
+        val isValid = stored != null && stored == pin
         if (!isValid) {
-            _error.value = "Incorrect password"
+            _error.value = "Incorrect PIN"
         } else {
             _error.value = null
             _isLocked.value = false
         }
         return isValid
     }
+
+    fun unlockAppWithBiometric() {
+        _error.value = null
+        _isLocked.value = false
+    }
+
+    fun setBiometricEnabled(enabled: Boolean) {
+        secureSettings.saveBoolean(KEY_APP_BIOMETRIC, enabled)
+        _isBiometricEnabled.value = enabled
+    }
+
+    // --- Safe Folder Independent PIN Functions (শুধুমাত্র পিন কোড, অ্যাপ লকের সাথে কোনো সম্পর্ক নেই) ---
+    fun setupSafeFolderPin(pin: String) {
+        secureSettings.saveString(KEY_SAFE_FOLDER_PIN, pin)
+        secureSettings.saveBoolean(KEY_SAFE_FOLDER_LOCK_ENABLED, true)
+        _isSafeFolderPinSet.value = true
+        _isSafeFolderLockEnabled.value = true
+        secureSessionManager.setSessionPassword(pin)
+    }
+
+    fun verifySafeFolderPin(pin: String): Boolean {
+        val stored = secureSettings.getString(KEY_SAFE_FOLDER_PIN)
+        return if (stored != null && stored == pin) {
+            secureSessionManager.setSessionPassword(pin)
+            true
+        } else {
+            false
+        }
+    }
+
+    fun changeSafeFolderPin(oldPin: String, newPin: String): Boolean {
+        val stored = secureSettings.getString(KEY_SAFE_FOLDER_PIN)
+        return if (stored == null || stored == oldPin) {
+            secureSettings.saveString(KEY_SAFE_FOLDER_PIN, newPin)
+            _isSafeFolderPinSet.value = true
+            secureSessionManager.setSessionPassword(newPin)
+            true
+        } else {
+            false
+        }
+    }
+
+    fun setSafeFolderLockEnabled(enabled: Boolean) {
+        secureSettings.saveBoolean(KEY_SAFE_FOLDER_LOCK_ENABLED, enabled)
+        _isSafeFolderLockEnabled.value = enabled
+    }
+
+    fun unlockSecureMode(password: String): Boolean = verifySafeFolderPin(password)
+
+    fun lockSecureMode() {
+        secureSessionManager.clearSession()
+    }
+
+    fun unlockWithBiometric(): Boolean = false
 }
