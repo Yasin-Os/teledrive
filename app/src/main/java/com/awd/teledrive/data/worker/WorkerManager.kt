@@ -10,6 +10,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.awd.teledrive.data.repository.DriveRepository
+import com.awd.teledrive.data.repository.SettingsRepository
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.TimeUnit
@@ -20,7 +22,8 @@ import javax.inject.Singleton
 class TeleDriveWorkerManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val secureSettings: SecureSettings,
-    private val settingsRepository: com.awd.teledrive.data.repository.SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val driveRepository: DriveRepository
 ) {
     fun scheduleBackup(enabled: Boolean) {
         try {
@@ -33,25 +36,24 @@ class TeleDriveWorkerManager @Inject constructor(
             val data = Data.Builder()
                 .putLong("last_backup_time", lastBackupTime)
                 .build()
-                
-            val isWifiOnly = settingsRepository.isBackupWifiOnlyEnabled.value
-            val networkType = if (isWifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
 
             val backupRequest = PeriodicWorkRequestBuilder<MediaBackupWorker>(1, TimeUnit.HOURS)
                 .setInputData(data)
                 .setConstraints(
                     Constraints.Builder()
-                        .setRequiredNetworkType(networkType)
-                        .setRequiresBatteryNotLow(true)
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
                 .build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 "media_backup_worker",
-                ExistingPeriodicWorkPolicy.UPDATE, // Update to force refresh
+                ExistingPeriodicWorkPolicy.UPDATE,
                 backupRequest
             )
+
+            // ব্যাকআপ চালু করলে সাথে সাথে একবার ফোল্ডার স্ক্যান ও আপলোড শুরু করবে
+            driveRepository.runImmediateFolderBackup()
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -59,19 +61,19 @@ class TeleDriveWorkerManager @Inject constructor(
 
     fun triggerOneTimeBackup() {
         try {
+            // ওয়ার্কারের জন্য অপেক্ষা না করে সাথে সাথে সরাসরি ব্যাকআপ ও আপলোড শুরু করবে
+            driveRepository.runImmediateFolderBackup()
+
             val lastBackupTime = secureSettings.getLong("last_backup_time", 0L)
             val data = Data.Builder()
                 .putLong("last_backup_time", lastBackupTime)
                 .build()
 
-            val isWifiOnly = settingsRepository.isBackupWifiOnlyEnabled.value
-            val networkType = if (isWifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
-
             val backupRequest = OneTimeWorkRequestBuilder<MediaBackupWorker>()
                 .setInputData(data)
                 .setConstraints(
                     Constraints.Builder()
-                        .setRequiredNetworkType(networkType)
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
                 .build()
