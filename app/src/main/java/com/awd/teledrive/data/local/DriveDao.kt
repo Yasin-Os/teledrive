@@ -16,7 +16,7 @@ interface DriveDao {
     @Query("SELECT * FROM drive_items WHERE parentChatId = :chatId AND (splitGroupId IS NULL OR partIndex = 0) AND virtualParentId = :virtualParentId")
     fun getItemsByVirtualParent(chatId: Long, virtualParentId: String): Flow<List<DriveItemEntity>>
 
-    @Query("SELECT * FROM drive_items WHERE isStarred = 1 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
+    @Query("SELECT * FROM drive_items WHERE isStarred = 1 AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     fun getStarredItems(): Flow<List<DriveItemEntity>>
 
     @Query("UPDATE drive_items SET isStarred = :isStarred WHERE id = :id AND parentChatId = :chatId")
@@ -57,10 +57,12 @@ interface DriveDao {
             val existing = existingMap[item.id]
             val savedLocalPath = item.localPath ?: existing?.localPath?.takeIf { File(it).exists() }
             val savedThumbPath = item.thumbnailPath ?: existing?.thumbnailPath?.takeIf { File(it).exists() }
+            val preservedParent = if (existing?.virtualParentId == "vf_safe_space") "vf_safe_space" else item.virtualParentId
             item.copy(
                 isStarred = existing?.isStarred == true,
                 localPath = savedLocalPath,
-                thumbnailPath = savedThumbPath
+                thumbnailPath = savedThumbPath,
+                virtualParentId = preservedParent
             )
         }
 
@@ -80,10 +82,12 @@ interface DriveDao {
             val existing = getItemById(item.id, item.parentChatId)
             val savedLocalPath = item.localPath ?: existing?.localPath?.takeIf { File(it).exists() }
             val savedThumbPath = item.thumbnailPath ?: existing?.thumbnailPath?.takeIf { File(it).exists() }
+            val preservedParent = if (existing?.virtualParentId == "vf_safe_space") "vf_safe_space" else item.virtualParentId
             item.copy(
                 isStarred = existing?.isStarred == true,
                 localPath = savedLocalPath,
-                thumbnailPath = savedThumbPath
+                thumbnailPath = savedThumbPath,
+                virtualParentId = preservedParent
             )
         }
         insertItems(updatedItems)
@@ -131,7 +135,7 @@ interface DriveDao {
     @Query("DELETE FROM drive_items WHERE id < 0")
     suspend fun deletePendingItems()
 
-    @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
+    @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     fun searchGlobal(query: String): Flow<List<DriveItemEntity>>
 
     @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
