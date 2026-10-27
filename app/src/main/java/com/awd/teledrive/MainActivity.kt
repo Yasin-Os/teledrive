@@ -11,6 +11,7 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -23,7 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -173,7 +174,7 @@ class MainActivity : AppCompatActivity() {
                 TeledriveTheme(darkTheme = darkTheme, primaryColor = themeColor) {
                     Crossfade(
                         targetState = showSplash,
-                        animationSpec = tween(450),
+                        animationSpec = tween(400),
                         label = "StartupSplashTransition"
                     ) { isSplash ->
                         if (isSplash) {
@@ -199,37 +200,57 @@ class MainActivity : AppCompatActivity() {
 
 @Composable
 fun StartupSplashScreen(onFinished: () -> Unit) {
-    var drawPhase by remember { mutableStateOf(false) }
-    var fillPhase by remember { mutableStateOf(false) }
-    var textPhase by remember { mutableStateOf(false) }
+    var drawIconPhase by remember { mutableStateOf(false) }
+    var fillIconPhase by remember { mutableStateOf(false) }
+    var showTitlePhase by remember { mutableStateOf(false) }
+    var showDevPhase by remember { mutableStateOf(false) }
 
     val strokeProgress by animateFloatAsState(
-        targetValue = if (drawPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
+        targetValue = if (drawIconPhase) 1f else 0f,
+        animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing),
         label = "StrokeProgress"
     )
     val fillAlpha by animateFloatAsState(
-        targetValue = if (fillPhase) 1f else 0f,
+        targetValue = if (fillIconPhase) 1f else 0f,
         animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
         label = "FillAlpha"
     )
-    val textAlpha by animateFloatAsState(
-        targetValue = if (textPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
-        label = "TextAlpha"
-    )
     val iconScale by animateFloatAsState(
-        targetValue = if (fillPhase) 1f else 0.88f,
+        targetValue = if (fillIconPhase) 1f else 0.85f,
         animationSpec = tween(durationMillis = 550, easing = FastOutSlowInEasing),
         label = "IconScale"
     )
 
+    val titleAlpha by animateFloatAsState(
+        targetValue = if (showTitlePhase) 1f else 0f,
+        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+        label = "TitleAlpha"
+    )
+    val titleOffsetY by animateDpAsState(
+        targetValue = if (showTitlePhase) 0.dp else 14.dp,
+        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+        label = "TitleOffset"
+    )
+
+    val devAlpha by animateFloatAsState(
+        targetValue = if (showDevPhase) 1f else 0f,
+        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+        label = "DevAlpha"
+    )
+    val devOffsetY by animateDpAsState(
+        targetValue = if (showDevPhase) 0.dp else 10.dp,
+        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+        label = "DevOffset"
+    )
+
     LaunchedEffect(Unit) {
-        drawPhase = true
-        delay(600)
-        fillPhase = true
-        delay(200)
-        textPhase = true
+        drawIconPhase = true
+        delay(480)
+        fillIconPhase = true
+        delay(180)
+        showTitlePhase = true
+        delay(220)
+        showDevPhase = true
         delay(900)
         onFinished()
     }
@@ -237,45 +258,68 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF090D16)),
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFF070B14), Color(0xFF0B1322))
+                )
+            ),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // হুবহু ৩য় ছবির আইকনটি (লেখা ছাড়া) অ্যানিমেশনে তৈরি হচ্ছে
+            // নতুন প্রফেশনাল আইকন ড্রয়িং অ্যানিমেশন
             Canvas(
                 modifier = Modifier
-                    .size(112.dp)
+                    .size(106.dp)
                     .scale(iconScale)
             ) {
                 val w = size.width
                 val h = size.height
                 val s = w / 108f
 
-                drawRoundRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(Color(0xFF003B99), Color(0xFF0077CC), Color(0xFF00E5DF)),
-                        start = Offset(12f * s, 96f * s),
-                        end = Offset(96f * s, 12f * s)
+                // Ambient Glow
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFF00E5FF).copy(alpha = 0.25f * strokeProgress), Color.Transparent),
+                        center = Offset(w / 2f, h / 2f),
+                        radius = w * 0.55f
                     ),
-                    cornerRadius = CornerRadius(26f * s, 26f * s),
-                    size = Size(w, h),
-                    alpha = 0.25f + (0.75f * fillAlpha)
+                    radius = w * 0.55f
                 )
 
+                // Squircle Frame
+                drawRoundRect(
+                    color = Color(0xFF0F2942).copy(alpha = 0.85f * fillAlpha),
+                    topLeft = Offset(14f * s, 14f * s),
+                    size = Size(80f * s, 80f * s),
+                    cornerRadius = CornerRadius(22f * s, 22f * s)
+                )
+
+                drawRoundRect(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF00F2FE).copy(alpha = strokeProgress),
+                            Color(0xFF0284C7).copy(alpha = 0.4f * strokeProgress)
+                        )
+                    ),
+                    topLeft = Offset(14f * s, 14f * s),
+                    size = Size(80f * s, 80f * s),
+                    cornerRadius = CornerRadius(22f * s, 22f * s),
+                    style = Stroke(width = 2.2f * s)
+                )
+
+                // Main Cloud Path
                 val cloudPath = Path().apply {
-                    moveTo(29f * s, 68f * s)
-                    lineTo(75f * s, 68f * s)
-                    cubicTo(81.6f * s, 68f * s, 86.5f * s, 63.2f * s, 86.5f * s, 56.8f * s)
-                    cubicTo(86.5f * s, 51.2f * s, 82.4f * s, 46.6f * s, 76.9f * s, 45.8f * s)
-                    cubicTo(75.8f * s, 38.9f * s, 69.8f * s, 33.8f * s, 62.6f * s, 33.8f * s)
-                    cubicTo(60.4f * s, 33.8f * s, 58.3f * s, 34.3f * s, 56.5f * s, 35.2f * s)
-                    cubicTo(53.2f * s, 29.5f * s, 47.0f * s, 25.8f * s, 39.8f * s, 25.8f * s)
-                    cubicTo(29.3f * s, 25.8f * s, 20.8f * s, 34.1f * s, 20.5f * s, 44.5f * s)
-                    cubicTo(15.8f * s, 46.2f * s, 12.5f * s, 50.7f * s, 12.5f * s, 56.0f * s)
-                    cubicTo(12.5f * s, 62.7f * s, 18.0f * s, 68f * s, 25.0f * s, 68f * s)
+                    moveTo(39.5f * s, 67f * s)
+                    lineTo(68.8f * s, 67f * s)
+                    cubicTo(73.9f * s, 67f * s, 78f * s, 62.9f * s, 78f * s, 57.8f * s)
+                    cubicTo(78f * s, 52.9f * s, 74.3f * s, 48.9f * s, 69.5f * s, 48.5f * s)
+                    cubicTo(68f * s, 41.2f * s, 61.5f * s, 36f * s, 53.8f * s, 36f * s)
+                    cubicTo(46.8f * s, 36f * s, 40.8f * s, 40.3f * s, 38.4f * s, 46.4f * s)
+                    cubicTo(33.6f * s, 47.2f * s, 30f * s, 51.4f * s, 30f * s, 56.5f * s)
+                    cubicTo(30f * s, 62.3f * s, 34.7f * s, 67f * s, 39.5f * s, 67f * s)
                     close()
                 }
 
@@ -286,76 +330,70 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 
                 drawPath(
                     path = partialCloud,
-                    color = Color.White,
+                    color = Color(0xFF00F2FE),
                     style = Stroke(width = 3.2f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
 
                 if (fillAlpha > 0f) {
-                    drawPath(path = cloudPath, color = Color.White.copy(alpha = fillAlpha))
-
-                    // ২টি সিগন্যাল ওয়েভ আর্ক
-                    drawArc(
-                        color = Color.White.copy(alpha = fillAlpha),
-                        startAngle = -65f,
-                        sweepAngle = 70f,
-                        useCenter = false,
-                        topLeft = Offset(55f * s, 30f * s),
-                        size = Size(24f * s, 24f * s),
-                        style = Stroke(width = 3.8f * s, cap = StrokeCap.Round)
-                    )
-                    drawArc(
-                        color = Color.White.copy(alpha = fillAlpha),
-                        startAngle = -65f,
-                        sweepAngle = 70f,
-                        useCenter = false,
-                        topLeft = Offset(49f * s, 24f * s),
-                        size = Size(36f * s, 36f * s),
-                        style = Stroke(width = 3.8f * s, cap = StrokeCap.Round)
+                    drawPath(
+                        path = cloudPath,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = fillAlpha),
+                                Color(0xFFDFF6FF).copy(alpha = fillAlpha)
+                            )
+                        )
                     )
 
-                    // ৩টি বাঁকানো তীর (Swoosh Arrows)
-                    val swoosh1 = Path().apply {
-                        moveTo(19f * s, 55f * s)
-                        quadraticTo(28f * s, 68f * s, 46f * s, 48f * s)
+                    // Minimalist Upward Chevron inside Cloud
+                    val chevron = Path().apply {
+                        moveTo(47.5f * s, 54.5f * s)
+                        lineTo(54f * s, 48f * s)
+                        lineTo(60.5f * s, 54.5f * s)
                     }
-                    val swoosh2 = Path().apply {
-                        moveTo(22f * s, 63f * s)
-                        quadraticTo(35f * s, 74f * s, 63f * s, 43f * s)
-                    }
-                    val swoosh3 = Path().apply {
-                        moveTo(29f * s, 72f * s)
-                        quadraticTo(45f * s, 78f * s, 64f * s, 56f * s)
-                    }
-
-                    drawPath(swoosh1, Color(0xFF005BB5).copy(alpha = fillAlpha), style = Stroke(3.5f * s, cap = StrokeCap.Round))
-                    drawPath(swoosh2, Color(0xFF0066CC).copy(alpha = fillAlpha), style = Stroke(3.8f * s, cap = StrokeCap.Round))
-                    drawPath(swoosh3, Color(0xFF0088DD).copy(alpha = fillAlpha), style = Stroke(3.5f * s, cap = StrokeCap.Round))
+                    drawPath(
+                        path = chevron,
+                        color = Color(0xFF0284C7).copy(alpha = fillAlpha),
+                        style = Stroke(width = 3.4f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    )
+                    drawLine(
+                        color = Color(0xFF0284C7).copy(alpha = fillAlpha),
+                        start = Offset(54f * s, 48.5f * s),
+                        end = Offset(54f * s, 61.5f * s),
+                        strokeWidth = 3.4f * s,
+                        cap = StrokeCap.Round
+                    )
                 }
             }
 
             Spacer(modifier = Modifier.height(22.dp))
 
+            // অ্যাপের নাম সুন্দর ক্লিন ফন্টে
             Text(
                 text = stringResource(R.string.app_name),
                 color = Color.White,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.5.sp,
-                modifier = Modifier.alpha(textAlpha)
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.6.sp,
+                modifier = Modifier
+                    .offset(y = titleOffsetY)
+                    .alpha(titleAlpha)
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // অ্যাপ নামের ঠিক নিচেই ডেভেলপারের নাম সুন্দর অ্যানিমেশনে
+            Text(
+                text = "Developer: Yasin Adnan",
+                color = Color(0xFF38BDF8).copy(alpha = 0.85f),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.8.sp,
+                modifier = Modifier
+                    .offset(y = devOffsetY)
+                    .alpha(devAlpha)
             )
         }
-
-        Text(
-            text = "Developer: Yasin Adnan",
-            color = Color.White.copy(alpha = 0.65f),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Normal,
-            letterSpacing = 0.4.sp,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 42.dp)
-                .alpha(textAlpha)
-        )
     }
 }
 
