@@ -7,6 +7,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
+import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.TransferDao
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.drinkless.tdlib.TdApi
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -41,6 +43,7 @@ class TransferRepository @Inject constructor(
         const val QUEUED = "Queued"
         const val DOWNLOADING = "Downloading"
         const val UPLOADING = "Uploading"
+        const val PAUSED = "Paused"
         const val COMPLETED = "Completed"
         const val FAILED = "Failed"
         const val CANCELLED = "Cancelled"
@@ -57,6 +60,7 @@ class TransferRepository @Inject constructor(
     private val idMigrationMap = mutableMapOf<String, String>()
     private val lastUpdateMap = mutableMapOf<String, Long>()
     private val lastProgressMap = mutableMapOf<String, Float>()
+    private val pausedIds = mutableSetOf<String>()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
@@ -86,11 +90,14 @@ class TransferRepository @Inject constructor(
                 val fileId = file.id
                 val localPath = file.local.path
                 
-                // Find in DB with path priority to prevent duplicates during handover
                 val entity = (if (localPath.isNotEmpty()) transferDao.getTransferByLocalPath(localPath) else null)
                     ?: transferDao.getTransferByUniqueId(uniqueId) 
                     ?: transferDao.getTransferByFileId(fileId)
                     ?: return@collect
+
+                if (pausedIds.contains(entity.remoteUniqueId) || pausedIds.contains(uniqueId)) {
+                    return@collect
+                }
                 
                 val isDownload = entity.isDownload
                 val isCompleted = if (isDownload) file.local.isDownloadingCompleted else file.remote.isUploadingCompleted
@@ -98,108 +105,120 @@ class TransferRepository @Inject constructor(
                 
                 val currentSize = if (isDownload) file.local.downloadedSize else file.remote.uploadedSize
                 val progress = if (isCompleted) 1.0f else (if (totalSize > 0L) currentSize.toFloat() / totalSize.toFloat() else 0.0f)
-                
-                // Aggressive completion check for uploads: if progress is 100%, mark as COMPLETED
                 val isEffectivelyCompleted = isCompleted || (!isDownload && totalSize > 0L && currentSize >= totalSize)
                 
                 val status = when {
                     isEffectivelyCompleted -> Status.COMPLETED
                     isDownload && file.local.isDownloadingActive -> Status.DOWNLOADING
                     !isDownload && (file.remote.isUploadingActive || file.remote.uploadedSize > 0L) -> Status.UPLOADING
-                    file.local.canBeDownloaded.not() && isDownload && !file.local.isDownloadingCompleted -> Status.FAILED
+                    entity.status == Status.PAUSED -> Status.PAUSED
                     else -> entity.status
                 }
                 
                 val isTerminal = status == Status.COMPLETED || status == Status.FAILED || status == Status.CANCELLED
                 if (isTerminal) {
                     synchronized(queue) {
-                        if (uniqueId.isNotEmpty()) {
-                            completionDeferreds[uniqueId]?.complete(Unit)
-                            Log.d("TransferRepo", "Completed deferred for uniqueId: $uniqueId")
-                        }
+                        if (uniqueId.isNotEmpty()) completionDeferreds[uniqueId]?.complete(Unit)
                         completionDeferreds[entity.remoteUniqueId]?.complete(Unit)
-                        // Also try by fileId
                         completionDeferreds[fileId.toString()]?.complete(Unit)
                         
                         if (activeTransferId == uniqueId || activeTransferId == entity.remoteUniqueId || activeTransferId == fileId.toString()) {
                             activeTransferId = null
-                            Log.d("TransferRepo", "Active transfer cleared. Processing next in queue.")
                             processQueue()
                         }
                     }
 
-                    // CRITICAL FIX: If it's a completed upload, clear the localPath in drive_items
-                    // to prevent ENOENT errors (since the temp/cache file is now likely deleted)
-                    if (status == Status.COMPLETED && !isDownload && uniqueId.isNotEmpty()) {
-                        scope.launch {
-                            driveDao.updateLocalPathByUniqueId(uniqueId, null)
+                    if (status == Status.COMPLETED) {
+                        if (!isDownload) {
+                            // আপলোড শেষ হলে সাথে সাথে টেম্পোরারি ক্যাশ ফাইল মুছে ফেলা হচ্ছে যাতে ক্যাশ জমে না থাকে
+                            scope.launch {
+                                if (uniqueId.isNotEmpty()) driveDao.updateLocalPathByUniqueId(uniqueId, null)
+                                entity.localPath?.let { path ->
+                                    val f = File(path)
+                                    if (f.exists() && path.startsWith(context.cacheDir.absolutePath)) {
+                                        f.delete()
+                                    }
+                                }
+                            }
+                        } else if (localPath.isNotEmpty()) {
+                            // ডাউনলোড শেষ হলে অ্যাপের ভেতর অফলাইনের জন্য পাথ সেভ থাকবে (ফোন মেমোরিতে অটো যাবে না)
+                            scope.launch {
+                                transferDao.updateLocalPath(entity.remoteUniqueId, localPath)
+                                if (uniqueId.isNotEmpty()) {
+                                    driveDao.updateLocalPathByUniqueId(uniqueId, localPath)
+                                }
+                            }
                         }
                     }
                 }
                 
-                // If ID has changed (e.g. from temp to real), perform migration
                 if (uniqueId.isNotEmpty() && entity.remoteUniqueId != uniqueId) {
-                    Log.d("TransferRepo", "Handover detected in init: Migrating ${entity.remoteUniqueId} -> $uniqueId")
                     updateRemoteUniqueId(entity.remoteUniqueId, uniqueId, fileId, localPath.takeIf { it.isNotEmpty() })
                 } else {
                     transferDao.updateProgress(entity.remoteUniqueId, progress, status, currentSize)
+                    if (localPath.isNotEmpty() && isDownload) {
+                        transferDao.updateLocalPath(entity.remoteUniqueId, localPath)
+                    }
                 }
             }
         }
     }
 
     fun saveToPublicDownloads(internalPath: String, fileName: String) {
-        try {
-            val sourceFile = File(internalPath)
-            if (!sourceFile.exists()) {
-                Log.e("TransferRepo", "Source file not found: $internalPath")
-                return
-            }
-
-            val userDownloadUri = secureSettings.getDownloadUri()
-            if (!userDownloadUri.isNullOrEmpty()) {
-                saveToUserSelectedFolder(sourceFile, fileName, userDownloadUri)
-                return
-            }
-
-            val extension = fileName.substringAfterLast('.', "").lowercase()
-            val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+        scope.launch(Dispatchers.IO) {
+            try {
+                val sourceFile = File(internalPath)
+                if (!sourceFile.exists()) {
+                    launch(Dispatchers.Main) {
+                        Toast.makeText(context, "File not found in local cache", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
                 }
 
-                val resolver = context.contentResolver
-                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                
-                if (uri != null) {
-                    resolver.openOutputStream(uri)?.use { output ->
+                val userDownloadUri = secureSettings.getDownloadUri()
+                if (!userDownloadUri.isNullOrEmpty()) {
+                    saveToUserSelectedFolder(sourceFile, fileName, userDownloadUri)
+                    launch(Dispatchers.Main) {
+                        Toast.makeText(context, "Saved to Phone: $fileName", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+
+                val extension = fileName.substringAfterLast('.', "").lowercase()
+                val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val contentValues = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    }
+
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                    if (uri != null) {
+                        resolver.openOutputStream(uri)?.use { output ->
+                            FileInputStream(sourceFile).use { input ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }
+                } else {
+                    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                    val destFile = File(downloadsDir, fileName)
+                    FileOutputStream(destFile).use { output ->
                         FileInputStream(sourceFile).use { input ->
                             input.copyTo(output)
                         }
                     }
-                    Log.d("TransferRepo", "Berhasil menyimpan ke folder Download: $fileName")
-                } else {
-                    Log.e("TransferRepo", "Gagal membuat MediaStore entry untuk $fileName")
                 }
-            } else {
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!downloadsDir.exists()) downloadsDir.mkdirs()
-                
-                val destFile = File(downloadsDir, fileName)
-                FileOutputStream(destFile).use { output ->
-                    FileInputStream(sourceFile).use { input ->
-                        input.copyTo(output)
-                    }
+                launch(Dispatchers.Main) {
+                    Toast.makeText(context, "Saved to Phone Downloads: $fileName", Toast.LENGTH_SHORT).show()
                 }
-                Log.d("TransferRepo", "Berhasil menyimpan ke folder Download: $fileName")
+            } catch (e: Exception) {
+                Log.e("TransferRepo", "Error saving file: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e("TransferRepo", "Error saat menyimpan file: ${e.message}")
-            e.printStackTrace()
         }
     }
 
@@ -207,18 +226,12 @@ class TransferRepository @Inject constructor(
         try {
             val treeUri = android.net.Uri.parse(uriString)
             val docUri = DocumentFile.fromTreeUri(context, treeUri)
-            
             if (docUri == null || !docUri.canWrite()) {
-                Log.e("TransferRepo", "Selected folder is not writable or no longer exists: $uriString")
-                // Fallback to standard Downloads if SAF fails
                 secureSettings.saveDownloadUri("") 
                 return
             }
-
-            // Create file in selected folder
             val extension = fileName.substringAfterLast('.', "").lowercase()
             val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
-            
             val newFile = docUri.createFile(mimeType, fileName)
             if (newFile != null) {
                 context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
@@ -226,25 +239,17 @@ class TransferRepository @Inject constructor(
                         input.copyTo(output)
                     }
                 }
-                Log.d("TransferRepo", "Berhasil menyimpan ke folder pilihan user: $fileName")
             }
         } catch (e: Exception) {
-            Log.e("TransferRepo", "Gagal menyimpan ke folder pilihan user: ${e.message}")
+            Log.e("TransferRepo", "Failed saving to user folder: ${e.message}")
         }
     }
 
     fun updateRemoteUniqueId(oldId: String, newUniqueId: String, newFileId: Int, localPath: String? = null) {
         if (oldId == newUniqueId && localPath == null) return
-        
-        // Eagerly update migration map to prevent race conditions with progress updates
         synchronized(queue) {
-            if (oldId != newUniqueId) {
-                idMigrationMap[oldId] = newUniqueId
-                Log.d("TransferRepo", "Migration map updated: $oldId -> $newUniqueId")
-            }
-            if (activeTransferId == oldId) {
-                activeTransferId = newUniqueId
-            }
+            if (oldId != newUniqueId) idMigrationMap[oldId] = newUniqueId
+            if (activeTransferId == oldId) activeTransferId = newUniqueId
             completionDeferreds[oldId]?.let {
                 completionDeferreds[newUniqueId] = it
                 completionDeferreds.remove(oldId)
@@ -254,26 +259,17 @@ class TransferRepository @Inject constructor(
         scope.launch {
             try {
                 if (oldId != newUniqueId) {
-                    // Check if newUniqueId already exists to avoid PK conflict
                     val existing = transferDao.getTransferByUniqueId(newUniqueId)
                     if (existing != null) {
-                        Log.d("TransferRepo", "Target ID $newUniqueId already exists. Deleting old ID $oldId.")
                         transferDao.deleteTransfer(oldId)
                     } else {
-                        Log.d("TransferRepo", "Updating ID in DB: $oldId -> $newUniqueId")
                         transferDao.updateUniqueId(oldId, newUniqueId)
                     }
                 }
-                
-                // Update fileId and localPath if provided
-                if (newFileId != 0) {
-                    transferDao.updateFileId(newUniqueId, newFileId)
-                }
-                if (localPath != null) {
-                    transferDao.updateLocalPath(newUniqueId, localPath)
-                }
+                if (newFileId != 0) transferDao.updateFileId(newUniqueId, newFileId)
+                if (localPath != null) transferDao.updateLocalPath(newUniqueId, localPath)
             } catch (e: Exception) {
-                Log.e("TransferRepo", "Migration failed in DB: ${e.message}")
+                Log.e("TransferRepo", "Migration failed: ${e.message}")
             }
         }
     }
@@ -289,8 +285,6 @@ class TransferRepository @Inject constructor(
     ) {
         scope.launch {
             val key = if (remoteUniqueId.isNotEmpty()) remoteUniqueId else "temp_${System.currentTimeMillis()}_$fileId"
-            
-            // Check if already in queue or active
             if (activeTransferId == key || queue.any { it.remoteUniqueId == key }) return@launch
             
             val entity = TransferEntity(
@@ -305,7 +299,6 @@ class TransferRepository @Inject constructor(
                 localPath = localPath
             )
             transferDao.insertTransfer(entity)
-            
             synchronized(queue) {
                 queue.add(PendingTransfer(key, block))
             }
@@ -316,30 +309,21 @@ class TransferRepository @Inject constructor(
     private fun processQueue() {
         synchronized(queue) {
             if (activeTransferId != null || queue.isEmpty()) return
-            
             val next = queue.removeAt(0)
             activeTransferId = next.remoteUniqueId
             
             scope.launch {
                 try {
-                    // Initial status update
                     val entity = transferDao.getTransferByUniqueId(next.remoteUniqueId)
                     if (entity != null) {
                         val startStatus = if (entity.isDownload) Status.DOWNLOADING else Status.UPLOADING
                         transferDao.updateProgress(next.remoteUniqueId, 0f, startStatus, 0L)
                     }
-                    
-                    // Execute the actual task
                     next.block()
                 } catch (e: Exception) {
-                    Log.e("TransferRepo", "Error in queued task ${next.remoteUniqueId}: ${e.message}")
                     transferDao.updateProgress(next.remoteUniqueId, 0f, Status.FAILED, 0L)
-                    
-                    // On failure, move to next
                     synchronized(queue) {
-                        if (activeTransferId == next.remoteUniqueId) {
-                            activeTransferId = null
-                        }
+                        if (activeTransferId == next.remoteUniqueId) activeTransferId = null
                     }
                     processQueue()
                 }
@@ -362,8 +346,6 @@ class TransferRepository @Inject constructor(
                 localPath = localPath
             )
             transferDao.insertTransfer(entity)
-            
-            // If we manually add an active transfer, we should track it to not block the queue
             if (entity.status == Status.DOWNLOADING || entity.status == Status.UPLOADING) {
                 activeTransferId = key
             }
@@ -372,33 +354,24 @@ class TransferRepository @Inject constructor(
 
     fun updateTransferManual(remoteUniqueId: String, progress: Float, status: String, throttled: Boolean = false) {
         val targetId = synchronized(queue) { idMigrationMap[remoteUniqueId] ?: remoteUniqueId }
-        
         if (throttled) {
             val now = System.currentTimeMillis()
             val lastTime = lastUpdateMap[targetId] ?: 0L
             val lastProgress = lastProgressMap[targetId] ?: -1f
-            
-            // Limit to once every 500ms OR 2% progress change to really reduce DB pressure
-            if (now - lastTime < 500 && Math.abs(progress - lastProgress) < 0.02f) {
-                return
-            }
+            if (now - lastTime < 500 && kotlin.math.abs(progress - lastProgress) < 0.02f) return
             lastUpdateMap[targetId] = now
             lastProgressMap[targetId] = progress
         }
 
-        // Use a single-threaded approach or sequential queue for DB writes during preparation
-        // to prevent "Database is locked" or high contention
         scope.launch {
             try {
-                if (progress >= 1.0f || status == Status.COMPLETED || status == Status.FAILED || status == Status.CANCELLED || status.startsWith("Gagal") || status.startsWith("Failed")) {
+                if (progress >= 1.0f || status == Status.COMPLETED || status == Status.FAILED || status == Status.CANCELLED) {
                     val entity = transferDao.getTransferByUniqueId(targetId)
                     if (entity != null) {
                         transferDao.updateProgressFull(targetId, progress, status, entity.totalSize)
                     } else {
                         transferDao.updateProgressOnly(targetId, progress, status)
                     }
-                    
-                    // Signal completion if anyone is waiting
                     synchronized(queue) {
                         completionDeferreds[targetId]?.complete(Unit)
                         completionDeferreds[remoteUniqueId]?.complete(Unit)
@@ -411,41 +384,93 @@ class TransferRepository @Inject constructor(
                     transferDao.updateProgressOnly(targetId, progress, status)
                 }
             } catch (e: Exception) {
-                Log.e("TransferRepo", "Failed to update progress for $targetId: ${e.message}")
+                Log.e("TransferRepo", "Failed to update progress: ${e.message}")
+            }
+        }
+    }
+
+    fun pauseTransfer(uniqueId: String) {
+        scope.launch {
+            pausedIds.add(uniqueId)
+            val entity = transferDao.getTransferByUniqueId(uniqueId) ?: return@launch
+            if (entity.fileId != 0) {
+                if (entity.isDownload) {
+                    telegramClient.send(TdApi.CancelDownloadFile(entity.fileId, false))
+                } else {
+                    telegramClient.send(TdApi.CancelPreliminaryUploadFile(entity.fileId))
+                }
+            }
+            transferDao.updateProgress(uniqueId, entity.progress, Status.PAUSED, entity.downloadedSize)
+            synchronized(queue) {
+                if (activeTransferId == uniqueId) {
+                    activeTransferId = null
+                    processQueue()
+                }
+            }
+        }
+    }
+
+    fun resumeTransfer(uniqueId: String) {
+        scope.launch {
+            pausedIds.remove(uniqueId)
+            val entity = transferDao.getTransferByUniqueId(uniqueId) ?: return@launch
+            if (entity.isDownload && entity.fileId != 0) {
+                transferDao.updateProgress(uniqueId, entity.progress, Status.DOWNLOADING, entity.downloadedSize)
+                telegramClient.send(TdApi.DownloadFile(entity.fileId, 32, 0, 0, false))
+            } else if (!entity.isDownload && entity.localPath != null) {
+                transferDao.updateProgress(uniqueId, entity.progress, Status.UPLOADING, entity.downloadedSize)
             }
         }
     }
 
     fun removeTransfer(remoteUniqueId: String) {
         scope.launch {
+            pausedIds.remove(remoteUniqueId)
+            val entity = transferDao.getTransferByUniqueId(remoteUniqueId)
+            if (entity != null && !entity.isDownload && entity.localPath != null) {
+                val f = File(entity.localPath)
+                if (f.exists() && entity.localPath.startsWith(context.cacheDir.absolutePath)) {
+                    f.delete()
+                }
+            }
             transferDao.deleteTransfer(remoteUniqueId)
         }
     }
 
     fun cancelTransfer(uniqueId: String) {
         scope.launch {
-            var foundInQueue = false
+            pausedIds.remove(uniqueId)
             synchronized(queue) {
-                val inQueue = queue.find { it.remoteUniqueId == uniqueId }
-                if (inQueue != null) {
-                    queue.remove(inQueue)
-                    foundInQueue = true
-                }
+                queue.removeAll { it.remoteUniqueId == uniqueId }
                 completionDeferreds[uniqueId]?.complete(Unit)
             }
 
-            if (foundInQueue) {
-                transferDao.updateProgress(uniqueId, 0f, Status.CANCELLED, 0L)
-                return@launch
+            val entity = transferDao.getTransferByUniqueId(uniqueId)
+            if (entity != null) {
+                if (entity.fileId != 0) {
+                    if (entity.isDownload) {
+                        telegramClient.send(TdApi.CancelDownloadFile(entity.fileId, false))
+                        telegramClient.send(TdApi.DeleteFile(entity.fileId))
+                    } else {
+                        telegramClient.send(TdApi.CancelPreliminaryUploadFile(entity.fileId))
+                    }
+                }
+                entity.localPath?.let { path ->
+                    val f = File(path)
+                    if (f.exists() && path.startsWith(context.cacheDir.absolutePath)) {
+                        f.delete()
+                    }
+                }
             }
 
-            val entity = transferDao.getTransferByUniqueId(uniqueId) ?: return@launch
-            telegramClient.send(org.drinkless.tdlib.TdApi.CancelDownloadFile(entity.fileId, true))
-            transferDao.updateProgress(uniqueId, entity.progress, Status.CANCELLED, entity.downloadedSize)
+            // ক্যানসেল করলে সাথে সাথে লিস্ট ও ক্যাশ থেকে ডিলিট হয়ে যাবে
+            transferDao.deleteTransfer(uniqueId)
             
-            if (activeTransferId == uniqueId) {
-                activeTransferId = null
-                processQueue()
+            synchronized(queue) {
+                if (activeTransferId == uniqueId) {
+                    activeTransferId = null
+                    processQueue()
+                }
             }
         }
     }
@@ -453,38 +478,36 @@ class TransferRepository @Inject constructor(
     fun clearCompleted() {
         scope.launch {
             transferDao.clearCompleted()
+            try {
+                File(context.cacheDir, "upload_parts").deleteRecursively()
+                context.cacheDir.listFiles()?.forEach { file ->
+                    if (file.isFile && (file.name.startsWith("enc_") || file.name.startsWith("bkp_"))) {
+                        file.delete()
+                    }
+                }
+            } catch (e: Exception) {}
         }
     }
 
     suspend fun waitForCompletion(remoteUniqueId: String) {
-        // Resolve final ID in case of migration
         val finalId = synchronized(queue) { idMigrationMap[remoteUniqueId] ?: remoteUniqueId }
-        
-        // Check current status first to avoid waiting for already completed transfers
-        val currentTransfers = transfers.value
-        val currentTransfer = currentTransfers[finalId]
+        val currentTransfer = transfers.value[finalId]
         if (currentTransfer != null) {
             val status = currentTransfer.status
             if (status == Status.COMPLETED || status == Status.FAILED || status == Status.CANCELLED || status.startsWith("Failed")) {
-                Log.d("TransferRepo", "waitForCompletion: $finalId already in terminal state: $status")
                 return
             }
         }
 
         val deferred = synchronized(queue) {
-            // Re-check migration inside lock to be safe
             val targetId = idMigrationMap[remoteUniqueId] ?: remoteUniqueId
-            completionDeferreds.getOrPut(targetId) { 
-                Log.d("TransferRepo", "waitForCompletion: Creating new deferred for $targetId")
-                CompletableDeferred() 
-            }
+            completionDeferreds.getOrPut(targetId) { CompletableDeferred() }
         }
         deferred.await()
         synchronized(queue) {
             completionDeferreds.remove(finalId)
             val originalId = idMigrationMap.filterValues { it == finalId }.keys.firstOrNull()
             if (originalId != null) idMigrationMap.remove(originalId)
-            Log.d("TransferRepo", "waitForCompletion: $finalId finished waiting.")
         }
     }
 }
