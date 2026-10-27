@@ -2,7 +2,6 @@ package com.awd.teledrive.ui.screens.security
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -51,9 +52,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -71,6 +74,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -90,7 +95,8 @@ fun SecureStorageScreen(
     onBack: () -> Unit,
     onNavigateToPreview: (DriveItem.File) -> Unit,
     onNavigateToTransfers: () -> Unit,
-    viewModel: SecureStorageViewModel = hiltViewModel()
+    viewModel: SecureStorageViewModel = hiltViewModel(),
+    securityViewModel: SecurityViewModel = hiltViewModel()
 ) {
     val items by viewModel.secureItems.collectAsState()
     val availableCloudFiles by viewModel.availableCloudFiles.collectAsState()
@@ -99,9 +105,13 @@ fun SecureStorageScreen(
     val filterType by viewModel.filterType.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
 
+    val isSafePinLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
+
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showCloudPickerSheet by remember { mutableStateOf(false) }
+    var showSafeLockSettingsDialog by remember { mutableStateOf(false) }
+    var showChangeSafePinDialog by remember { mutableStateOf(false) }
 
     var selectedSafeItems by remember { mutableStateOf(setOf<Long>()) }
     val isSelectionMode = selectedSafeItems.isNotEmpty()
@@ -110,6 +120,111 @@ fun SecureStorageScreen(
     var renameValue by remember { mutableStateOf("") }
     var showDeleteConfirm by remember { mutableStateOf<List<DriveItem>?>(null) }
     var isSearchActive by remember { mutableStateOf(false) }
+
+    // Safe Folder-এর নিজস্ব পিন লক অন/অফ এবং পরিবর্তনের ডায়ালগ
+    if (showSafeLockSettingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showSafeLockSettingsDialog = false },
+            title = { Text("Safe Folder Lock Settings") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Require PIN Lock", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
+                            Text("Ask for PIN when opening Safe folder", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = isSafePinLockEnabled,
+                            onCheckedChange = { securityViewModel.setSafeFolderLockEnabled(it) }
+                        )
+                    }
+                    HorizontalDivider()
+                    OutlinedButton(
+                        onClick = {
+                            showSafeLockSettingsDialog = false
+                            showChangeSafePinDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Change Safe Folder PIN")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSafeLockSettingsDialog = false }) {
+                    Text(stringResource(R.string.close))
+                }
+            }
+        )
+    }
+
+    if (showChangeSafePinDialog) {
+        var oldPin by remember { mutableStateOf("") }
+        var newPin by remember { mutableStateOf("") }
+        var confirmPin by remember { mutableStateOf("") }
+        var err by remember { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { showChangeSafePinDialog = false },
+            title = { Text("Change Safe Folder PIN") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = oldPin,
+                        onValueChange = { oldPin = it.filter { c -> c.isDigit() }.take(6); err = null },
+                        label = { Text("Current PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newPin,
+                        onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(6); err = null },
+                        label = { Text("New PIN (4-6 digits)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = confirmPin,
+                        onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(6); err = null },
+                        label = { Text("Confirm New PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        isError = err != null,
+                        supportingText = err?.let { { Text(it) } },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newPin.length < 4) {
+                        err = "Enter at least 4 digits"
+                    } else if (newPin != confirmPin) {
+                        err = "New PIN did not match"
+                    } else if (securityViewModel.changeSafeFolderPin(oldPin, newPin)) {
+                        showChangeSafePinDialog = false
+                        Toast.makeText(context, "Safe Folder PIN updated", Toast.LENGTH_SHORT).show()
+                    } else {
+                        err = "Current PIN is incorrect"
+                    }
+                }) { Text("Update PIN") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showChangeSafePinDialog = false }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
 
     if (itemToRename != null) {
         AlertDialog(
@@ -154,7 +269,6 @@ fun SecureStorageScreen(
         )
     }
 
-    // ক্লাউডের নিজস্ব ডেটা সিলেক্ট করে Safe Folder-এ হাইড করার বটম শিট
     if (showCloudPickerSheet) {
         var pickerFilter by remember { mutableStateOf(FilterType.ALL) }
         var pickerSearch by remember { mutableStateOf("") }
@@ -201,7 +315,7 @@ fun SecureStorageScreen(
                             onClick = {
                                 viewModel.hideCloudFilesInSafeFolder(pickedIds.toList())
                                 showCloudPickerSheet = false
-                                Toast.makeText(context, "${pickedIds.size} files moved to Safe folder", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "${pickedIds.size} files hidden in Safe folder", Toast.LENGTH_SHORT).show()
                             }
                         ) {
                             Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -346,11 +460,10 @@ fun SecureStorageScreen(
                             }
                         },
                         actions = {
-                            // Unhide to Cloud বাটন
                             IconButton(
                                 onClick = {
                                     viewModel.unhideFilesToCloud(selectedSafeItems.toList())
-                                    Toast.makeText(context, "Restored to Cloud", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Unhidden to Cloud", Toast.LENGTH_SHORT).show()
                                     selectedSafeItems = emptySet()
                                 }
                             ) {
@@ -400,10 +513,13 @@ fun SecureStorageScreen(
                         actions = {
                             if (!isSearchActive) {
                                 IconButton(onClick = { isSearchActive = true }) {
-                                    Icon(Icons.Default.Search, null)
+                                    Icon(Icons.Default.Search, contentDescription = "Search")
+                                }
+                                IconButton(onClick = { showSafeLockSettingsDialog = true }) {
+                                    Icon(Icons.Default.VpnKey, contentDescription = "Safe Folder PIN Settings")
                                 }
                                 IconButton(onClick = { viewModel.fetchItems() }) {
-                                    Icon(Icons.Default.Refresh, null)
+                                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                                 }
                             } else if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { viewModel.onSearchQueryChange("") }) {
@@ -493,11 +609,10 @@ fun SecureStorageScreen(
                                     onDeleteClick = { showDeleteConfirm = listOf(item) }
                                 )
                             }
-                            // সাথে সাথে ক্লাউডে ফিরিয়ে নেওয়ার (Unhide) কুইক বাটন
                             IconButton(
                                 onClick = {
                                     viewModel.unhideFilesToCloud(listOf(item.id))
-                                    Toast.makeText(context, "Restored to Cloud", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Unhidden to Cloud", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.padding(end = 8.dp)
                             ) {
