@@ -1,375 +1,229 @@
-package com.awd.teledrive.ui.screens.media
+package com.awd.teledrive.ui.navigation
 
-import android.widget.Toast
-import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckBox
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PermMedia
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import coil.compose.AsyncImage
+import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.navArgument
 import com.awd.teledrive.R
-import com.awd.teledrive.domain.model.DriveItem
+import com.awd.teledrive.ui.screens.auth.LoginScreen
+import com.awd.teledrive.ui.screens.home.HomeScreen
+import com.awd.teledrive.ui.screens.logs.LogsScreen
+import com.awd.teledrive.ui.screens.media.MediaScreen
+import com.awd.teledrive.ui.screens.preview.PdfViewerScreen
+import com.awd.teledrive.ui.screens.preview.PreviewScreen
+import com.awd.teledrive.ui.screens.preview.TextViewerScreen
+import com.awd.teledrive.ui.screens.preview.VideoPlayerScreen
+import com.awd.teledrive.ui.screens.security.MasterPasswordScreen
+import com.awd.teledrive.ui.screens.security.SecurityViewModel
+import com.awd.teledrive.ui.screens.settings.AboutScreen
+import com.awd.teledrive.ui.screens.settings.BackupSettingsScreen
+import com.awd.teledrive.ui.screens.settings.CacheDetailsScreen
+import com.awd.teledrive.ui.screens.settings.CloudAnalysisScreen
+import com.awd.teledrive.ui.screens.settings.SettingsScreen
+import com.awd.teledrive.ui.screens.starred.StarredScreen
+import com.awd.teledrive.ui.screens.transfers.TransfersScreen
+import java.net.URLDecoder
+import java.net.URLEncoder
 
-data class MediaAlbum(
-    val id: String,
-    val title: String,
-    val items: List<DriveItem.File>,
-    val isVideoPlaceholder: Boolean = false
-)
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun MediaScreen(
-    onNavigateToPreview: (DriveItem.File) -> Unit,
-    viewModel: MediaViewModel = hiltViewModel()
-) {
-    val mediaItems by viewModel.mediaItems.collectAsState()
-    val folders by viewModel.folders.collectAsState()
-
-    MediaContent(
-        mediaItems = mediaItems,
-        folders = folders,
-        onNavigateToPreview = onNavigateToPreview,
-        onCreateAlbum = viewModel::createAlbum,
-        onDownload = viewModel::downloadFile,
-        onDelete = viewModel::deleteItems,
-        onToggleStar = viewModel::toggleStarred
-    )
+sealed class Screen(val route: String, val icon: ImageVector? = null, val labelRes: Int? = null) {
+    object Security : Screen("security")
+    object Login : Screen("login")
+    object Home : Screen("home", Icons.Default.Home, R.string.home)
+    object Starred : Screen("starred", Icons.Default.Star, R.string.starred)
+    object Media : Screen("media", Icons.Default.PermMedia, R.string.media)
+    object Transfers : Screen("transfers", Icons.Default.SwapVert, R.string.transfers)
+    object Settings : Screen("settings", Icons.Default.Settings, R.string.settings)
+    object About : Screen("about")
+    object CacheDetails : Screen("cache_details")
+    object CloudAnalysis : Screen("cloud_analysis")
+    object Logs : Screen("logs")
+    object BackupSettings : Screen("backup_settings")
+    object SecureStorage : Screen("secure_storage")
+    object Preview : Screen("preview/{chatId}/{fileId}?isMediaOnly={isMediaOnly}&virtualParentId={virtualParentId}") {
+        fun createRoute(chatId: Long, fileId: Long, isMediaOnly: Boolean = false, virtualParentId: String = "0") = 
+            "preview/$chatId/$fileId?isMediaOnly=$isMediaOnly&virtualParentId=$virtualParentId"
+    }
+    object VideoPlayer : Screen("video_player/{path}") {
+        fun createRoute(path: String) = "video_player/${URLEncoder.encode(path, "UTF-8")}"
+    }
+    object PdfViewer : Screen("pdf_viewer/{path}") {
+        fun createRoute(path: String) = "pdf_viewer/${URLEncoder.encode(path, "UTF-8")}"
+    }
+    object TextViewer : Screen("text_viewer/{path}") {
+        fun createRoute(path: String) = "text_viewer/${URLEncoder.encode(path, "UTF-8")}"
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MediaContent(
-    mediaItems: List<DriveItem.File>,
-    folders: List<DriveItem.Folder>,
-    onNavigateToPreview: (DriveItem.File) -> Unit,
-    onCreateAlbum: (String) -> Unit = {},
-    onDownload: (DriveItem.File) -> Unit,
-    onDelete: (List<DriveItem.File>) -> Unit,
-    onToggleStar: (DriveItem.File) -> Unit
-) {
+fun NavGraph(navController: NavHostController) {
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+    
+    val securityViewModel: SecurityViewModel = hiltViewModel()
+    val loginViewModel: com.awd.teledrive.ui.screens.auth.LoginViewModel = hiltViewModel()
+    val settingsViewModel: com.awd.teledrive.ui.screens.settings.SettingsViewModel = hiltViewModel()
+    
+    val isLocked by securityViewModel.isLocked.collectAsState()
+    val loginUiState by loginViewModel.uiState.collectAsState()
+    val isSecureActive by securityViewModel.isSecureModeActive.collectAsState(false)
+    val showCacheWarning by settingsViewModel.showCacheWarning.collectAsState()
+
+    var showUnlockDialog by remember { mutableStateOf(false) }
+    var showCreateSafePasswordDialog by remember { mutableStateOf(false) }
+
     val context = LocalContext.current
-    var selectedAlbum by remember { mutableStateOf<MediaAlbum?>(null) }
-    var selectedItems by remember { mutableStateOf(setOf<Long>()) }
-    val isSelectionMode = selectedItems.isNotEmpty()
+    val activity = context as? FragmentActivity
+    val executor = remember { ContextCompat.getMainExecutor(context) }
 
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-    var showCreateAlbumDialog by remember { mutableStateOf(false) }
-    var newAlbumName by remember { mutableStateOf("") }
-
-    val topAlbums = remember(mediaItems) {
-        val allPhotos = mediaItems.filter { it.mimeType.startsWith("image/") }
-        val videos = mediaItems.filter { it.mimeType.startsWith("video/") }
-        val camera = mediaItems.filter {
-            val n = it.name.lowercase()
-            n.startsWith("img_") || n.startsWith("vid_") || n.startsWith("pxl_") || n.startsWith("dcim") || n.matches(Regex("^20\\d{6}_.*"))
-        }
-        val screenshots = mediaItems.filter { it.name.contains("screenshot", ignoreCase = true) }
-        val screenRecordings = mediaItems.filter {
-            val n = it.name.lowercase()
-            it.mimeType.startsWith("video/") && (n.contains("screen") || n.contains("record") || n.startsWith("svid_") || n.startsWith("lv_"))
-        }
-
-        listOf(
-            MediaAlbum("all_photos", "All Photos", allPhotos.ifEmpty { mediaItems }),
-            MediaAlbum("camera", "Camera", camera),
-            MediaAlbum("videos", "Videos", videos, isVideoPlaceholder = true),
-            MediaAlbum("screenshots", "Screenshots", screenshots),
-            MediaAlbum("screen_recordings", "Screen Recordings", screenRecordings, isVideoPlaceholder = true)
-        )
-    }
-
-    val moreAlbums = remember(mediaItems, folders) {
-        val list = mutableListOf<MediaAlbum>()
-        val fbItems = mediaItems.filter { it.name.contains("fb_", true) || it.name.contains("facebook", true) || it.name.contains("received_", true) }
-        val waItems = mediaItems.filter { it.name.contains("wa0", true) || it.name.contains("whatsapp", true) }
-        val dlItems = mediaItems.filter { (it.virtualParentId ?: "0") == "0" }
-
-        list.add(MediaAlbum("downloads", "Downloads", dlItems, isVideoPlaceholder = true))
-        if (fbItems.isNotEmpty()) list.add(MediaAlbum("facebook", "Facebook", fbItems))
-        if (waItems.isNotEmpty()) list.add(MediaAlbum("whatsapp", "WhatsApp Video", waItems))
-
-        folders.forEach { folder ->
-            val vId = folder.virtualId ?: ""
-            val folderMedia = mediaItems.filter { it.virtualParentId == vId }
-            list.add(MediaAlbum("vf_$vId", folder.name, folderMedia))
-        }
-        list
-    }
-
-    BackHandler(enabled = isSelectionMode || selectedAlbum != null) {
-        if (isSelectionMode) {
-            selectedItems = emptySet()
-        } else if (selectedAlbum != null) {
-            selectedAlbum = null
-        }
-    }
-
-    if (showCreateAlbumDialog) {
-        AlertDialog(
-            onDismissRequest = { showCreateAlbumDialog = false },
-            title = { Text("New Album") },
-            text = {
-                OutlinedTextField(
-                    value = newAlbumName,
-                    onValueChange = { newAlbumName = it },
-                    label = { Text("Album Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(onClick = {
-                    if (newAlbumName.isNotBlank()) {
-                        onCreateAlbum(newAlbumName.trim())
-                        newAlbumName = ""
-                        showCreateAlbumDialog = false
+    val biometricPrompt = remember {
+        if (activity != null) {
+            BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    if (securityViewModel.unlockWithBiometric()) {
+                        navController.navigate(Screen.SecureStorage.route)
+                    } else {
+                        showUnlockDialog = true
                     }
-                }) { Text(stringResource(R.string.create)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateAlbumDialog = false }) { Text(stringResource(R.string.cancel)) }
-            }
-        )
+                }
+            })
+        } else null
     }
 
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text(stringResource(R.string.delete_item_title)) },
-            text = { Text(stringResource(R.string.delete_item_confirm)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    val itemsToDelete = mediaItems.filter { it.id in selectedItems }
-                    onDelete(itemsToDelete)
-                    showDeleteConfirm = false
-                    selectedItems = emptySet()
-                }) { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text(stringResource(R.string.cancel)) }
-            }
-        )
+    val promptInfo = remember {
+        BiometricPrompt.PromptInfo.Builder()
+            .setTitle(context.getString(R.string.unlock_secure_folder))
+            .setSubtitle(context.getString(R.string.biometric_subtitle))
+            .setNegativeButtonText(context.getString(R.string.use_password))
+            .build()
     }
+
+    val triggerSafeFolderOpen = {
+        val isPasswordSet = securityViewModel.isPasswordSet.value
+        if (!isPasswordSet) {
+            showCreateSafePasswordDialog = true
+        } else if (isSecureActive) {
+            navController.navigate(Screen.SecureStorage.route)
+        } else {
+            val isBiometricEnabled = securityViewModel.isBiometricEnabled.value
+            if (isBiometricEnabled && biometricPrompt != null) {
+                try {
+                    biometricPrompt.authenticate(promptInfo)
+                } catch (e: Exception) {
+                    showUnlockDialog = true
+                }
+            } else {
+                showUnlockDialog = true
+            }
+        }
+    }
+
+    LaunchedEffect(isLocked) {
+        if (isLocked && currentRoute != Screen.Security.route) {
+            navController.navigate(Screen.Security.route) {
+                popUpTo(0) { inclusive = true }
+            }
+        }
+    }
+
+    LaunchedEffect(loginUiState, currentRoute) {
+        if (currentRoute != null &&
+            loginUiState !is com.awd.teledrive.ui.screens.auth.LoginUiState.Success &&
+            loginUiState !is com.awd.teledrive.ui.screens.auth.LoginUiState.Loading &&
+            currentRoute != Screen.Login.route && 
+            currentRoute != Screen.Security.route) {
+            
+            navController.navigate(Screen.Login.route) {
+                popUpTo(0) { inclusive = true }
+            }
+        }
+    }
+
+    // নিচের হেডার/নেভিগেশন মেনু থেকে Starred রিমুভ করা হয়েছে
+    val bottomNavScreens = listOf(Screen.Home, Screen.Media, Screen.Settings)
+    val shouldShowBottomBar = currentRoute in bottomNavScreens.map { it.route } && currentRoute != Screen.SecureStorage.route
 
     Scaffold(
-        topBar = {
-            if (isSelectionMode) {
-                TopAppBar(
-                    title = { Text(stringResource(R.string.selected_count, selectedItems.size)) },
-                    modifier = Modifier.statusBarsPadding(),
-                    navigationIcon = {
-                        IconButton(onClick = { selectedItems = emptySet() }) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cancel))
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = {
-                            selectedItems.forEach { id -> mediaItems.find { it.id == id }?.let { onToggleStar(it) } }
-                            selectedItems = emptySet()
-                        }) {
-                            Icon(Icons.Default.Star, contentDescription = stringResource(R.string.add_star))
-                        }
-                        IconButton(onClick = {
-                            val count = selectedItems.size
-                            selectedItems.forEach { id -> mediaItems.find { it.id == id }?.let { onDownload(it) } }
-                            selectedItems = emptySet()
-                            Toast.makeText(context, context.getString(R.string.starting_downloads, count), Toast.LENGTH_SHORT).show()
-                        }) {
-                            Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
-                        }
-                        IconButton(onClick = { showDeleteConfirm = true }) {
-                            Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete))
-                        }
-                    }
-                )
-            } else if (selectedAlbum != null) {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(selectedAlbum!!.title, style = MaterialTheme.typography.titleLarge)
-                            Text("${selectedAlbum!!.items.size} items", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    },
-                    modifier = Modifier.statusBarsPadding(),
-                    navigationIcon = {
-                        IconButton(onClick = { selectedAlbum = null }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                        }
-                    }
-                )
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(onClick = { showCreateAlbumDialog = true }) {
-                            Icon(Icons.Default.Add, contentDescription = "Create Album")
-                        }
-                        IconButton(onClick = {
-                            selectedAlbum = topAlbums.firstOrNull()
-                        }) {
-                            Icon(Icons.Default.CheckBox, contentDescription = "Select")
-                        }
-                        IconButton(onClick = {}) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
-                        }
-                    }
-                    Text(
-                        text = "Albums",
-                        style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
-                    )
-                }
-            }
-        }
-    ) { padding ->
-        if (selectedAlbum == null) {
-            // মেইন Albums স্ক্রিন (২য় স্ক্রিনশটের মতো)
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    top = 8.dp,
-                    end = 16.dp,
-                    bottom = padding.calculateBottomPadding() + 88.dp
-                ),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = padding.calculateTopPadding())
-            ) {
-                items(topAlbums, key = { it.id }) { album ->
-                    AlbumGridCard(
-                        album = album,
-                        onClick = { selectedAlbum = album }
-                    )
-                }
-
-                item(span = { GridItemSpan(3) }) {
-                    Text(
-                        text = "More Albums",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
-                    )
-                }
-
-                items(moreAlbums, key = { it.id }) { album ->
-                    AlbumGridCard(
-                        album = album,
-                        onClick = { selectedAlbum = album }
-                    )
-                }
-            }
-        } else {
-            val currentAlbumItems = selectedAlbum!!.items
-            if (currentAlbumItems.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                    Text(stringResource(R.string.no_results), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    contentPadding = PaddingValues(
-                        start = 12.dp,
-                        top = 12.dp,
-                        end = 12.dp,
-                        bottom = padding.calculateBottomPadding() + 80.dp
-                    ),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(top = padding.calculateTopPadding())
-                ) {
-                    itemsIndexed(currentAlbumItems) { _, item ->
-                        val isSelected = selectedItems.contains(item.id)
-                        MediaGridItem(
-                            item = item,
-                            isSelected = isSelected,
-                            onClick = {
-                                if (isSelectionMode) {
-                                    selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                } else {
-                                    onNavigateToPreview(item)
+        bottomBar = {
+            if (shouldShowBottomBar) {
+                NavigationBar {
+                    bottomNavScreens.forEach { screen ->
+                        val isHome = screen == Screen.Home
+                        NavigationBarItem(
+                            icon = { 
+                                Box(
+                                    modifier = if (isHome) {
+                                        Modifier.combinedClickable(
+                                            onClick = {
+                                                if (currentRoute != screen.route) {
+                                                    navController.navigate(screen.route) {
+                                                        popUpTo(Screen.Home.route) { saveState = true }
+                                                        launchSingleTop = true
+                                                        restoreState = true
+                                                    }
+                                                }
+                                            },
+                                            onLongClick = {
+                                                triggerSafeFolderOpen()
+                                            }
+                                        )
+                                    } else Modifier
+                                ) {
+                                    Icon(screen.icon!!, contentDescription = null) 
                                 }
                             },
-                            onLongClick = {
-                                if (!isSelectionMode) {
-                                    selectedItems = setOf(item.id)
+                            label = { Text(stringResource(screen.labelRes!!)) },
+                            selected = currentRoute == screen.route,
+                            onClick = {
+                                if (currentRoute != screen.route) {
+                                    navController.navigate(screen.route) {
+                                        popUpTo(Screen.Home.route) { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
                                 }
                             }
                         )
@@ -377,122 +231,243 @@ fun MediaContent(
                 }
             }
         }
-    }
-}
-
-@Composable
-fun AlbumGridCard(
-    album: MediaAlbum,
-    onClick: () -> Unit
-) {
-    val coverItem = album.items.firstOrNull()
-    val coverModel = coverItem?.localPath ?: coverItem?.thumbnailPath
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(18.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(18.dp))
+    ) { innerPadding ->
+        NavHost(
+            navController = navController,
+            startDestination = Screen.Login.route,
+            modifier = Modifier.padding(
+                bottom = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
+            )
         ) {
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                if (coverModel != null) {
-                    AsyncImage(
-                        model = coverModel,
-                        contentDescription = album.title,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+            composable(Screen.Security.route) {
+                MasterPasswordScreen(
+                    onSuccess = {
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.Security.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
+            composable(Screen.Login.route) {
+                LoginScreen(
+                    onLoginSuccess = {
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.Login.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
+            composable(Screen.Home.route) {
+                HomeScreen(
+                    onNavigateToTransfers = { navController.navigate(Screen.Transfers.route) },
+                    onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
+                    onNavigateToStarred = { navController.navigate(Screen.Starred.route) },
+                    onNavigateToSafeFolder = { triggerSafeFolderOpen() },
+                    onNavigateToCloudAnalysis = { navController.navigate(Screen.CloudAnalysis.route) },
+                    onNavigateToPreview = { file -> 
+                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, virtualParentId = file.virtualParentId ?: "0"))
+                    }
+                )
+            }
+            composable(Screen.Starred.route) {
+                StarredScreen(
+                    onBack = { navController.popBackStack() },
+                    onNavigateToPreview = { file -> 
+                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, virtualParentId = file.virtualParentId ?: "0"))
+                    }
+                )
+            }
+            composable(Screen.Media.route) {
+                MediaScreen(
+                    onNavigateToPreview = { file -> 
+                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, isMediaOnly = true))
+                    }
+                )
+            }
+            composable(Screen.Transfers.route) {
+                TransfersScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Screen.Settings.route) {
+                SettingsScreen(
+                    onBack = { navController.popBackStack() },
+                    onNavigateToBackupFolders = { navController.navigate(Screen.BackupSettings.route) },
+                    onNavigateToLogs = { navController.navigate(Screen.Logs.route) },
+                    onNavigateToCacheDetails = { navController.navigate(Screen.CacheDetails.route) },
+                    onNavigateToCloudAnalysis = { navController.navigate(Screen.CloudAnalysis.route) },
+                    onNavigateToAbout = { navController.navigate(Screen.About.route) }
+                )
+            }
+            composable(Screen.About.route) {
+                AboutScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Screen.CacheDetails.route) {
+                CacheDetailsScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Screen.CloudAnalysis.route) {
+                CloudAnalysisScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Screen.BackupSettings.route) {
+                BackupSettingsScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Screen.Logs.route) {
+                LogsScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Screen.SecureStorage.route) {
+                com.awd.teledrive.ui.screens.security.SecureStorageScreen(
+                    onBack = { 
+                        navController.popBackStack()
+                        securityViewModel.lockSecureMode()
+                    },
+                    onNavigateToPreview = { file ->
+                        navController.navigate(Screen.Preview.createRoute(file.parentChatId, file.id, virtualParentId = file.virtualParentId ?: "0"))
+                    },
+                    onNavigateToTransfers = { navController.navigate(Screen.Transfers.route) }
+                )
+            }
+            composable(
+                route = Screen.Preview.route,
+                arguments = listOf(
+                    navArgument("chatId") { type = NavType.LongType },
+                    navArgument("fileId") { type = NavType.LongType },
+                    navArgument("isMediaOnly") { type = NavType.BoolType; defaultValue = false },
+                    navArgument("virtualParentId") { type = NavType.StringType; defaultValue = "0" }
+                )
+            ) {
+                PreviewScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenPlayer = { path -> navController.navigate(Screen.VideoPlayer.createRoute(path)) },
+                    onOpenPdf = { path -> navController.navigate(Screen.PdfViewer.createRoute(path)) },
+                    onOpenText = { path -> navController.navigate(Screen.TextViewer.createRoute(path)) }
+                )
+            }
+            composable(
+                route = Screen.VideoPlayer.route,
+                arguments = listOf(navArgument("path") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val path = backStackEntry.arguments?.getString("path")?.let { URLDecoder.decode(it, "UTF-8") } ?: ""
+                VideoPlayerScreen(url = path, onBack = { navController.popBackStack() })
+            }
+            composable(
+                route = Screen.PdfViewer.route,
+                arguments = listOf(navArgument("path") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val path = backStackEntry.arguments?.getString("path")?.let { URLDecoder.decode(it, "UTF-8") } ?: ""
+                PdfViewerScreen(filePath = path, onBack = { navController.popBackStack() })
+            }
+            composable(
+                route = Screen.TextViewer.route,
+                arguments = listOf(navArgument("path") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val path = backStackEntry.arguments?.getString("path")?.let { URLDecoder.decode(it, "UTF-8") } ?: ""
+                TextViewerScreen(filePath = path, onBack = { navController.popBackStack() })
+            }
+        }
+    }
+
+    if (showCreateSafePasswordDialog) {
+        var newPass by remember { mutableStateOf("") }
+        var confirmPass by remember { mutableStateOf("") }
+        var error by remember { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { showCreateSafePasswordDialog = false },
+            title = { Text("Setup Safe Folder Password") },
+            text = {
+                Column {
+                    Text("ফটো, ভিডিও ও অডিও লক করে রাখতে একটি পাসওয়ার্ড বা পিন সেট করুন:")
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newPass,
+                        onValueChange = { newPass = it; error = null },
+                        label = { Text(stringResource(R.string.password)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
-                } else {
-                    Icon(
-                        imageVector = if (album.isVideoPlaceholder) Icons.Default.Videocam else Icons.Default.Image,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        modifier = Modifier.size(42.dp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = confirmPass,
+                        onValueChange = { confirmPass = it; error = null },
+                        label = { Text(stringResource(R.string.confirm_password)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        isError = error != null,
+                        supportingText = error?.let { { Text(it) } },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newPass.length < 4) {
+                        error = "কমপক্ষে ৪ সংখ্যার পাসওয়ার্ড দিন"
+                    } else if (newPass != confirmPass) {
+                        error = "পাসওয়ার্ড দুটি মেলেনি"
+                    } else {
+                        securityViewModel.setPassword(newPass)
+                        securityViewModel.unlockSecureMode(newPass)
+                        showCreateSafePasswordDialog = false
+                        navController.navigate(Screen.SecureStorage.route)
+                    }
+                }) { Text("Create & Open") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateSafePasswordDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = album.title,
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = "${album.items.size}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
-}
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun MediaGridItem(
-    item: DriveItem.File,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .aspectRatio(1f)
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            ),
-        shape = RoundedCornerShape(10.dp),
-        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            AsyncImage(
-                model = item.localPath ?: item.thumbnailPath,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
-            
-            if (isSelected) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
-                )
-                Icon(
-                    Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
+    if (showUnlockDialog) {
+        var password by remember { mutableStateOf("") }
+        var error by remember { mutableStateOf<String?>(null) }
+        
+        AlertDialog(
+            onDismissRequest = { showUnlockDialog = false },
+            title = { Text(stringResource(R.string.unlock_secure_title)) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.unlock_secure_desc))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it; error = null },
+                        label = { Text(stringResource(R.string.password)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        isError = error != null,
+                        supportingText = error?.let { { Text(it) } },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (securityViewModel.unlockSecureMode(password)) {
+                        showUnlockDialog = false
+                        navController.navigate(Screen.SecureStorage.route)
+                    } else {
+                        error = context.getString(R.string.incorrect_password)
+                    }
+                }) { Text(stringResource(R.string.unlock)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnlockDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
+        )
+    }
 
-            if (item.mimeType.startsWith("video/")) {
-                Icon(
-                    Icons.Default.PlayCircle,
-                    contentDescription = null,
-                    modifier = Modifier.align(Alignment.Center).size(32.dp),
-                    tint = Color.White.copy(alpha = 0.85f)
-                )
+    if (showCacheWarning) {
+        AlertDialog(
+            onDismissRequest = { settingsViewModel.dismissCacheWarning() },
+            title = { Text(stringResource(R.string.clear_cache_confirm_title)) },
+            text = { Text(stringResource(R.string.cache_limit_reached_message)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    settingsViewModel.clearCache()
+                    settingsViewModel.dismissCacheWarning()
+                }) { Text(stringResource(R.string.clear_now), color = MaterialTheme.colorScheme.primary) }
+            },
+            dismissButton = {
+                TextButton(onClick = { settingsViewModel.dismissCacheWarning() }) { Text(stringResource(R.string.later)) }
             }
-            
-            if (item.isStarred) {
-                Icon(
-                    Icons.Default.Star,
-                    contentDescription = null,
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(16.dp),
-                    tint = MaterialTheme.colorScheme.secondary
-                )
-            }
-        }
+        )
     }
 }
