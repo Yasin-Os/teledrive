@@ -143,7 +143,7 @@ class MainActivity : AppCompatActivity() {
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     val now = System.currentTimeMillis()
-                    if (lastPauseTime != 0L && (now - lastPauseTime > 30_000)) {
+                    if (lastPauseTime != 0L && (now - lastPauseTime > 15_000)) {
                         securityViewModel.setLocked(true)
                     }
                 } else if (event == Lifecycle.Event.ON_PAUSE) {
@@ -205,32 +205,32 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 
     val strokeProgress by animateFloatAsState(
         targetValue = if (drawPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 850, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
         label = "StrokeProgress"
     )
     val fillAlpha by animateFloatAsState(
         targetValue = if (fillPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
         label = "FillAlpha"
     )
     val textAlpha by animateFloatAsState(
         targetValue = if (textPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
         label = "TextAlpha"
     )
     val iconScale by animateFloatAsState(
-        targetValue = if (fillPhase) 1f else 0.9f,
-        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+        targetValue = if (fillPhase) 1f else 0.88f,
+        animationSpec = tween(durationMillis = 550, easing = FastOutSlowInEasing),
         label = "IconScale"
     )
 
     LaunchedEffect(Unit) {
         drawPhase = true
-        delay(650)
+        delay(600)
         fillPhase = true
         delay(200)
         textPhase = true
-        delay(950)
+        delay(900)
         onFinished()
     }
 
@@ -244,93 +244,97 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // মূল অ্যাপ আইকনটি লাইভ ড্র হয়ে তৈরি হওয়ার অ্যানিমেশন
+            // হুবহু ৩য় ছবির আইকনটি (লেখা ছাড়া) অ্যানিমেশনে তৈরি হচ্ছে
             Canvas(
                 modifier = Modifier
-                    .size(104.dp)
+                    .size(112.dp)
                     .scale(iconScale)
             ) {
                 val w = size.width
                 val h = size.height
                 val s = w / 108f
 
-                // আইকন কার্ডের ব্যাকগ্রাউন্ড
                 drawRoundRect(
                     brush = Brush.linearGradient(
-                        colors = listOf(Color(0xFF0F2942), Color(0xFF0284C7)),
-                        start = Offset.Zero,
-                        end = Offset(w, h)
+                        colors = listOf(Color(0xFF003B99), Color(0xFF0077CC), Color(0xFF00E5DF)),
+                        start = Offset(12f * s, 96f * s),
+                        end = Offset(96f * s, 12f * s)
                     ),
                     cornerRadius = CornerRadius(26f * s, 26f * s),
                     size = Size(w, h),
-                    alpha = fillAlpha * 0.95f
+                    alpha = 0.25f + (0.75f * fillAlpha)
                 )
 
-                drawRoundRect(
-                    color = Color(0xFF38BDF8).copy(alpha = 0.5f * strokeProgress),
-                    cornerRadius = CornerRadius(26f * s, 26f * s),
-                    size = Size(w, h),
-                    style = Stroke(width = 2.2f * s)
-                )
-
-                // ক্লাউডের পাথ তৈরি
                 val cloudPath = Path().apply {
-                    moveTo(37.2f * s, 71f * s)
-                    lineTo(70.5f * s, 71f * s)
-                    cubicTo(76.8f * s, 71f * s, 82f * s, 65.8f * s, 82f * s, 59.5f * s)
-                    cubicTo(82f * s, 53.7f * s, 77.3f * s, 49f * s, 71.5f * s, 48.5f * s)
-                    cubicTo(69.9f * s, 39.6f * s, 62.1f * s, 33f * s, 52.8f * s, 33f * s)
-                    cubicTo(44.8f * s, 33f * s, 38f * s, 37.9f * s, 35.2f * s, 44.8f * s)
-                    cubicTo(28.9f * s, 45.7f * s, 24f * s, 51.1f * s, 24f * s, 57.8f * s)
-                    cubicTo(24f * s, 65.1f * s, 29.9f * s, 71f * s, 37.2f * s, 71f * s)
+                    moveTo(29f * s, 68f * s)
+                    lineTo(75f * s, 68f * s)
+                    cubicTo(81.6f * s, 68f * s, 86.5f * s, 63.2f * s, 86.5f * s, 56.8f * s)
+                    cubicTo(86.5f * s, 51.2f * s, 82.4f * s, 46.6f * s, 76.9f * s, 45.8f * s)
+                    cubicTo(75.8f * s, 38.9f * s, 69.8f * s, 33.8f * s, 62.6f * s, 33.8f * s)
+                    cubicTo(60.4f * s, 33.8f * s, 58.3f * s, 34.3f * s, 56.5f * s, 35.2f * s)
+                    cubicTo(53.2f * s, 29.5f * s, 47.0f * s, 25.8f * s, 39.8f * s, 25.8f * s)
+                    cubicTo(29.3f * s, 25.8f * s, 20.8f * s, 34.1f * s, 20.5f * s, 44.5f * s)
+                    cubicTo(15.8f * s, 46.2f * s, 12.5f * s, 50.7f * s, 12.5f * s, 56.0f * s)
+                    cubicTo(12.5f * s, 62.7f * s, 18.0f * s, 68f * s, 25.0f * s, 68f * s)
                     close()
                 }
 
-                // ক্লাউডের আউটলাইন ড্রয়িং অ্যানিমেশন
                 val measure = PathMeasure()
                 measure.setPath(cloudPath, false)
-                val partialCloudPath = Path()
-                measure.getSegment(0f, measure.length * strokeProgress, partialCloudPath, true)
+                val partialCloud = Path()
+                measure.getSegment(0f, measure.length * strokeProgress, partialCloud, true)
 
                 drawPath(
-                    path = partialCloudPath,
+                    path = partialCloud,
                     color = Color.White,
-                    style = Stroke(width = 3.5f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    style = Stroke(width = 3.2f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
 
-                // ক্লাউড সম্পূর্ণ ভরাট (Fill) হওয়া
                 if (fillAlpha > 0f) {
-                    drawPath(
-                        path = cloudPath,
-                        color = Color.White.copy(alpha = fillAlpha)
+                    drawPath(path = cloudPath, color = Color.White.copy(alpha = fillAlpha))
+
+                    // ২টি সিগন্যাল ওয়েভ আর্ক
+                    drawArc(
+                        color = Color.White.copy(alpha = fillAlpha),
+                        startAngle = -65f,
+                        sweepAngle = 70f,
+                        useCenter = false,
+                        topLeft = Offset(55f * s, 30f * s),
+                        size = Size(24f * s, 24f * s),
+                        style = Stroke(width = 3.8f * s, cap = StrokeCap.Round)
+                    )
+                    drawArc(
+                        color = Color.White.copy(alpha = fillAlpha),
+                        startAngle = -65f,
+                        sweepAngle = 70f,
+                        useCenter = false,
+                        topLeft = Offset(49f * s, 24f * s),
+                        size = Size(36f * s, 36f * s),
+                        style = Stroke(width = 3.8f * s, cap = StrokeCap.Round)
                     )
 
-                    // ক্লাউডের ভেতরের আপলোড তীর চিহ্ন
-                    val arrowPath = Path().apply {
-                        moveTo(53f * s, 44f * s)
-                        lineTo(44f * s, 53f * s)
-                        lineTo(49.5f * s, 53f * s)
-                        lineTo(49.5f * s, 64f * s)
-                        lineTo(56.5f * s, 64f * s)
-                        lineTo(56.5f * s, 53f * s)
-                        lineTo(62f * s, 53f * s)
-                        close()
+                    // ৩টি বাঁকানো তীর (Swoosh Arrows)
+                    val swoosh1 = Path().apply {
+                        moveTo(19f * s, 55f * s)
+                        quadraticTo(28f * s, 68f * s, 46f * s, 48f * s)
                     }
-                    drawPath(
-                        path = arrowPath,
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0xFF0284C7).copy(alpha = fillAlpha),
-                                Color(0xFF090D16).copy(alpha = fillAlpha)
-                            )
-                        )
-                    )
+                    val swoosh2 = Path().apply {
+                        moveTo(22f * s, 63f * s)
+                        quadraticTo(35f * s, 74f * s, 63f * s, 43f * s)
+                    }
+                    val swoosh3 = Path().apply {
+                        moveTo(29f * s, 72f * s)
+                        quadraticTo(45f * s, 78f * s, 64f * s, 56f * s)
+                    }
+
+                    drawPath(swoosh1, Color(0xFF005BB5).copy(alpha = fillAlpha), style = Stroke(3.5f * s, cap = StrokeCap.Round))
+                    drawPath(swoosh2, Color(0xFF0066CC).copy(alpha = fillAlpha), style = Stroke(3.8f * s, cap = StrokeCap.Round))
+                    drawPath(swoosh3, Color(0xFF0088DD).copy(alpha = fillAlpha), style = Stroke(3.5f * s, cap = StrokeCap.Round))
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(22.dp))
 
-            // অ্যাপের নাম ক্লিন ফন্টে
             Text(
                 text = stringResource(R.string.app_name),
                 color = Color.White,
@@ -341,7 +345,6 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
             )
         }
 
-        // একদম নিচে ছোট ও ক্লিন ফন্টে Developer: Yasin Adnan
         Text(
             text = "Developer: Yasin Adnan",
             color = Color.White.copy(alpha = 0.65f),
