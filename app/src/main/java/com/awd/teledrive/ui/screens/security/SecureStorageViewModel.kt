@@ -3,7 +3,6 @@ package com.awd.teledrive.ui.screens.security
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.data.repository.DriveRepository
-import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.home.FilterType
 import com.awd.teledrive.ui.screens.home.SortOrder
@@ -15,26 +14,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class SecureStorageViewModel @Inject constructor(
-    private val driveRepository: DriveRepository,
-    private val secureSessionManager: SecureSessionManager
+    private val driveRepository: DriveRepository
 ) : ViewModel() {
-
-    private val _currentFolderId = MutableStateFlow<Long?>(null)
-    val currentFolderId = _currentFolderId.asStateFlow()
-
-    private val _currentVirtualFolderId = MutableStateFlow("0")
-    val currentVirtualFolderId = _currentVirtualFolderId.asStateFlow()
-
-    private val _currentFolderName = MutableStateFlow<String?>(null)
-    val currentFolderName = _currentFolderName.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
@@ -48,71 +35,40 @@ class SecureStorageViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing = _isRefreshing.asStateFlow()
 
-    private val _isInitialLoading = MutableStateFlow(true)
+    private val _isInitialLoading = MutableStateFlow(false)
     val isInitialLoading = _isInitialLoading.asStateFlow()
 
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val secureItems: StateFlow<List<DriveItem>> = combine(
-        listOf(_currentFolderId, _currentVirtualFolderId, _searchQuery, _sortOrder, _filterType, driveRepository.getSavedMessagesChatIdFlow())
-    ) { arr ->
-        val folderId = arr[0] as? Long
-        val virtualId = arr[1] as String
-        val query = arr[2] as String
-        val order = arr[3] as SortOrder
-        val filter = arr[4] as FilterType
+    // ক্লাউডের যে ফাইলগুলো এখনো সাধারণ ক্লাউডে আছে (Safe Folder-এ হাইড করার জন্য পিকারে দেখাবে)
+    val availableCloudFiles: StateFlow<List<DriveItem.File>> = driveRepository.getAllFiles()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        val baseFlow = if (virtualId == "0" && query.isEmpty()) {
-            combine(
-                driveRepository.getItems(folderId, "0", ""),
-                driveRepository.getAllFiles()
-            ) { rootItems, allFiles ->
-                val secureFolders = rootItems.filterIsInstance<DriveItem.Folder>().filter { it.isSecure }
-                val defaultVaultFolder = secureFolders.find { it.name == "Safe Vault" }
-                val rootEncryptedFiles = allFiles.filter {
-                    it.isEncrypted && (it.virtualParentId == "0" || (defaultVaultFolder != null && it.virtualParentId == defaultVaultFolder.virtualId))
-                }
-                val visibleFolders = secureFolders.filter { it.name != "Safe Vault" }
-                (visibleFolders + rootEncryptedFiles).distinctBy { it.id }
-            }
-        } else {
-            driveRepository.getItems(folderId, virtualId, query).map { allItems ->
-                val isInsideSecure = if (virtualId != "0") {
-                    driveRepository.isVirtualFolderSecure(virtualId)
-                } else if (folderId != null) {
-                    driveRepository.isChatSecure(folderId)
-                } else false
+    // Safe Folder-এ হাইড করা ক্লাউড ফাইলসমূহ
+    val secureItems: StateFlow<List<DriveItem.File>> = combine(
+        driveRepository.getSafeFolderFilesFlow(),
+        _searchQuery,
+        _sortOrder,
+        _filterType
+    ) { files, query, order, filter ->
+        val searched = if (query.isBlank()) files else files.filter { it.name.contains(query, ignoreCase = true) }
 
-                if (isInsideSecure) allItems
-                else allItems.filter { (it is DriveItem.Folder && it.isSecure) || (it is DriveItem.File && it.isEncrypted) }
+        val filtered = when (filter) {
+            FilterType.ALL -> searched
+            FilterType.PHOTOS -> searched.filter { it.mimeType.startsWith("image/") }
+            FilterType.VIDEOS -> searched.filter { it.mimeType.startsWith("video/") }
+            FilterType.AUDIO -> searched.filter { it.mimeType.startsWith("audio/") }
+            FilterType.DOCUMENTS -> searched.filter {
+                !it.mimeType.startsWith("image/") &&
+                !it.mimeType.startsWith("video/") &&
+                !it.mimeType.startsWith("audio/")
             }
         }
 
-        baseFlow.map { secureBase ->
-            val filteredByType = when (filter) {
-                FilterType.ALL -> secureBase
-                FilterType.PHOTOS -> secureBase.filter { it is DriveItem.File && it.mimeType.startsWith("image/") }
-                FilterType.VIDEOS -> secureBase.filter { it is DriveItem.File && it.mimeType.startsWith("video/") }
-                FilterType.AUDIO -> secureBase.filter { it is DriveItem.File && it.mimeType.startsWith("audio/") }
-                FilterType.DOCUMENTS -> secureBase.filter { it is DriveItem.File && !it.mimeType.startsWith("image/") && !it.mimeType.startsWith("video/") && !it.mimeType.startsWith("audio/") }
-            }
-
-            val (folders, files) = filteredByType.partition { it is DriveItem.Folder }
-            
-            val sortedFolders = when (order) {
-                SortOrder.NAME -> folders.sortedBy { it.name }
-                else -> folders.sortedByDescending { it.id }
-            }
-
-            val sortedFiles = when (order) {
-                SortOrder.NAME -> files.sortedBy { it.name }
-                SortOrder.DATE -> files 
-                SortOrder.SIZE -> files.sortedByDescending { (it as? DriveItem.File)?.size ?: 0L }
-            }
-
-            sortedFolders + sortedFiles
+        when (order) {
+            SortOrder.NAME -> filtered.sortedBy { it.name }
+            SortOrder.DATE -> filtered
+            SortOrder.SIZE -> filtered.sortedByDescending { it.size }
         }
-    }.flatMapLatest { it }
-    .distinctUntilChanged()
+    }.distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun onSearchQueryChange(query: String) {
@@ -127,39 +83,21 @@ class SecureStorageViewModel @Inject constructor(
         _filterType.value = type
     }
 
-    fun navigateToFolder(folderId: Long?, virtualId: String?, folderName: String?) {
-        _currentFolderId.value = folderId
-        _currentVirtualFolderId.value = virtualId ?: "0"
-        _currentFolderName.value = folderName
-        fetchItems()
-    }
-
     fun fetchItems() {
         viewModelScope.launch {
-            if (secureItems.value.isEmpty()) _isInitialLoading.value = true
-            else _isRefreshing.value = true
-            
-            driveRepository.fetchFiles(_currentFolderId.value)
-            delay(800)
-            _isInitialLoading.value = false
+            _isRefreshing.value = true
+            driveRepository.fetchFiles(null)
+            delay(500)
             _isRefreshing.value = false
         }
     }
 
-    fun navigateBack() {
-        if (_currentVirtualFolderId.value != "0") {
-            val parentId = driveRepository.getParentVirtualId(_currentVirtualFolderId.value)
-            val parentName = if (parentId == "0") null else driveRepository.getVirtualFolderName(parentId)
-            navigateToFolder(_currentFolderId.value, parentId, parentName) 
-        } else if (_currentFolderId.value != null) {
-            navigateToFolder(null, "0", null)
-        }
+    fun hideCloudFilesInSafeFolder(fileIds: List<Long>) {
+        driveRepository.setCloudItemsSafeState(fileIds, hideInSafeFolder = true)
     }
 
-    fun toggleStarred(item: DriveItem) {
-        viewModelScope.launch {
-            driveRepository.toggleStarred(item)
-        }
+    fun unhideFilesToCloud(fileIds: List<Long>) {
+        driveRepository.setCloudItemsSafeState(fileIds, hideInSafeFolder = false)
     }
 
     fun deleteItems(items: List<DriveItem>) {
@@ -174,39 +112,9 @@ class SecureStorageViewModel @Inject constructor(
         }
     }
 
-    fun createFolder(name: String, isVirtual: Boolean = true, isSecure: Boolean = true) {
-        viewModelScope.launch {
-            val parentId = if (_currentVirtualFolderId.value != "0") {
-                _currentVirtualFolderId.value
-            } else {
-                "0"
-            }
-            driveRepository.createVirtualFolder(name, parentId, isSecure = true)
-        }
-    }
-
-    fun uploadFile(filePath: String, fileName: String) {
-        viewModelScope.launch {
-            var targetVirtualId = _currentVirtualFolderId.value
-            if (targetVirtualId == "0") {
-                driveRepository.createVirtualFolder("Safe Vault", "0", isSecure = true)
-                delay(400)
-                val safeVault = secureItems.value.filterIsInstance<DriveItem.Folder>().find { it.isSecure }
-                if (safeVault?.virtualId != null) {
-                    targetVirtualId = safeVault.virtualId
-                }
-            }
-            driveRepository.uploadFile(filePath, fileName, _currentFolderId.value, targetVirtualId)
-        }
-    }
-
     fun downloadFile(messageId: Long, chatId: Long, fileName: String) {
         viewModelScope.launch {
             driveRepository.downloadFile(messageId, chatId, fileName)
         }
-    }
-
-    init {
-        fetchItems()
     }
 }
