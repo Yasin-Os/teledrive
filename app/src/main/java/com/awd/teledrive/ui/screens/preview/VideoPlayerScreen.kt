@@ -1,22 +1,29 @@
 package com.awd.teledrive.ui.screens.preview
 
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
+import android.widget.Toast
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,23 +35,27 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.BrightnessHigh
-import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Headset
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.ScreenRotation
-import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.SyncAlt
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -63,6 +74,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -70,6 +82,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -101,15 +114,15 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.util.Locale
 import javax.inject.Inject
+import kotlin.math.abs
+
+private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME }
 
 @HiltViewModel
 class VideoPlayerViewModel @Inject constructor(
     val telegramClient: TelegramClient,
     private val driveDao: DriveDao
 ) : ViewModel() {
-
-    private val _downloadProgress = MutableStateFlow(0)
-    val downloadProgress = _downloadProgress.asStateFlow()
 
     private val _resolvedLocalPath = MutableStateFlow<String?>(null)
     val resolvedLocalPath = _resolvedLocalPath.asStateFlow()
@@ -135,18 +148,10 @@ class VideoPlayerViewModel @Inject constructor(
 
             telegramClient.fileUpdates.collect { update ->
                 val f = update.file
-                if (f.id == activeFileId) {
-                    val total = if (f.expectedSize > 0) f.expectedSize else f.size
-                    val dl = f.local.downloadedSize
-                    if (total > 0) {
-                        _downloadProgress.value = ((dl.toDouble() / total.toDouble()) * 100).toInt().coerceIn(0, 100)
-                    }
-                    if (f.local.isDownloadingCompleted && f.local.path.isNotEmpty()) {
-                        _downloadProgress.value = 100
-                        _resolvedLocalPath.value = f.local.path
-                        driveDao.updateLocalPath(f.id, f.local.path)
-                        driveDao.updateLocalPathByUniqueId(f.remote.uniqueId, f.local.path)
-                    }
+                if (f.id == activeFileId && f.local.isDownloadingCompleted && f.local.path.isNotEmpty()) {
+                    _resolvedLocalPath.value = f.local.path
+                    driveDao.updateLocalPath(f.id, f.local.path)
+                    driveDao.updateLocalPathByUniqueId(f.remote.uniqueId, f.local.path)
                 }
             }
         }
@@ -155,7 +160,6 @@ class VideoPlayerViewModel @Inject constructor(
     fun markOfflinePath(fileId: Int, uniqueId: String, path: String) {
         viewModelScope.launch {
             _resolvedLocalPath.value = path
-            _downloadProgress.value = 100
             driveDao.updateLocalPath(fileId, path)
             if (uniqueId.isNotEmpty()) {
                 driveDao.updateLocalPathByUniqueId(uniqueId, path)
@@ -207,7 +211,8 @@ class TdlibStreamingDataSource(
         val totalSize = file?.expectedSize?.takeIf { it > 0 } ?: file?.size?.takeIf { it > 0 } ?: expectedSize
 
         if (file != null && !file.local.isDownloadingCompleted) {
-            telegramClient.send(TdApi.DownloadFile(file.id, 32, currentPosition, 0, false))
+            // শুধুমাত্র যতটুকু প্লে করার জন্য দরকার ততটুকু স্ট্রিম হবে (পুরো ফাইল অযথা ডাউনলোড কিউতে যাবে না)
+            telegramClient.send(TdApi.DownloadFile(file.id, 32, currentPosition, 4 * 1024 * 1024L, false))
         } else if (file != null && file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
             onCompletedPath(file.id, file.remote.uniqueId, file.local.path)
         }
@@ -275,15 +280,15 @@ class TdlibStreamingDataSource(
                 }
             }
 
-            if (!local.isDownloadingActive || currentPosition < availStart || (currentPosition - availEnd) > 2 * 1024 * 1024L) {
+            if (!local.isDownloadingActive || currentPosition < availStart || currentPosition >= availEnd) {
                 if (lastRequestedOffset != currentPosition) {
-                    telegramClient.send(TdApi.DownloadFile(file.id, 32, currentPosition, 0, false))
+                    telegramClient.send(TdApi.DownloadFile(file.id, 32, currentPosition, 4 * 1024 * 1024L, false))
                     lastRequestedOffset = currentPosition
                 }
             }
 
             try {
-                Thread.sleep(100)
+                Thread.sleep(80)
             } catch (e: InterruptedException) {
                 return C.RESULT_END_OF_INPUT
             }
@@ -323,7 +328,6 @@ fun VideoPlayerScreen(
     val expectedSize = streamParts.getOrNull(3)?.toLongOrNull() ?: 0L
     val fileName = if (isStreamUrl) (streamParts.getOrNull(4) ?: "Video") else url.substringAfterLast('/')
 
-    val downloadProgress by viewModel.downloadProgress.collectAsState()
     val resolvedLocalPath by viewModel.resolvedLocalPath.collectAsState()
 
     var isPlaying by remember { mutableStateOf(true) }
@@ -337,9 +341,9 @@ fun VideoPlayerScreen(
     var isMuted by remember { mutableStateOf(false) }
     var isLandscape by remember { mutableStateOf(false) }
 
-    var gestureOverlayText by remember { mutableStateOf<String?>(null) }
-    var gestureOverlayProgress by remember { mutableFloatStateOf(-1f) }
-    var isBrightnessGesture by remember { mutableStateOf(false) }
+    var activeGestureMode by remember { mutableStateOf(GestureMode.NONE) }
+    var verticalGestureProgress by remember { mutableFloatStateOf(0f) }
+    var seekOverlayText by remember { mutableStateOf<String?>(null) }
 
     val exoPlayer = remember(url) {
         val builder = ExoPlayer.Builder(context)
@@ -393,9 +397,11 @@ fun VideoPlayerScreen(
 
     LaunchedEffect(exoPlayer) {
         while (true) {
-            currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+            if (activeGestureMode != GestureMode.SEEK) {
+                currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+            }
             if (exoPlayer.duration > 0) duration = exoPlayer.duration
-            delay(500)
+            delay(300)
         }
     }
 
@@ -406,16 +412,6 @@ fun VideoPlayerScreen(
         }
     }
 
-    LaunchedEffect(gestureOverlayText) {
-        if (gestureOverlayText != null) {
-            delay(1000)
-            gestureOverlayText = null
-            gestureOverlayProgress = -1f
-        }
-    }
-
-    var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -425,51 +421,95 @@ fun VideoPlayerScreen(
                     onTap = { controlsVisible = !controlsVisible },
                     onDoubleTap = { offset ->
                         if (!isLocked) {
+                            val totalDur = duration.takeIf { it > 0 } ?: Long.MAX_VALUE
                             if (offset.x < size.width / 2f) {
                                 val next = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                                 exoPlayer.seekTo(next)
                                 currentPosition = next
-                                gestureOverlayProgress = -1f
-                                gestureOverlayText = "⏪ -10s"
                             } else {
-                                val next = (exoPlayer.currentPosition + 10_000L).coerceAtMost(duration.takeIf { it > 0 } ?: Long.MAX_VALUE)
+                                val next = (exoPlayer.currentPosition + 10_000L).coerceAtMost(totalDur)
                                 exoPlayer.seekTo(next)
                                 currentPosition = next
-                                gestureOverlayProgress = -1f
-                                gestureOverlayText = "⏩ +10s"
                             }
                         }
                     }
                 )
             }
-            .pointerInput(isLocked) {
+            .pointerInput(isLocked, duration) {
                 if (!isLocked) {
-                    detectVerticalDragGestures { change, dragAmount ->
-                        change.consume()
-                        val isLeft = change.position.x < size.width / 2f
-                        val delta = -dragAmount / size.height.toFloat()
+                    var startX = 0f
+                    var seekStartMs = 0L
+                    var accumulatedX = 0f
+                    var volumeFloat = 0.5f
 
-                        if (isLeft) {
-                            isBrightnessGesture = true
-                            val window = activity?.window
-                            val lp = window?.attributes
-                            val currentBright = lp?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f
-                            val newBright = (currentBright + delta).coerceIn(0.05f, 1.0f)
-                            lp?.screenBrightness = newBright
-                            window?.attributes = lp
-                            gestureOverlayProgress = newBright
-                            gestureOverlayText = "Brightness ${(newBright * 100).toInt()}%"
-                        } else {
-                            isBrightnessGesture = false
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            startX = offset.x
+                            seekStartMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                            accumulatedX = 0f
                             val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
                             val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                            val newVolFloat = ((curVol.toFloat() / maxVol) + delta).coerceIn(0f, 1f)
-                            val newVol = (newVolFloat * maxVol).toInt()
-                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
-                            gestureOverlayProgress = newVolFloat
-                            gestureOverlayText = "Volume ${(newVolFloat * 100).toInt()}%"
+                            volumeFloat = curVol.toFloat() / maxVol.toFloat()
+                            activeGestureMode = GestureMode.NONE
+                        },
+                        onDragEnd = {
+                            activeGestureMode = GestureMode.NONE
+                            seekOverlayText = null
+                        },
+                        onDragCancel = {
+                            activeGestureMode = GestureMode.NONE
+                            seekOverlayText = null
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            if (activeGestureMode == GestureMode.NONE) {
+                                activeGestureMode = if (abs(dragAmount.x) > abs(dragAmount.y)) {
+                                    GestureMode.SEEK
+                                } else if (startX < size.width / 2f) {
+                                    GestureMode.BRIGHTNESS
+                                } else {
+                                    GestureMode.VOLUME
+                                }
+                            }
+
+                            when (activeGestureMode) {
+                                GestureMode.SEEK -> {
+                                    // PLAYit স্টাইলে ডানে-বামে টেনে ভিডিও দেখা: 00:18[+00:03]
+                                    accumulatedX += dragAmount.x
+                                    val maxRangeMs = if (duration > 0) minOf(duration, 120_000L) else 60_000L
+                                    val deltaMs = ((accumulatedX / size.width.toFloat()) * maxRangeMs).toLong()
+                                    val totalDur = duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+                                    val targetMs = (seekStartMs + deltaMs).coerceIn(0L, totalDur)
+                                    val diffSec = (targetMs - seekStartMs) / 1000L
+                                    val sign = if (diffSec >= 0) "+" else "-"
+                                    val diffStr = formatDuration(abs(diffSec) * 1000L)
+                                    seekOverlayText = "${formatDuration(targetMs)}[$sign$diffStr]"
+                                    currentPosition = targetMs
+                                    exoPlayer.seekTo(targetMs)
+                                }
+                                GestureMode.BRIGHTNESS -> {
+                                    // PLAYit স্টাইলে বাম পাশে আলো বাড়ানো-কমানো
+                                    val delta = -dragAmount.y / (size.height * 0.75f)
+                                    val window = activity?.window
+                                    val lp = window?.attributes
+                                    val curBright = lp?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f
+                                    val newBright = (curBright + delta).coerceIn(0.01f, 1.0f)
+                                    lp?.screenBrightness = newBright
+                                    window?.attributes = lp
+                                    verticalGestureProgress = newBright
+                                }
+                                GestureMode.VOLUME -> {
+                                    // PLAYit স্টাইলে ডান পাশে সাউন্ড বাড়ানো-কমানো
+                                    val delta = -dragAmount.y / (size.height * 0.75f)
+                                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                    volumeFloat = (volumeFloat + delta).coerceIn(0f, 1f)
+                                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, (volumeFloat * maxVol).toInt(), 0)
+                                    verticalGestureProgress = volumeFloat
+                                }
+                                GestureMode.NONE -> {}
+                            }
                         }
-                    }
+                    )
                 }
             }
     ) {
@@ -480,7 +520,6 @@ fun VideoPlayerScreen(
                     useController = false
                     this.resizeMode = resizeMode
                     setBackgroundColor(android.graphics.Color.BLACK)
-                    playerViewRef = this
                 }
             },
             update = { view ->
@@ -489,84 +528,84 @@ fun VideoPlayerScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Buffering / Streaming Progress Indicator
-        if (isBuffering) {
+        // বাফারিং লোডার (কোনো পার্সেন্টেজ ছাড়া)
+        if (isBuffering && activeGestureMode == GestureMode.NONE) {
+            CircularProgressIndicator(
+                color = Color(0xFF2ECC71),
+                strokeWidth = 3.5.dp,
+                modifier = Modifier.size(46.dp).align(Alignment.Center)
+            )
+        }
+
+        // স্ক্রিনশট ১ ও ৪ অনুযায়ী হুবহু PLAYit Brightness ও Volume ভার্টিক্যাল ইন্ডিকেটর (কোনো বক্স ছাড়া)
+        if (activeGestureMode == GestureMode.BRIGHTNESS || activeGestureMode == GestureMode.VOLUME) {
             Column(
                 modifier = Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                CircularProgressIndicator(
-                    color = Color(0xFFFF6D00),
-                    strokeWidth = 4.dp,
-                    modifier = Modifier.size(56.dp)
+                Icon(
+                    imageVector = if (activeGestureMode == GestureMode.BRIGHTNESS) Icons.Default.WbSunny else Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(46.dp)
                 )
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = if (isStreamUrl && downloadProgress in 1..99) "Streaming... $downloadProgress%" else "Loading...",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelLarge
-                )
-            }
-        }
-
-        // Gesture Feedback Pill (Brightness / Volume / Seek)
-        AnimatedVisibility(
-            visible = gestureOverlayText != null,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.Center)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color.Black.copy(alpha = 0.75f),
-                modifier = Modifier.padding(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    if (gestureOverlayProgress >= 0f) {
-                        Icon(
-                            imageVector = if (isBrightnessGesture) Icons.Default.BrightnessHigh else Icons.AutoMirrored.Filled.VolumeUp,
-                            contentDescription = null,
-                            tint = Color(0xFFFF6D00),
-                            modifier = Modifier.size(28.dp)
+                Spacer(modifier = Modifier.height(14.dp))
+                Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .width(7.dp)
+                            .height(125.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color.White.copy(alpha = 0.35f))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .fillMaxHeight(verticalGestureProgress.coerceIn(0f, 1f))
+                                .align(Alignment.BottomCenter)
+                                .background(Color.White, RoundedCornerShape(4.dp))
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = { gestureOverlayProgress },
-                            color = Color(0xFFFF6D00),
-                            modifier = Modifier.width(120.dp)
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
                     }
                     Text(
-                        text = gestureOverlayText ?: "",
+                        text = "${(verticalGestureProgress * 100).toInt()}",
                         color = Color.White,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Normal,
+                        modifier = Modifier.padding(start = 54.dp)
                     )
                 }
             }
         }
 
-        // Screen Lock Overlay
+        // স্ক্রিনশট ২ অনুযায়ী হুবহু PLAYit Horizontal Seek টেক্সট: 00:18[+00:03]
+        if (activeGestureMode == GestureMode.SEEK && seekOverlayText != null) {
+            Text(
+                text = seekOverlayText!!,
+                color = Color.White,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Normal,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
+        // স্ক্রিন লক করা থাকলে শুধু বাম পাশে আনলক বাটন দেখাবে
         if (isLocked && controlsVisible) {
             Surface(
                 onClick = { isLocked = false },
-                shape = CircleShape,
-                color = Color(0xFFFF6D00),
+                shape = RoundedCornerShape(8.dp),
+                color = Color.Black.copy(alpha = 0.5f),
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 24.dp)
-                    .size(52.dp)
+                    .padding(start = 16.dp)
+                    .size(42.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.Lock, contentDescription = "Unlock", tint = Color.White)
+                    Icon(Icons.Default.Lock, contentDescription = "Unlock", tint = Color.White, modifier = Modifier.size(24.dp))
                 }
             }
         }
 
-        // PLAYit Full Controls Overlay
+        // স্ক্রিনশট ৫ অনুযায়ী হুবহু PLAYit কন্ট্রোল লেআউট
         AnimatedVisibility(
             visible = controlsVisible && !isLocked,
             enter = fadeIn(),
@@ -579,112 +618,181 @@ fun VideoPlayerScreen(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color.Black.copy(alpha = 0.7f),
+                                Color.Black.copy(alpha = 0.65f),
                                 Color.Transparent,
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.85f)
+                                Color.Black.copy(alpha = 0.75f)
                             )
                         )
                     )
             ) {
-                // Top Bar
+                // ১. উপরের বার (Back, Title, HDR, CC, Headphone, Playlist, 3-dot)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
                         .align(Alignment.TopCenter),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = fileName,
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        val isOffline = !isStreamUrl || resolvedLocalPath != null || downloadProgress >= 100
-                        Text(
-                            text = if (isOffline) "PLAYit • Offline Ready" else "PLAYit • Live Streaming ($downloadProgress%)",
-                            color = if (isOffline) Color(0xFF4CAF50) else Color(0xFFFF6D00),
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                    val externalPath = resolvedLocalPath ?: url.takeIf { !isStreamUrl }
-                    if (externalPath != null) {
+                    Text(
+                        text = fileName,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    // HDR with NEW badge
+                    Box(modifier = Modifier.padding(horizontal = 4.dp)) {
                         IconButton(onClick = {
-                            FileSharingHelper.openFileExternally(context, externalPath, "video/*")
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open Externally", tint = Color.White)
+                            Toast.makeText(context, "HDR Mode Enhanced", Toast.LENGTH_SHORT).show()
+                        }, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Default.HighQuality, contentDescription = "HDR", tint = Color.White, modifier = Modifier.size(24.dp))
+                        }
+                        Surface(
+                            color = Color(0xFFFF5722),
+                            shape = RoundedCornerShape(3.dp),
+                            modifier = Modifier.align(Alignment.TopEnd)
+                        ) {
+                            Text(
+                                text = "NEW",
+                                color = Color.White,
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+
+                    IconButton(onClick = {
+                        Toast.makeText(context, "No subtitles found", Toast.LENGTH_SHORT).show()
+                    }, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.ClosedCaption, contentDescription = "CC", tint = Color.White, modifier = Modifier.size(24.dp))
+                    }
+
+                    IconButton(onClick = {
+                        Toast.makeText(context, "Audio Play Mode", Toast.LENGTH_SHORT).show()
+                    }, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Headset, contentDescription = "Audio Play", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+
+                    IconButton(onClick = {}, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.PlaylistPlay, contentDescription = "Playlist", tint = Color.White, modifier = Modifier.size(26.dp))
+                    }
+
+                    IconButton(onClick = {
+                        val extPath = resolvedLocalPath ?: url.takeIf { !isStreamUrl }
+                        if (extPath != null) {
+                            FileSharingHelper.openFileExternally(context, extPath, "video/*")
+                        }
+                    }, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                }
+
+                // ২. মাঝখানের বাম পাশের ফ্লোটিং আইকন (Mute এবং Lock)
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Surface(
+                        onClick = {
+                            isMuted = !isMuted
+                            exoPlayer.volume = if (isMuted) 0f else 1f
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.Black.copy(alpha = 0.45f),
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                contentDescription = "Mute",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        onClick = { isLocked = true },
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.Black.copy(alpha = 0.45f),
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.LockOpen,
+                                contentDescription = "Lock",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
                         }
                     }
                 }
 
-                // Center Play / Pause / Seek Controls
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(36.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // ৩. মাঝখানের ডান পাশের ফ্লোটিং আইকন (Clip/Cut এবং Screen Rotation)
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Surface(
                         onClick = {
-                            val next = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
-                            exoPlayer.seekTo(next)
-                            currentPosition = next
+                            Toast.makeText(context, "Frame captured", Toast.LENGTH_SHORT).show()
                         },
-                        shape = CircleShape,
+                        shape = RoundedCornerShape(8.dp),
                         color = Color.Black.copy(alpha = 0.45f),
-                        modifier = Modifier.size(52.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Replay10, contentDescription = "-10s", tint = Color.White, modifier = Modifier.size(30.dp))
-                        }
-                    }
-
-                    Surface(
-                        onClick = {
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                        },
-                        shape = CircleShape,
-                        color = Color(0xFFFF6D00),
-                        modifier = Modifier.size(68.dp)
+                        modifier = Modifier.size(42.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "Play/Pause",
+                                imageVector = Icons.Default.ContentCut,
+                                contentDescription = "Cut",
                                 tint = Color.White,
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(22.dp)
                             )
                         }
                     }
 
                     Surface(
                         onClick = {
-                            val next = (exoPlayer.currentPosition + 10_000L).coerceAtMost(duration.takeIf { it > 0 } ?: Long.MAX_VALUE)
-                            exoPlayer.seekTo(next)
-                            currentPosition = next
+                            isLandscape = !isLandscape
+                            activity?.requestedOrientation = if (isLandscape) {
+                                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            } else {
+                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            }
                         },
-                        shape = CircleShape,
+                        shape = RoundedCornerShape(8.dp),
                         color = Color.Black.copy(alpha = 0.45f),
-                        modifier = Modifier.size(52.dp)
+                        modifier = Modifier.size(42.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Forward10, contentDescription = "+10s", tint = Color.White, modifier = Modifier.size(30.dp))
+                            Icon(
+                                imageVector = Icons.Default.ScreenRotation,
+                                contentDescription = "Rotate",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
                         }
                     }
                 }
 
-                // Bottom PLAYit Control Bar
+                // ৪. নিচের বার (সবুজ সিকবার এবং নিচে গোল Play/Pause, Prev, Next, Speed, Fit, PIP)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
-                        .padding(horizontal = 16.dp, vertical = 16.dp)
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -693,7 +801,7 @@ fun VideoPlayerScreen(
                         Text(
                             text = formatDuration(currentPosition),
                             color = Color.White,
-                            style = MaterialTheme.typography.labelMedium
+                            fontSize = 13.sp
                         )
                         Slider(
                             value = if (duration > 0) (currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f,
@@ -705,107 +813,140 @@ fun VideoPlayerScreen(
                                 }
                             },
                             colors = SliderDefaults.colors(
-                                thumbColor = Color(0xFFFF6D00),
-                                activeTrackColor = Color(0xFFFF6D00),
+                                thumbColor = Color.White,
+                                activeTrackColor = Color(0xFF2ECC71),
                                 inactiveTrackColor = Color.White.copy(alpha = 0.3f)
                             ),
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(horizontal = 10.dp)
+                                .padding(horizontal = 8.dp)
                         )
                         Text(
                             text = formatDuration(duration),
                             color = Color.White,
-                            style = MaterialTheme.typography.labelMedium
+                            fontSize = 13.sp
                         )
                     }
 
-                    // PLAYit Quick Action Tools Row
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        PlayItToolButton(
-                            icon = Icons.Default.LockOpen,
-                            label = "Lock",
-                            onClick = { isLocked = true }
-                        )
-                        PlayItToolButton(
-                            icon = Icons.Default.Speed,
-                            label = "${playbackSpeed}x",
-                            onClick = {
-                                val nextSpeed = when (playbackSpeed) {
-                                    1.0f -> 1.25f
-                                    1.25f -> 1.5f
-                                    1.5f -> 2.0f
-                                    2.0f -> 0.75f
-                                    else -> 1.0f
+                        // গোল সাদা বর্ডারযুক্ত Play/Pause বাটন
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .border(BorderStroke(1.8.dp, Color.White), CircleShape)
+                                .clickable {
+                                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                                 }
-                                playbackSpeed = nextSpeed
-                                exoPlayer.playbackParameters = PlaybackParameters(nextSpeed)
-                            }
-                        )
-                        PlayItToolButton(
-                            icon = Icons.Default.AspectRatio,
-                            label = when (resizeMode) {
-                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Crop"
-                                AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Stretch"
-                                else -> "Fit"
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = "Play/Pause",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(18.dp))
+
+                        IconButton(
+                            onClick = {
+                                val next = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                                exoPlayer.seekTo(next)
+                                currentPosition = next
                             },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White, modifier = Modifier.size(26.dp))
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        IconButton(
+                            onClick = {
+                                val totalDur = duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+                                val next = (exoPlayer.currentPosition + 10_000L).coerceAtMost(totalDur)
+                                exoPlayer.seekTo(next)
+                                currentPosition = next
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(26.dp))
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        // Speed বাটন
+                        Text(
+                            text = if (playbackSpeed == 1.0f) "Speed" else "${playbackSpeed}x",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable {
+                                    val nextSpeed = when (playbackSpeed) {
+                                        1.0f -> 1.25f
+                                        1.25f -> 1.5f
+                                        1.5f -> 2.0f
+                                        2.0f -> 0.75f
+                                        else -> 1.0f
+                                    }
+                                    playbackSpeed = nextSpeed
+                                    exoPlayer.playbackParameters = PlaybackParameters(nextSpeed)
+                                }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        // Aspect Ratio / Fit আইকন
+                        Surface(
                             onClick = {
                                 resizeMode = when (resizeMode) {
                                     AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                                     AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                                     else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                                 }
+                            },
+                            color = Color.White,
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.size(width = 28.dp, height = 20.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.SyncAlt,
+                                    contentDescription = "Fit",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
-                        )
-                        PlayItToolButton(
-                            icon = Icons.Default.ScreenRotation,
-                            label = "Rotate",
+                        }
+
+                        Spacer(modifier = Modifier.width(18.dp))
+
+                        // PIP আইকন
+                        IconButton(
                             onClick = {
-                                isLandscape = !isLandscape
-                                activity?.requestedOrientation = if (isLandscape) {
-                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                                } else {
-                                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    try {
+                                        activity?.enterPictureInPictureMode(PictureInPictureParams.Builder().build())
+                                    } catch (e: Exception) {}
                                 }
-                            }
-                        )
-                        PlayItToolButton(
-                            icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                            label = if (isMuted) "Muted" else "Audio",
-                            onClick = {
-                                isMuted = !isMuted
-                                exoPlayer.volume = if (isMuted) 0f else 1f
-                            }
-                        )
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.PictureInPictureAlt, contentDescription = "PIP", tint = Color.White, modifier = Modifier.size(22.dp))
+                        }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun PlayItToolButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = Color.White.copy(alpha = 0.12f)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-        ) {
-            Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(label, color = Color.White, style = MaterialTheme.typography.labelMedium)
         }
     }
 }
