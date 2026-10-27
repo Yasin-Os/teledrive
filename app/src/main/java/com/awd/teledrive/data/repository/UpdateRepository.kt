@@ -2,9 +2,13 @@ package com.awd.teledrive.data.repository
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.awd.teledrive.core.utils.VersionUtils
 import com.awd.teledrive.data.model.GitHubRelease
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -40,12 +44,8 @@ class UpdateRepository @Inject constructor(
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val updateState = _updateState.asStateFlow()
 
-    private var hasDismissedUpdate = false
+    private var dismissedTag: String? = null
     private val GITHUB_REPO = "Yasin-Os/teledrive"
-
-    private val prefs by lazy {
-        context.getSharedPreferences("app_auto_update_prefs", Context.MODE_PRIVATE)
-    }
 
     private val json = Json { 
         ignoreUnknownKeys = true 
@@ -54,7 +54,6 @@ class UpdateRepository @Inject constructor(
 
     suspend fun checkForUpdates(manual: Boolean = false) = withContext(Dispatchers.IO) {
         if (_updateState.value is UpdateState.Checking || _updateState.value is UpdateState.Downloading) return@withContext
-        if (!manual && hasDismissedUpdate) return@withContext
         
         _updateState.value = UpdateState.Checking
         
@@ -70,20 +69,20 @@ class UpdateRepository @Inject constructor(
                 val responseBody = connection.inputStream.bufferedReader().readText()
                 val latestRelease = json.decodeFromString<GitHubRelease>(responseBody)
                 
-                val currentSignature = "${latestRelease.tag_name}_${latestRelease.id}_${latestRelease.published_at}"
-                val lastKnownSignature = prefs.getString("last_installed_signature", null)
+                val installedVersion = VersionUtils.getVersionName(context).removePrefix("v").trim()
+                val latestVersion = latestRelease.tag_name.removePrefix("v").trim()
 
-                if (lastKnownSignature == null) {
-                    prefs.edit().putString("last_installed_signature", currentSignature).apply()
-                    if (manual) {
-                        _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
-                    } else {
-                        _updateState.value = UpdateState.Idle
-                    }
-                } else if (currentSignature != lastKnownSignature || manual) {
+                if (!manual && dismissedTag == latestVersion) {
+                    _updateState.value = UpdateState.Idle
+                    return@withContext
+                }
+
+                if (latestVersion.isNotEmpty() && latestVersion != installedVersion) {
                     _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
+                } else if (manual) {
+                    _updateState.value = UpdateState.UpToDate
                 } else {
-                    _updateState.value = if (manual) UpdateState.UpToDate else UpdateState.Idle
+                    _updateState.value = UpdateState.Idle
                 }
             } else {
                 _updateState.value = if (manual) UpdateState.Error("HTTP Error: ${connection.responseCode}") else UpdateState.Idle
@@ -152,8 +151,6 @@ class UpdateRepository @Inject constructor(
                     }
                 }
 
-                val currentSignature = "${release.tag_name}_${release.id}_${release.published_at}"
-                prefs.edit().putString("last_installed_signature", currentSignature).apply()
                 _updateState.value = UpdateState.Idle
 
                 withContext(Dispatchers.Main) {
@@ -168,6 +165,15 @@ class UpdateRepository @Inject constructor(
 
     private fun installApk(apkFile: File) {
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+                Toast.makeText(context, "অ্যাপ আপডেট করার জন্য 'Allow from this source' চালু করুন", Toast.LENGTH_LONG).show()
+                val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(permIntent)
+            }
+
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.provider",
@@ -181,15 +187,14 @@ class UpdateRepository @Inject constructor(
             context.startActivity(intent)
         } catch (e: Exception) {
             Log.e("UpdateRepository", "Install intent failed", e)
+            Toast.makeText(context, "Install failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     fun resetState() {
         val currentState = _updateState.value
         if (currentState is UpdateState.NewVersionAvailable) {
-            hasDismissedUpdate = true
-            val currentSignature = "${currentState.release.tag_name}_${currentState.release.id}_${currentState.release.published_at}"
-            prefs.edit().putString("last_installed_signature", currentSignature).apply()
+            dismissedTag = currentState.release.tag_name.removePrefix("v").trim()
         }
         _updateState.value = UpdateState.Idle
     }
