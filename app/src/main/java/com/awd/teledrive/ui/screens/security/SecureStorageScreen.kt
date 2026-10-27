@@ -1,10 +1,9 @@
 package com.awd.teledrive.ui.screens.security
 
-import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,65 +13,76 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CreateNewFolder
-import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.home.DriveListItem
 import com.awd.teledrive.ui.screens.home.FilterSortRow
-import com.awd.teledrive.ui.screens.home.NewActionItem
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
+import com.awd.teledrive.ui.screens.home.FilterType
+import java.util.Locale
+import kotlin.math.log10
+import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,55 +93,23 @@ fun SecureStorageScreen(
     viewModel: SecureStorageViewModel = hiltViewModel()
 ) {
     val items by viewModel.secureItems.collectAsState()
-    val currentFolderName by viewModel.currentFolderName.collectAsState()
-    val currentFolderId by viewModel.currentFolderId.collectAsState()
-    val currentVirtualFolderId by viewModel.currentVirtualFolderId.collectAsState()
+    val availableCloudFiles by viewModel.availableCloudFiles.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val sortOrder by viewModel.sortOrder.collectAsState()
     val filterType by viewModel.filterType.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val isInitialLoading by viewModel.isInitialLoading.collectAsState()
-    
+
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState()
-    var showNewSheet by remember { mutableStateOf(false) }
-    var showFolderDialog by remember { mutableStateOf(false) }
-    var newFolderName by remember { mutableStateOf("") }
-    
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showCloudPickerSheet by remember { mutableStateOf(false) }
+
+    var selectedSafeItems by remember { mutableStateOf(setOf<Long>()) }
+    val isSelectionMode = selectedSafeItems.isNotEmpty()
+
     var itemToRename by remember { mutableStateOf<DriveItem?>(null) }
     var renameValue by remember { mutableStateOf("") }
     var showDeleteConfirm by remember { mutableStateOf<List<DriveItem>?>(null) }
     var isSearchActive by remember { mutableStateOf(false) }
-
-    val multiFilePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetMultipleContents()
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        scope.launch {
-            withContext(Dispatchers.IO) {
-                uris.forEach { uri ->
-                    val cursor = context.contentResolver.query(uri, null, null, null, null)
-                    val fileName = cursor?.use { c ->
-                        val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        c.moveToFirst()
-                        c.getString(nameIndex)
-                    } ?: "file_${System.currentTimeMillis()}"
-
-                    val inputStream = context.contentResolver.openInputStream(uri)
-                    val tempFile = File(context.cacheDir, fileName)
-                    inputStream?.use { input ->
-                        FileOutputStream(tempFile).use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    withContext(Dispatchers.Main) {
-                        viewModel.uploadFile(tempFile.absolutePath, fileName)
-                    }
-                }
-            }
-        }
-    }
 
     if (itemToRename != null) {
         AlertDialog(
@@ -167,6 +145,7 @@ fun SecureStorageScreen(
                 TextButton(onClick = {
                     showDeleteConfirm?.let { viewModel.deleteItems(it) }
                     showDeleteConfirm = null
+                    selectedSafeItems = emptySet()
                 }) { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
@@ -175,140 +154,266 @@ fun SecureStorageScreen(
         )
     }
 
-    if (showFolderDialog) {
-        AlertDialog(
-            onDismissRequest = { showFolderDialog = false },
-            title = { Text(stringResource(R.string.create_folder)) },
-            text = {
-                OutlinedTextField(
-                    value = newFolderName,
-                    onValueChange = { newFolderName = it },
-                    label = { Text(stringResource(R.string.folder_name)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newFolderName.isNotBlank()) {
-                            viewModel.createFolder(newFolderName, isVirtual = true, isSecure = true)
-                            newFolderName = ""
-                            showFolderDialog = false
-                        }
-                    }
-                ) { Text(stringResource(R.string.create)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showFolderDialog = false }) { Text(stringResource(R.string.cancel)) }
-            }
-        )
-    }
+    // ক্লাউডের নিজস্ব ডেটা সিলেক্ট করে Safe Folder-এ হাইড করার বটম শিট
+    if (showCloudPickerSheet) {
+        var pickerFilter by remember { mutableStateOf(FilterType.ALL) }
+        var pickerSearch by remember { mutableStateOf("") }
+        var pickedIds by remember { mutableStateOf(setOf<Long>()) }
 
-    if (showNewSheet) {
+        val filteredCloudFiles = remember(availableCloudFiles, pickerFilter, pickerSearch) {
+            val bySearch = if (pickerSearch.isBlank()) availableCloudFiles
+            else availableCloudFiles.filter { it.name.contains(pickerSearch, ignoreCase = true) }
+
+            when (pickerFilter) {
+                FilterType.ALL -> bySearch
+                FilterType.VIDEOS -> bySearch.filter { it.mimeType.startsWith("video/") }
+                FilterType.PHOTOS -> bySearch.filter { it.mimeType.startsWith("image/") }
+                FilterType.AUDIO -> bySearch.filter { it.mimeType.startsWith("audio/") }
+                FilterType.DOCUMENTS -> bySearch.filter {
+                    !it.mimeType.startsWith("video/") &&
+                    !it.mimeType.startsWith("image/") &&
+                    !it.mimeType.startsWith("audio/")
+                }
+            }
+        }
+
         ModalBottomSheet(
-            onDismissRequest = { showNewSheet = false },
+            onDismissRequest = { showCloudPickerSheet = false },
             sheetState = sheetState
         ) {
-            Column(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp, start = 16.dp, end = 16.dp)) {
-                Text("Lock Media & Files in Safe Folder", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                    NewActionItem(Icons.Default.PhotoLibrary, "Photos") {
-                        showNewSheet = false
-                        multiFilePickerLauncher.launch("image/*")
-                    }
-                    NewActionItem(Icons.Default.VideoLibrary, "Videos") {
-                        showNewSheet = false
-                        multiFilePickerLauncher.launch("video/*")
-                    }
-                    NewActionItem(Icons.Default.AudioFile, "Audio") {
-                        showNewSheet = false
-                        multiFilePickerLauncher.launch("audio/*")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 28.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Select Cloud Files to Hide",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                    if (pickedIds.isNotEmpty()) {
+                        Button(
+                            onClick = {
+                                viewModel.hideCloudFilesInSafeFolder(pickedIds.toList())
+                                showCloudPickerSheet = false
+                                Toast.makeText(context, "${pickedIds.size} files moved to Safe folder", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Hide (${pickedIds.size})")
+                        }
                     }
                 }
+
                 Spacer(modifier = Modifier.height(12.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    NewActionItem(Icons.Default.FileUpload, "All Files") {
-                        showNewSheet = false
-                        multiFilePickerLauncher.launch("*/*")
+
+                OutlinedTextField(
+                    value = pickerSearch,
+                    onValueChange = { pickerSearch = it },
+                    placeholder = { Text("Search cloud files...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val tabs = listOf(
+                        FilterType.ALL to "All",
+                        FilterType.VIDEOS to "Videos",
+                        FilterType.PHOTOS to "Photos",
+                        FilterType.AUDIO to "Audio",
+                        FilterType.DOCUMENTS to "Documents"
+                    )
+                    items(tabs) { (type, label) ->
+                        val selected = pickerFilter == type
+                        FilterChip(
+                            selected = selected,
+                            onClick = { pickerFilter = type },
+                            label = { Text(label) },
+                            leadingIcon = if (selected) {
+                                { Icon(Icons.Default.Check, null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                            } else null
+                        )
                     }
-                    NewActionItem(Icons.Default.CreateNewFolder, "New Folder") {
-                        showNewSheet = false
-                        showFolderDialog = true
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (filteredCloudFiles.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(220.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No cloud files found", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 400.dp)
+                    ) {
+                        items(filteredCloudFiles, key = { it.id }) { file ->
+                            val isChecked = pickedIds.contains(file.id)
+                            val thumb = file.localPath ?: file.thumbnailPath
+
+                            ListItem(
+                                headlineContent = {
+                                    Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
+                                supportingContent = {
+                                    Text(formatFileSize(file.size), style = MaterialTheme.typography.labelSmall)
+                                },
+                                leadingContent = {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            if (thumb != null) {
+                                                AsyncImage(
+                                                    model = thumb,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            } else {
+                                                Icon(
+                                                    imageVector = when {
+                                                        file.mimeType.startsWith("video/") -> Icons.Default.VideoFile
+                                                        file.mimeType.startsWith("image/") -> Icons.Default.Image
+                                                        file.mimeType.startsWith("audio/") -> Icons.Default.AudioFile
+                                                        else -> Icons.Default.Description
+                                                    },
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                    }
+                                },
+                                trailingContent = {
+                                    Checkbox(
+                                        checked = isChecked,
+                                        onCheckedChange = {
+                                            pickedIds = if (isChecked) pickedIds - file.id else pickedIds + file.id
+                                        }
+                                    )
+                                },
+                                modifier = Modifier.clickable {
+                                    pickedIds = if (isChecked) pickedIds - file.id else pickedIds + file.id
+                                }
+                            )
+                            HorizontalDivider()
+                        }
                     }
                 }
             }
         }
     }
 
-    LaunchedEffect(currentFolderId, currentVirtualFolderId) {
-        viewModel.fetchItems()
-    }
-
     BackHandler {
-        if (isSearchActive) {
-            isSearchActive = false
-            viewModel.onSearchQueryChange("")
-        } else if (currentFolderId != null || currentVirtualFolderId != "0") {
-            viewModel.navigateBack()
-        } else {
-            onBack()
+        when {
+            isSelectionMode -> selectedSafeItems = emptySet()
+            isSearchActive -> {
+                isSearchActive = false
+                viewModel.onSearchQueryChange("")
+            }
+            else -> onBack()
         }
     }
 
     Scaffold(
         topBar = {
             Column {
-                TopAppBar(
-                    title = {
-                        if (!isSearchActive) {
-                            Text(currentFolderName ?: "Safe folder")
-                        } else {
-                            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-                                BasicTextField(
-                                    value = searchQuery,
-                                    onValueChange = { viewModel.onSearchQueryChange(it) },
-                                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                if (searchQuery.isEmpty()) {
-                                    Text(stringResource(R.string.search_teledrive), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (isSelectionMode) {
+                    TopAppBar(
+                        title = { Text("${selectedSafeItems.size} selected") },
+                        navigationIcon = {
+                            IconButton(onClick = { selectedSafeItems = emptySet() }) {
+                                Icon(Icons.Default.Close, contentDescription = null)
+                            }
+                        },
+                        actions = {
+                            // Unhide to Cloud বাটন
+                            IconButton(
+                                onClick = {
+                                    viewModel.unhideFilesToCloud(selectedSafeItems.toList())
+                                    Toast.makeText(context, "Restored to Cloud", Toast.LENGTH_SHORT).show()
+                                    selectedSafeItems = emptySet()
+                                }
+                            ) {
+                                Icon(Icons.Default.LockOpen, contentDescription = "Unhide to Cloud")
+                            }
+                            IconButton(
+                                onClick = {
+                                    showDeleteConfirm = items.filter { it.id in selectedSafeItems }
+                                }
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete")
+                            }
+                        },
+                        modifier = Modifier.statusBarsPadding()
+                    )
+                } else {
+                    TopAppBar(
+                        title = {
+                            if (!isSearchActive) {
+                                Text("Safe folder")
+                            } else {
+                                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                                    BasicTextField(
+                                        value = searchQuery,
+                                        onValueChange = { viewModel.onSearchQueryChange(it) },
+                                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    if (searchQuery.isEmpty()) {
+                                        Text("Search in Safe folder...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
                                 }
                             }
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            if (isSearchActive) {
-                                isSearchActive = false
-                                viewModel.onSearchQueryChange("")
-                            } else if (currentFolderId != null || currentVirtualFolderId != "0") {
-                                viewModel.navigateBack()
-                            } else {
-                                onBack()
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = {
+                                if (isSearchActive) {
+                                    isSearchActive = false
+                                    viewModel.onSearchQueryChange("")
+                                } else {
+                                    onBack()
+                                }
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
                             }
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
-                        }
-                    },
-                    actions = {
-                        if (!isSearchActive) {
-                            IconButton(onClick = { isSearchActive = true }) {
-                                Icon(Icons.Default.Search, null)
-                            }
-                            IconButton(onClick = { viewModel.fetchItems() }) {
-                                Icon(Icons.Default.Refresh, null)
-                            }
-                        } else {
-                            if (searchQuery.isNotEmpty()) {
+                        },
+                        actions = {
+                            if (!isSearchActive) {
+                                IconButton(onClick = { isSearchActive = true }) {
+                                    Icon(Icons.Default.Search, null)
+                                }
+                                IconButton(onClick = { viewModel.fetchItems() }) {
+                                    Icon(Icons.Default.Refresh, null)
+                                }
+                            } else if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { viewModel.onSearchQueryChange("") }) {
                                     Icon(Icons.Default.Close, null)
                                 }
                             }
-                        }
-                    },
-                    modifier = Modifier.statusBarsPadding()
-                )
+                        },
+                        modifier = Modifier.statusBarsPadding()
+                    )
+                }
                 if (!isSearchActive) {
                     FilterSortRow(
                         filterType = filterType,
@@ -322,9 +427,9 @@ fun SecureStorageScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { showNewSheet = true },
+                onClick = { showCloudPickerSheet = true },
                 icon = { Icon(Icons.Default.Add, null) },
-                text = { Text("Lock Files") },
+                text = { Text("Add from Cloud") },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 elevation = FloatingActionButtonDefaults.elevation(8.dp)
@@ -336,11 +441,7 @@ fun SecureStorageScreen(
             onRefresh = { viewModel.fetchItems() },
             modifier = Modifier.padding(padding).fillMaxSize()
         ) {
-            if (isInitialLoading) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (items.isEmpty()) {
+            if (items.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
@@ -350,48 +451,73 @@ fun SecureStorageScreen(
                             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
                         )
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text(stringResource(R.string.no_files_secure), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Tap 'Lock Files' to encrypt photos, videos or audio", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        Text("Safe folder is empty", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Tap 'Add from Cloud' to hide cloud videos, photos or audio", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                     }
                 }
             } else {
                 LazyColumn(
-                    contentPadding = PaddingValues(bottom = 80.dp),
+                    contentPadding = PaddingValues(bottom = 88.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(items) { item ->
-                        DriveListItem(
-                            item = item,
-                            isSelected = false,
-                            onClick = {
-                                if (item is DriveItem.File) {
-                                    onNavigateToPreview(item)
-                                } else if (item is DriveItem.Folder) {
-                                    viewModel.navigateToFolder(
-                                        if (item.isVirtual) currentFolderId else item.telegramChatId,
-                                        item.virtualId,
-                                        item.name
-                                    )
-                                }
-                            },
-                            onLongClick = {},
-                            onStarClick = { viewModel.toggleStarred(item) },
-                            onShareClick = {},
-                            onDownloadClick = {
-                                if (item is DriveItem.File) {
-                                    viewModel.downloadFile(item.id, item.parentChatId, item.name)
-                                    Toast.makeText(context, context.getString(R.string.starting_download, item.name), Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            onRenameClick = {
-                                itemToRename = item
-                                renameValue = item.name
-                            },
-                            onDeleteClick = { showDeleteConfirm = listOf(item) }
-                        )
+                    items(items, key = { it.id }) { item ->
+                        val isSelected = selectedSafeItems.contains(item.id)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                DriveListItem(
+                                    item = item,
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        if (isSelectionMode) {
+                                            selectedSafeItems = if (isSelected) selectedSafeItems - item.id else selectedSafeItems + item.id
+                                        } else {
+                                            onNavigateToPreview(item)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        selectedSafeItems = setOf(item.id)
+                                    },
+                                    onStarClick = {},
+                                    onShareClick = {},
+                                    onDownloadClick = {
+                                        viewModel.downloadFile(item.id, item.parentChatId, item.name)
+                                    },
+                                    onRenameClick = {
+                                        itemToRename = item
+                                        renameValue = item.name
+                                    },
+                                    onDeleteClick = { showDeleteConfirm = listOf(item) }
+                                )
+                            }
+                            // সাথে সাথে ক্লাউডে ফিরিয়ে নেওয়ার (Unhide) কুইক বাটন
+                            IconButton(
+                                onClick = {
+                                    viewModel.unhideFilesToCloud(listOf(item.id))
+                                    Toast.makeText(context, "Restored to Cloud", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.padding(end = 8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.LockOpen,
+                                    contentDescription = "Unhide to Cloud",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+private fun formatFileSize(size: Long): String {
+    if (size <= 0) return "0 B"
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt()
+    return String.format(Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
 }
