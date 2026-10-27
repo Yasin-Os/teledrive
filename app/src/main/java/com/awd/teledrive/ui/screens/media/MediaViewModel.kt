@@ -9,6 +9,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -22,7 +23,6 @@ class MediaViewModel @Inject constructor(
 
     private val isSecureModeActive = secureSessionManager.decryptedPassword.map { it != null }
 
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val mediaItems: StateFlow<List<DriveItem.File>> = combine(
         driveRepository.getAllFiles(),
         isSecureModeActive
@@ -33,12 +33,19 @@ class MediaViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val folders: StateFlow<List<DriveItem.Folder>> = combine(
-        driveRepository.getItems(null),
+        driveRepository.getSavedMessagesChatIdFlow().flatMapLatest { driveRepository.getItems(null, "0", "") },
         isSecureModeActive
     ) { items, secureActive ->
-        items.filterIsInstance<DriveItem.Folder>().filter { secureActive || !it.isSecure }
+        items.filterIsInstance<DriveItem.Folder>().filter { it.isVirtual && (secureActive || !it.isSecure) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun createAlbum(name: String) {
+        viewModelScope.launch {
+            driveRepository.createVirtualFolder(name, "0", isSecure = false)
+        }
+    }
 
     fun downloadFile(file: DriveItem.File) {
         viewModelScope.launch {
@@ -54,9 +61,7 @@ class MediaViewModel @Inject constructor(
 
     fun moveItems(fileIds: List<Long>, targetChatId: Long) {
         val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
-        
         viewModelScope.launch {
-            // Find all files to get their parentChatId
             val files = mediaItems.value.filter { it.id in fileIds }
             files.groupBy { it.parentChatId }.forEach { (fromChatId, items) ->
                 if (fromChatId != destination) {
