@@ -1,6 +1,5 @@
 package com.awd.teledrive.ui.navigation
 
-import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -9,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PermMedia
@@ -36,10 +36,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -111,59 +110,25 @@ fun NavGraph(navController: NavHostController) {
     
     val isLocked by securityViewModel.isLocked.collectAsState()
     val loginUiState by loginViewModel.uiState.collectAsState()
-    val isSecureActive by securityViewModel.isSecureModeActive.collectAsState(false)
     val showCacheWarning by settingsViewModel.showCacheWarning.collectAsState()
 
-    var showUnlockDialog by remember { mutableStateOf(false) }
-    var showCreateSafePasswordDialog by remember { mutableStateOf(false) }
+    val isSafeFolderPinSet by securityViewModel.isSafeFolderPinSet.collectAsState()
+    val isSafeFolderLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
 
-    val context = LocalContext.current
-    val activity = context as? FragmentActivity
-    val executor = remember { ContextCompat.getMainExecutor(context) }
+    var showSafePinUnlockDialog by remember { mutableStateOf(false) }
+    var showCreateSafePinDialog by remember { mutableStateOf(false) }
 
-    val biometricPrompt = remember {
-        if (activity != null) {
-            BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    if (securityViewModel.unlockWithBiometric()) {
-                        navController.navigate(Screen.SecureStorage.route)
-                    } else {
-                        showUnlockDialog = true
-                    }
-                }
-            })
-        } else null
-    }
-
-    val promptInfo = remember {
-        BiometricPrompt.PromptInfo.Builder()
-            .setTitle(context.getString(R.string.unlock_secure_folder))
-            .setSubtitle(context.getString(R.string.biometric_subtitle))
-            .setNegativeButtonText(context.getString(R.string.use_password))
-            .build()
-    }
-
+    // Safe Folder সম্পূর্ণ আলাদা পিন লজিক (শুধুমাত্র পিন কোড, কোনো বায়োমেট্রিক নয়)
     val triggerSafeFolderOpen = {
-        val isPasswordSet = securityViewModel.isPasswordSet.value
-        if (!isPasswordSet) {
-            showCreateSafePasswordDialog = true
-        } else if (isSecureActive) {
+        if (!isSafeFolderPinSet) {
+            showCreateSafePinDialog = true
+        } else if (!isSafeFolderLockEnabled) {
             navController.navigate(Screen.SecureStorage.route)
         } else {
-            val isBiometricEnabled = securityViewModel.isBiometricEnabled.value
-            if (isBiometricEnabled && biometricPrompt != null) {
-                try {
-                    biometricPrompt.authenticate(promptInfo)
-                } catch (e: Exception) {
-                    showUnlockDialog = true
-                }
-            } else {
-                showUnlockDialog = true
-            }
+            showSafePinUnlockDialog = true
         }
     }
 
-    // ভিডিও বা অডিওতে ট্যাপ করলে মাঝখানের পপআপ ছাড়াই সরাসরি প্লেয়ার চালু হবে
     val openFileOrPlayVideo: (DriveItem.File, Boolean) -> Unit = { file, isMediaOnly ->
         val isDirectPlayable = !file.isEncrypted && (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/"))
         if (isDirectPlayable) {
@@ -186,8 +151,8 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
-    LaunchedEffect(isLocked) {
-        if (isLocked && currentRoute != Screen.Security.route) {
+    LaunchedEffect(isLocked, loginUiState) {
+        if (isLocked && loginUiState is com.awd.teledrive.ui.screens.auth.LoginUiState.Success && currentRoute != Screen.Security.route) {
             navController.navigate(Screen.Security.route) {
                 popUpTo(0) { inclusive = true }
             }
@@ -256,7 +221,7 @@ fun NavGraph(navController: NavHostController) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Login.route,
+            startDestination = if (isLocked) Screen.Security.route else Screen.Login.route,
             modifier = Modifier.padding(
                 bottom = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
             )
@@ -273,7 +238,8 @@ fun NavGraph(navController: NavHostController) {
             composable(Screen.Login.route) {
                 LoginScreen(
                     onLoginSuccess = {
-                        navController.navigate(Screen.Home.route) {
+                        val nextRoute = if (securityViewModel.isLocked.value) Screen.Security.route else Screen.Home.route
+                        navController.navigate(nextRoute) {
                             popUpTo(Screen.Login.route) { inclusive = true }
                         }
                     }
@@ -378,30 +344,33 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
-    // ক্লিন Safe Folder পাসওয়ার্ড তৈরি ডায়ালগ (অতিরিক্ত লেখা রিমুভ করা হয়েছে)
-    if (showCreateSafePasswordDialog) {
-        var newPass by remember { mutableStateOf("") }
-        var confirmPass by remember { mutableStateOf("") }
+    // Safe Folder-এর স্বতন্ত্র পিন কোড তৈরি করার ডায়ালগ
+    if (showCreateSafePinDialog) {
+        var newPin by remember { mutableStateOf("") }
+        var confirmPin by remember { mutableStateOf("") }
         var error by remember { mutableStateOf<String?>(null) }
 
         AlertDialog(
-            onDismissRequest = { showCreateSafePasswordDialog = false },
+            onDismissRequest = { showCreateSafePinDialog = false },
+            title = { Text("Set Safe Folder PIN") },
             text = {
                 Column {
                     OutlinedTextField(
-                        value = newPass,
-                        onValueChange = { newPass = it; error = null },
-                        label = { Text(stringResource(R.string.password)) },
+                        value = newPin,
+                        onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(6); error = null },
+                        label = { Text("Enter PIN Code") },
                         visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     OutlinedTextField(
-                        value = confirmPass,
-                        onValueChange = { confirmPass = it; error = null },
-                        label = { Text(stringResource(R.string.confirm_password)) },
+                        value = confirmPin,
+                        onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(6); error = null },
+                        label = { Text("Confirm PIN Code") },
                         visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         isError = error != null,
                         supportingText = error?.let { { Text(it) } },
                         singleLine = true,
@@ -411,37 +380,43 @@ fun NavGraph(navController: NavHostController) {
             },
             confirmButton = {
                 Button(onClick = {
-                    if (newPass.length < 4) {
-                        error = "Min 4 characters"
-                    } else if (newPass != confirmPass) {
-                        error = "Password mismatch"
+                    if (newPin.length < 4) {
+                        error = "Enter at least 4 digits"
+                    } else if (newPin != confirmPin) {
+                        error = "PIN did not match"
                     } else {
-                        securityViewModel.setPassword(newPass)
-                        securityViewModel.unlockSecureMode(newPass)
-                        showCreateSafePasswordDialog = false
+                        securityViewModel.setupSafeFolderPin(newPin)
+                        showCreateSafePinDialog = false
                         navController.navigate(Screen.SecureStorage.route)
                     }
-                }) { Text("Create & Open") }
+                }) { Text("Save & Open") }
             },
             dismissButton = {
-                TextButton(onClick = { showCreateSafePasswordDialog = false }) { Text(stringResource(R.string.cancel)) }
+                TextButton(onClick = { showCreateSafePinDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
         )
     }
 
-    if (showUnlockDialog) {
-        var password by remember { mutableStateOf("") }
+    // Safe Folder পিন আনলক ডায়ালগ (শুধুমাত্র পিন কোড)
+    if (showSafePinUnlockDialog) {
+        var pin by remember { mutableStateOf("") }
         var error by remember { mutableStateOf<String?>(null) }
         
         AlertDialog(
-            onDismissRequest = { showUnlockDialog = false },
+            onDismissRequest = { showSafePinUnlockDialog = false },
+            title = { Text("Safe Folder PIN") },
             text = {
                 Column {
                     OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it; error = null },
-                        label = { Text(stringResource(R.string.password)) },
+                        value = pin,
+                        onValueChange = { input ->
+                            val clean = input.filter { it.isDigit() }.take(6)
+                            pin = clean
+                            error = null
+                        },
+                        label = { Text("Enter PIN Code") },
                         visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         isError = error != null,
                         supportingText = error?.let { { Text(it) } },
                         singleLine = true,
@@ -451,16 +426,16 @@ fun NavGraph(navController: NavHostController) {
             },
             confirmButton = {
                 Button(onClick = {
-                    if (securityViewModel.unlockSecureMode(password)) {
-                        showUnlockDialog = false
+                    if (securityViewModel.verifySafeFolderPin(pin)) {
+                        showSafePinUnlockDialog = false
                         navController.navigate(Screen.SecureStorage.route)
                     } else {
-                        error = context.getString(R.string.incorrect_password)
+                        error = "Incorrect PIN"
                     }
                 }) { Text(stringResource(R.string.unlock)) }
             },
             dismissButton = {
-                TextButton(onClick = { showUnlockDialog = false }) { Text(stringResource(R.string.cancel)) }
+                TextButton(onClick = { showSafePinUnlockDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
         )
     }
