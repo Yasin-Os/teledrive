@@ -1,5 +1,9 @@
 package com.awd.teledrive.ui.screens.home
 
+import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -139,14 +143,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.domain.model.DriveItem
-import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -155,15 +157,9 @@ import org.drinkless.tdlib.TdApi
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
-import javax.inject.Inject
 import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.time.Duration.Companion.seconds
-
-@HiltViewModel
-class HomeTransferControlViewModel @Inject constructor(
-    val transferRepository: TransferRepository
-) : ViewModel()
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -174,8 +170,7 @@ fun HomeScreen(
     onNavigateToSafeFolder: () -> Unit = {},
     onNavigateToCloudAnalysis: () -> Unit = {},
     onNavigateToPreview: (DriveItem.File) -> Unit,
-    viewModel: HomeViewModel = hiltViewModel(),
-    transferControlVm: HomeTransferControlViewModel = hiltViewModel()
+    viewModel: HomeViewModel = hiltViewModel()
 ) {
     val items by viewModel.items.collectAsState()
     val allCloudFiles by viewModel.allCloudFiles.collectAsState()
@@ -239,12 +234,12 @@ fun HomeScreen(
         onNavigateBack = viewModel::navigateBack,
         onRefresh = viewModel::fetchItems,
         onRenameItem = viewModel::renameItem,
-        onPauseTransfer = transferControlVm.transferRepository::pauseTransfer,
-        onResumeTransfer = transferControlVm.transferRepository::resumeTransfer,
-        onCancelTransfer = transferControlVm.transferRepository::cancelTransfer,
-        onRemoveTransfer = transferControlVm.transferRepository::removeTransfer,
-        onClearCompletedTransfers = transferControlVm.transferRepository::clearCompleted,
-        onSaveAsPhone = transferControlVm.transferRepository::saveToPublicDownloads,
+        onPauseTransfer = viewModel::pauseTransfer,
+        onResumeTransfer = viewModel::resumeTransfer,
+        onCancelTransfer = viewModel::cancelTransfer,
+        onRemoveTransfer = viewModel::removeTransfer,
+        onClearCompletedTransfers = viewModel::clearCompletedTransfers,
+        onSaveAsPhone = viewModel::saveAsPhone,
         onGetInviteLink = viewModel::getFolderInviteLink,
         onGetMembers = viewModel::getFolderMembers,
         onShareFile = viewModel::shareFileToPhone
@@ -348,7 +343,6 @@ fun HomeContent(
     var itemToRename by remember { mutableStateOf<DriveItem?>(null) }
     var renameValue by remember { mutableStateOf("") }
 
-    // আপলোড পপআপ নিচের দিকে ওপেন হবে
     if (showUploadPopup) {
         TransferPositionedPopup(
             title = "Uploads",
@@ -365,7 +359,6 @@ fun HomeContent(
         )
     }
 
-    // ডাউনলোড পপআপ উপরের দিকে ওপেন হবে
     if (showDownloadPopup) {
         TransferPositionedPopup(
             title = "Downloads",
@@ -420,22 +413,29 @@ fun HomeContent(
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             isPreparingFile = true
+            val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            val shouldDeleteOriginal = customPrefs.getBoolean("delete_after_backup", false)
+
             withContext(Dispatchers.IO) {
                 uris.forEach { uri ->
                     val cursor = context.contentResolver.query(uri, null, null, null, null)
                     val fileName = cursor?.use { c ->
                         val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        c.moveToFirst()
-                        c.getString(nameIndex)
+                        if (c.moveToFirst() && nameIndex >= 0) c.getString(nameIndex) else null
                     } ?: "file_${System.currentTimeMillis()}"
 
                     val inputStream = context.contentResolver.openInputStream(uri)
-                    val tempFile = File(context.cacheDir, fileName)
+                    val tempFile = File(context.cacheDir, "up_${System.currentTimeMillis()}_$fileName")
                     inputStream?.use { input ->
                         FileOutputStream(tempFile).use { output ->
                             input.copyTo(output)
                         }
                     }
+
+                    if (shouldDeleteOriginal) {
+                        deleteOriginalUriFromPhone(context, uri, fileName)
+                    }
+
                     withContext(Dispatchers.Main) {
                         if (tempFile.length() > 2000 * 1024 * 1024L) {
                             largeFileToUpload = tempFile to fileName
@@ -750,52 +750,76 @@ fun HomeContent(
                         }
                     }
                     "main" -> {
+                        // ৩-ভাগে বিভক্ত টপ বার: বামে ছোট ⬆️ ডাউনলোড বার, মাঝখানে বড় Search বার, ডানে ছোট ⬇️ আপলোড বার
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .statusBarsPadding()
                                 .padding(horizontal = 16.dp, vertical = 10.dp)
                         ) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                                shape = RoundedCornerShape(28.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(54.dp)
-                                    .clickable { isSearchActive = true }
-                            ) {
+                            if (!isSearchActive) {
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (!isSearchActive) {
-                                        TransferBadgeButton(
-                                            isUpload = true,
-                                            percentage = uploadProgress,
-                                            hasHistory = uploadTransfers.isNotEmpty(),
-                                            onClick = { showUploadPopup = true }
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "Search",
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        TransferBadgeButton(
-                                            isUpload = false,
-                                            percentage = downloadProgress,
-                                            hasHistory = downloadTransfers.isNotEmpty(),
-                                            onClick = { showDownloadPopup = true }
-                                        )
-                                        IconButton(onClick = { isSearchActive = true }) {
+                                    // ১. বাম পাশে ছোট ⬆️ ডাউনলোড বার
+                                    SplitTransferBarItem(
+                                        icon = Icons.Default.ArrowUpward,
+                                        percentage = downloadProgress,
+                                        hasActiveOrHistory = downloadTransfers.isNotEmpty(),
+                                        onClick = { showDownloadPopup = true }
+                                    )
+
+                                    // ২. মাঝখানে বড় সার্চ বার
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                        shape = RoundedCornerShape(26.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(52.dp)
+                                            .clickable { isSearchActive = true }
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 16.dp)
+                                        ) {
                                             Icon(
                                                 Icons.Default.Search,
                                                 contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text(
+                                                text = "Search",
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1
                                             )
                                         }
-                                    } else {
+                                    }
+
+                                    // ৩. ডান পাশে ছোট ⬇️ আপলোড বার
+                                    SplitTransferBarItem(
+                                        icon = Icons.Default.ArrowDownward,
+                                        percentage = uploadProgress,
+                                        hasActiveOrHistory = uploadTransfers.isNotEmpty(),
+                                        onClick = { showUploadPopup = true }
+                                    )
+                                }
+                            } else {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                    shape = RoundedCornerShape(26.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(52.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 8.dp)
+                                    ) {
                                         IconButton(onClick = {
                                             isSearchActive = false
                                             onSearchQueryChange("")
@@ -1012,20 +1036,22 @@ fun HomeContent(
 }
 
 @Composable
-fun TransferBadgeButton(
-    isUpload: Boolean,
+fun SplitTransferBarItem(
+    icon: ImageVector,
     percentage: Int?,
-    hasHistory: Boolean,
+    hasActiveOrHistory: Boolean,
     onClick: () -> Unit
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
-        color = if (percentage != null) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+        shape = RoundedCornerShape(26.dp),
+        color = if (percentage != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        modifier = Modifier.height(52.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = if (percentage != null) 10.dp else 8.dp, vertical = 6.dp)
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(horizontal = if (percentage != null) 14.dp else 16.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (percentage != null) {
@@ -1037,10 +1063,10 @@ fun TransferBadgeButton(
                     )
                 }
                 Icon(
-                    imageVector = if (isUpload) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
-                    contentDescription = if (isUpload) "Uploads" else "Downloads",
-                    tint = if (percentage != null || hasHistory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(if (percentage != null) 14.dp else 22.dp)
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (percentage != null || hasActiveOrHistory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(if (percentage != null) 14.dp else 20.dp)
                 )
             }
             if (percentage != null) {
@@ -1082,7 +1108,6 @@ fun TransferPositionedPopup(
                     onClick = onDismiss
                 )
                 .padding(horizontal = 16.dp, vertical = 28.dp),
-            // ডাউনলোড পপআপ উপরের দিকে (TopCenter) এবং আপলোড পপআপ নিচের দিকে (BottomCenter)
             contentAlignment = if (isDownloadPopup) Alignment.TopCenter else Alignment.BottomCenter
         ) {
             Surface(
@@ -1175,7 +1200,6 @@ fun TransferPositionedPopup(
                                             }
 
                                             if (!isTerminal) {
-                                                // ডাউনলোড বা আপলোড থামানো (Pause / Resume) বাটন
                                                 IconButton(
                                                     onClick = {
                                                         if (isPaused) onResumeTransfer(transfer.remoteUniqueId)
@@ -1188,7 +1212,6 @@ fun TransferPositionedPopup(
                                                         tint = MaterialTheme.colorScheme.primary
                                                     )
                                                 }
-                                                // ক্যানসেল (Cancel) বাটন
                                                 IconButton(onClick = { onCancelTransfer(transfer.remoteUniqueId) }) {
                                                     Icon(
                                                         imageVector = Icons.Default.Close,
@@ -1197,7 +1220,6 @@ fun TransferPositionedPopup(
                                                     )
                                                 }
                                             } else if (isDownloadPopup && isCompleted) {
-                                                // ডাউনলোড হওয়া ডেটার সাথে ৩-ডটের ভেতরে Save as Phone অপশন
                                                 Box {
                                                     IconButton(onClick = { showMenu = true }) {
                                                         Icon(Icons.Default.MoreVert, contentDescription = "More")
@@ -2149,6 +2171,26 @@ fun ShareDialog(
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.close)) }
         }
     )
+}
+
+private fun deleteOriginalUriFromPhone(context: Context, uri: Uri, fileName: String) {
+    try {
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+            DocumentsContract.deleteDocument(context.contentResolver, uri)
+            return
+        }
+    } catch (e: Exception) {}
+    try {
+        val deleted = context.contentResolver.delete(uri, null, null)
+        if (deleted > 0) return
+    } catch (e: Exception) {}
+    try {
+        val path = uri.path
+        if (path != null && path.contains("primary:")) {
+            val realFile = File("/storage/emulated/0/${path.substringAfter("primary:")}")
+            if (realFile.exists()) realFile.delete()
+        }
+    } catch (e: Exception) {}
 }
 
 @Composable
