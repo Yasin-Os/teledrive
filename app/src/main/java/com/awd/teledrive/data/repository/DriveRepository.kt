@@ -2,6 +2,9 @@ package com.awd.teledrive.data.repository
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
@@ -38,6 +41,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.drinkless.tdlib.TdApi
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -66,12 +70,12 @@ class DriveRepository @Inject constructor(
 
     init {
         scope.launch {
-            // অ্যাপ চালু হলে পুরনো জমে থাকা Completed / Cancelled ডাউনলোড ক্যাশ পরিষ্কার করা হবে
             transferRepository.clearCompleted()
 
             telegramClient.fileUpdates.collect { update ->
                 val file = update.file
                 if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
+                    driveDao.updateLocalPath(file.id, file.local.path)
                     driveDao.updateLocalPathByUniqueId(file.remote.uniqueId, file.local.path)
                     driveDao.updateThumbnailPathByUniqueId(file.remote.uniqueId, file.local.path)
                 }
@@ -169,9 +173,7 @@ class DriveRepository @Inject constructor(
                     try {
                         val m = json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex).trim())
                         mergedManifest = mergeManifests(mergedManifest, m)
-                    } catch (e: Exception) { 
-                        Log.e("DriveRepo", "Error decoding manifest: ${e.message}")
-                    }
+                    } catch (e: Exception) {}
                 }
             }
         }
@@ -223,7 +225,6 @@ class DriveRepository @Inject constructor(
         )
     }
 
-    // ক্লাউডের নিজস্ব ফাইলগুলোকে Safe Folder-এ হাইড অথবা আনহাইড করার ফাংশন
     fun setCloudItemsSafeState(itemIds: List<Long>, hideInSafeFolder: Boolean) {
         scope.launch {
             val targetVirtualParent = if (hideInSafeFolder) SAFE_SPACE_VIRTUAL_ID else "0"
@@ -268,7 +269,7 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // ফোন স্টোরেজের নির্বাচিত ফোল্ডার থেকে সাথে সাথে আপলোড ও অটো-ডিলিট করার ফাংশন
+    // টার্গেট ফোল্ডারের ফাইল আপলোড ও সাথে সাথে অটো-ডিলিট
     fun runImmediateFolderBackup() {
         if (!isBackupRunning.compareAndSet(false, true)) return
         scope.launch {
@@ -297,8 +298,8 @@ class DriveRepository @Inject constructor(
                         val key = "${file.absolutePath}_${file.length()}"
                         backedUpSet.add(key)
                         customPrefs.edit().putStringSet("backed_up_paths_v2", backedUpSet).apply()
-                        uploadFile(file.absolutePath, file.name)
-                        delay(400)
+                        uploadFile(file.absolutePath, file.name, forceDeleteSource = true)
+                        delay(150)
                     }
                 }
                 secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
@@ -649,19 +650,25 @@ class DriveRepository @Inject constructor(
                 val caption = content.caption.text
                 val isEncrypted = caption.contains("[ENC]") || isSecureFolder
                 val splitInfo = parseSplitMetadata(caption)
-                val cleanName = if (isEncrypted) cleanEncryptedFileName(splitInfo?.originalName ?: content.document.fileName) else splitInfo?.originalName ?: content.document.fileName
+                val cleanName = cleanEncryptedFileName(splitInfo?.originalName ?: content.document.fileName)
                 val mimeType = if (content.document.mimeType == "application/octet-stream") FileUtils.getMimeType(cleanName) else content.document.mimeType
+                val docFile = content.document.document
                 val thumb = content.document.thumbnail
+
+                // থাম্বনেইল ডাউনলোড নিশ্চিত করা হচ্ছে (সর্বোচ্চ প্রায়োরিটি ৩২)
                 if (thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
-                    telegramClient.send(TdApi.DownloadFile(thumb.file.id, 1, 0, 0, false))
+                    telegramClient.send(TdApi.DownloadFile(thumb.file.id, 32, 0, 0, false))
+                } else if (thumb == null && !isEncrypted && mimeType.startsWith("image/") && docFile.local.path.isEmpty() && docFile.expectedSize < 15 * 1024 * 1024L) {
+                    telegramClient.send(TdApi.DownloadFile(docFile.id, 16, 0, 0, false))
                 }
+
                 DriveItemEntity(
-                    message.id, cleanName, content.document.document.expectedSize, mimeType, content.document.document.id, chatId, false,
-                    thumbnailPath = thumb?.file?.local?.path?.takeIf { it.isNotEmpty() },
-                    localPath = content.document.document.local.path.takeIf { it.isNotEmpty() },
+                    message.id, cleanName, docFile.expectedSize, mimeType, docFile.id, chatId, false,
+                    thumbnailPath = thumb?.file?.local?.path?.takeIf { it.isNotEmpty() } ?: (if (mimeType.startsWith("image/")) docFile.local.path.takeIf { it.isNotEmpty() } else null),
+                    localPath = docFile.local.path.takeIf { it.isNotEmpty() },
                     createdAt = message.date.toLong() * 1000,
                     thumbnailFileId = thumb?.file?.id,
-                    remoteUniqueId = content.document.document.remote.uniqueId,
+                    remoteUniqueId = docFile.remote.uniqueId,
                     thumbnailRemoteUniqueId = thumb?.file?.remote?.uniqueId,
                     splitGroupId = splitInfo?.groupId,
                     partIndex = splitInfo?.partIndex ?: 0,
@@ -678,7 +685,7 @@ class DriveRepository @Inject constructor(
                 val thumb = sizes.firstOrNull()
                 val full = sizes.lastOrNull()?.photo
                 if (thumb != null && thumb.photo.local.path.isEmpty() && thumb.photo.local.canBeDownloaded) {
-                    telegramClient.send(TdApi.DownloadFile(thumb.photo.id, 1, 0, 0, false))
+                    telegramClient.send(TdApi.DownloadFile(thumb.photo.id, 32, 0, 0, false))
                 }
                 DriveItemEntity(
                     message.id, "Photo_${message.id}.jpg", full?.expectedSize ?: 0L, "image/jpeg", full?.id ?: 0, chatId, false,
@@ -697,11 +704,11 @@ class DriveRepository @Inject constructor(
                 val caption = content.caption.text
                 val isEncrypted = caption.contains("[ENC]") || isSecureFolder
                 val splitInfo = parseSplitMetadata(caption)
-                val cleanName = if (isEncrypted) cleanEncryptedFileName(splitInfo?.originalName ?: content.video.fileName) else splitInfo?.originalName ?: content.video.fileName
+                val cleanName = cleanEncryptedFileName(splitInfo?.originalName ?: content.video.fileName)
                 val mimeType = if (content.video.mimeType == "application/octet-stream") FileUtils.getMimeType(cleanName) else content.video.mimeType
                 val thumb = content.video.thumbnail
                 if (thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
-                    telegramClient.send(TdApi.DownloadFile(thumb.file.id, 1, 0, 0, false))
+                    telegramClient.send(TdApi.DownloadFile(thumb.file.id, 32, 0, 0, false))
                 }
                 DriveItemEntity(
                     message.id, cleanName, content.video.video.expectedSize, mimeType, content.video.video.id, chatId, false,
@@ -723,7 +730,7 @@ class DriveRepository @Inject constructor(
                 val caption = content.caption.text
                 val isEncrypted = caption.contains("[ENC]") || isSecureFolder
                 val splitInfo = parseSplitMetadata(caption)
-                val cleanName = if (isEncrypted) cleanEncryptedFileName(splitInfo?.originalName ?: content.audio.fileName) else splitInfo?.originalName ?: content.audio.fileName
+                val cleanName = cleanEncryptedFileName(splitInfo?.originalName ?: content.audio.fileName)
                 val mimeType = if (content.audio.mimeType == "application/octet-stream" || content.audio.mimeType.isEmpty()) FileUtils.getMimeType(cleanName) else content.audio.mimeType
                 DriveItemEntity(
                     message.id, cleanName, content.audio.audio.expectedSize, mimeType, content.audio.audio.id, chatId, false,
@@ -743,7 +750,7 @@ class DriveRepository @Inject constructor(
                 val isEncrypted = caption.contains("[ENC]") || isSecureFolder
                 val thumb = content.animation.thumbnail
                 if (thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
-                    telegramClient.send(TdApi.DownloadFile(thumb.file.id, 1, 0, 0, false))
+                    telegramClient.send(TdApi.DownloadFile(thumb.file.id, 32, 0, 0, false))
                 }
                 DriveItemEntity(
                     message.id, cleanEncryptedFileName("Animation_${message.id}.mp4"), content.animation.animation.expectedSize, "video/mp4", content.animation.animation.id, chatId, false,
@@ -799,10 +806,11 @@ class DriveRepository @Inject constructor(
         createVirtualFolder(name, "0", isSecure = true)
     }
 
-    fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null, virtualFolderId: String? = null) {
+    fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null, virtualFolderId: String? = null, forceDeleteSource: Boolean = false) {
         ensureSavedMessagesChat { targetChatId ->
             val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
-            val autoDeleteEnabled = customPrefs.getBoolean("delete_after_backup", false)
+            val autoDeleteEnabled = forceDeleteSource || customPrefs.getBoolean("delete_after_backup", false)
+            val cleanName = cleanEncryptedFileName(originalFileName)
 
             val vfTag = if (virtualFolderId != null && virtualFolderId != "0") "[VF:$virtualFolderId]" else ""
             val sourceFile = File(filePath)
@@ -811,7 +819,7 @@ class DriveRepository @Inject constructor(
                 startTransferService()
                 scope.launch {
                     val placeholderId = "prep_${System.currentTimeMillis()}"
-                    transferRepository.addTransfer(0, placeholderId, originalFileName, false, sourceFile.length(), status = context.getString(R.string.splitting_file, ""))
+                    transferRepository.addTransfer(0, placeholderId, cleanName, false, sourceFile.length(), status = context.getString(R.string.splitting_file, ""))
                     try {
                         val parts = FileUtils.splitFile(context, sourceFile) { progress ->
                             transferRepository.updateTransferManual(placeholderId, progress, context.getString(R.string.splitting_file_perc, (progress * 100).toInt()))
@@ -821,11 +829,11 @@ class DriveRepository @Inject constructor(
                         val partMessageIds = mutableListOf<Long>()
                         
                         parts.forEachIndexed { index, part ->
-                            val caption = "[TD_SPLIT|ID:$groupId|PART:$index/${parts.size}|NAME:$originalFileName]$vfTag"
-                            uploadSinglePart(part.absolutePath, originalFileName, targetChatId, caption, virtualFolderId, deleteSourceAfter = true) { messageId ->
+                            val caption = "[TD_SPLIT|ID:$groupId|PART:$index/${parts.size}|NAME:$cleanName]$vfTag"
+                            uploadSinglePart(part.absolutePath, cleanName, targetChatId, caption, virtualFolderId, deleteSourceAfter = true) { messageId ->
                                 if (messageId != 0L) partMessageIds.add(messageId)
                                 if (index == parts.size - 1) {
-                                    sendSplitMasterMetadata(groupId, originalFileName, sourceFile.length(), FileUtils.getMimeType(originalFileName), parts.size, virtualFolderId, isChatSecure(targetChatId), partMessageIds)
+                                    sendSplitMasterMetadata(groupId, cleanName, sourceFile.length(), FileUtils.getMimeType(cleanName), parts.size, virtualFolderId, isChatSecure(targetChatId), partMessageIds)
                                     if (autoDeleteEnabled) {
                                         deletePhoneFileCompletely(sourceFile)
                                     }
@@ -839,13 +847,55 @@ class DriveRepository @Inject constructor(
             } else {
                 uploadSinglePart(
                     filePath = filePath,
-                    originalFileName = originalFileName,
+                    originalFileName = cleanName,
                     targetChatId = targetChatId,
-                    caption = if (vfTag.isNotEmpty()) "$originalFileName $vfTag" else null,
+                    caption = if (vfTag.isNotEmpty()) "$cleanName $vfTag" else cleanName,
                     virtualFolderId = virtualFolderId,
                     deleteSourceAfter = autoDeleteEnabled
                 )
             }
+        }
+    }
+
+    // ছবি ও ভিডিও আপলোডের সময় অটোমেটিক থাম্বনেইল তৈরি করার ফাংশন
+    private fun generateUploadThumbnail(sourceFile: File, fileName: String): Pair<TdApi.InputThumbnail, File>? {
+        return try {
+            val mime = FileUtils.getMimeType(fileName)
+            val bitmap: Bitmap? = when {
+                mime.startsWith("image/") -> {
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(sourceFile.absolutePath, opts)
+                    var sampleSize = 1
+                    while (opts.outWidth / sampleSize > 320 || opts.outHeight / sampleSize > 320) {
+                        sampleSize *= 2
+                    }
+                    BitmapFactory.decodeFile(sourceFile.absolutePath, BitmapFactory.Options().apply { inSampleSize = sampleSize })
+                }
+                mime.startsWith("video/") -> {
+                    val retriever = MediaMetadataRetriever()
+                    retriever.setDataSource(sourceFile.absolutePath)
+                    val frame = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: retriever.frameAtTime
+                    retriever.release()
+                    frame
+                }
+                else -> null
+            }
+
+            if (bitmap != null) {
+                val maxDim = 320f
+                val ratio = minOf(maxDim / bitmap.width.coerceAtLeast(1), maxDim / bitmap.height.coerceAtLeast(1), 1f)
+                val w = (bitmap.width * ratio).toInt().coerceAtLeast(1)
+                val h = (bitmap.height * ratio).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(bitmap, w, h, true)
+
+                val thumbFile = File(context.cacheDir, "thumb_${System.nanoTime()}.jpg")
+                FileOutputStream(thumbFile).use { out ->
+                    scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                }
+                TdApi.InputThumbnail(TdApi.InputFileLocal(thumbFile.absolutePath), w, h) to thumbFile
+            } else null
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -873,13 +923,12 @@ class DriveRepository @Inject constructor(
             var finalPath = filePath
             var finalCaption = caption ?: originalFileName
             var tempEncFile: File? = null
-            var uploadSuccess = false
-            
-            transferRepository.updateTransferManual(tempId, 0f, context.getString(R.string.status_waiting))
+            var tempThumbFile: File? = null
+            var inputThumb: TdApi.InputThumbnail? = null
             
             if (isSecure && password != null) {
                 try {
-                    tempEncFile = File(context.cacheDir, "enc_${System.nanoTime()}_${originalSourceFile.name}")
+                    tempEncFile = File(context.cacheDir, "enc_${System.nanoTime()}_$originalFileName")
                     encryptionManager.encryptFile(originalSourceFile, tempEncFile, password) { progress ->
                         transferRepository.updateTransferManual(tempId, progress, context.getString(R.string.encrypting_perc, (progress * 100).toInt()), throttled = true)
                     }
@@ -887,14 +936,32 @@ class DriveRepository @Inject constructor(
                     finalCaption = if (caption != null) "$caption [ENC]" else "$originalFileName [ENC]"
                     transferRepository.updateRemoteUniqueId(tempId, tempId, 0, finalPath)
                 } catch (e: Exception) {
-                    transferRepository.updateTransferManual(tempId, 0f, context.getString(R.string.failed_with_error, "Encryption failed"))
+                    transferRepository.updateTransferManual(tempId, 0f, Status.FAILED)
                     return@enqueueTransfer 
+                }
+            } else {
+                generateUploadThumbnail(originalSourceFile, originalFileName)?.let { (thumbObj, tFile) ->
+                    inputThumb = thumbObj
+                    tempThumbFile = tFile
                 }
             }
 
-            telegramClient.send(TdApi.SendMessage(targetChatId, null, null, null, null, TdApi.InputMessageDocument(TdApi.InputFileLocal(finalPath), null, false, TdApi.FormattedText(finalCaption, emptyArray())))) { result ->
+            telegramClient.send(
+                TdApi.SendMessage(
+                    targetChatId,
+                    null,
+                    null,
+                    null,
+                    null,
+                    TdApi.InputMessageDocument(
+                        TdApi.InputFileLocal(finalPath),
+                        inputThumb,
+                        false,
+                        TdApi.FormattedText(finalCaption, emptyArray())
+                    )
+                )
+            ) { result ->
                 if (result is TdApi.Message) {
-                    uploadSuccess = true
                     onMessageSent(result.id)
                     val content = result.content
                     val file = when (content) {
@@ -917,18 +984,19 @@ class DriveRepository @Inject constructor(
                         transferRepository.updateTransferManual(tempId, 1.0f, TransferRepository.Status.COMPLETED)
                     }
                 } else {
-                    val errMsg = if (result is TdApi.Error) result.message else "SendMessage failed"
-                    transferRepository.updateTransferManual(tempId, 0f, context.getString(R.string.failed_with_error, errMsg))
+                    transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
                 }
             }
             
             transferRepository.waitForCompletion(tempId)
             
+            // আপলোড শেষ হওয়ার সাথে সাথেই টার্গেট ফাইল ও ক্যাশ ডিলিট
             try {
                 tempEncFile?.let { if (it.exists()) it.delete() }
+                tempThumbFile?.let { if (it.exists()) it.delete() }
                 if (isTempCacheFile) {
                     if (originalSourceFile.exists()) originalSourceFile.delete()
-                } else if (deleteSourceAfter && uploadSuccess) {
+                } else if (deleteSourceAfter) {
                     deletePhoneFileCompletely(originalSourceFile)
                 }
             } catch (e: Exception) {
@@ -1023,7 +1091,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // প্রিভিউ করার সময় Downloads পপআপে কোনো ক্যাশ বা লিস্ট জমা করবে না
     fun downloadForPreview(messageId: Long, chatId: Long, fileName: String) {
         telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
             if (result is TdApi.Message) {
@@ -1035,7 +1102,7 @@ class DriveRepository @Inject constructor(
                     else -> 0
                 }
                 if (fileId != 0) {
-                    telegramClient.send(TdApi.DownloadFile(fileId, 16, 0, 0, false))
+                    telegramClient.send(TdApi.DownloadFile(fileId, 32, 0, 0, false))
                 }
             }
         }
@@ -1336,7 +1403,9 @@ class DriveRepository @Inject constructor(
     }
 
     private fun cleanEncryptedFileName(fileName: String): String {
-        return fileName.replace(Regex("^enc_\\d+_"), "").replace(Regex("^enc_"), "")
+        return fileName
+            .replace(Regex("^(enc|up|bkp)_\\d+_"), "")
+            .replace(Regex("^(enc|up|bkp)_"), "")
     }
 
     private data class SplitMetadata(val groupId: String, val partIndex: Int, val totalParts: Int, val originalName: String)
