@@ -5,7 +5,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -34,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
@@ -110,6 +113,7 @@ fun NavGraph(navController: NavHostController) {
     val showCacheWarning by settingsViewModel.showCacheWarning.collectAsState()
 
     var showUnlockDialog by remember { mutableStateOf(false) }
+    var showCreateSafePasswordDialog by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val activity = context as? FragmentActivity
@@ -122,7 +126,6 @@ fun NavGraph(navController: NavHostController) {
                     if (securityViewModel.unlockWithBiometric()) {
                         navController.navigate(Screen.SecureStorage.route)
                     } else {
-                        android.widget.Toast.makeText(context, context.getString(R.string.password_unsynced_toast), android.widget.Toast.LENGTH_LONG).show()
                         showUnlockDialog = true
                     }
                 }
@@ -141,8 +144,7 @@ fun NavGraph(navController: NavHostController) {
     val triggerSafeFolderOpen = {
         val isPasswordSet = securityViewModel.isPasswordSet.value
         if (!isPasswordSet) {
-            android.widget.Toast.makeText(context, context.getString(R.string.set_password_first), android.widget.Toast.LENGTH_LONG).show()
-            navController.navigate(Screen.Settings.route)
+            showCreateSafePasswordDialog = true
         } else if (isSecureActive) {
             navController.navigate(Screen.SecureStorage.route)
         } else {
@@ -180,7 +182,8 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
-    val bottomNavScreens = listOf(Screen.Home, Screen.Media, Screen.Starred, Screen.Settings)
+    // নিচের হেডার/নেভিগেশন মেনু থেকে Starred রিমুভ করা হয়েছে
+    val bottomNavScreens = listOf(Screen.Home, Screen.Media, Screen.Settings)
     val shouldShowBottomBar = currentRoute in bottomNavScreens.map { it.route } && currentRoute != Screen.SecureStorage.route
 
     Scaffold(
@@ -258,13 +261,7 @@ fun NavGraph(navController: NavHostController) {
                 HomeScreen(
                     onNavigateToTransfers = { navController.navigate(Screen.Transfers.route) },
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
-                    onNavigateToStarred = {
-                        navController.navigate(Screen.Starred.route) {
-                            popUpTo(Screen.Home.route) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    },
+                    onNavigateToStarred = { navController.navigate(Screen.Starred.route) },
                     onNavigateToSafeFolder = { triggerSafeFolderOpen() },
                     onNavigateToCloudAnalysis = { navController.navigate(Screen.CloudAnalysis.route) },
                     onNavigateToPreview = { file -> 
@@ -367,6 +364,59 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
+    if (showCreateSafePasswordDialog) {
+        var newPass by remember { mutableStateOf("") }
+        var confirmPass by remember { mutableStateOf("") }
+        var error by remember { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { showCreateSafePasswordDialog = false },
+            title = { Text("Setup Safe Folder Password") },
+            text = {
+                Column {
+                    Text("ফটো, ভিডিও ও অডিও লক করে রাখতে একটি পাসওয়ার্ড বা পিন সেট করুন:")
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newPass,
+                        onValueChange = { newPass = it; error = null },
+                        label = { Text(stringResource(R.string.password)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = confirmPass,
+                        onValueChange = { confirmPass = it; error = null },
+                        label = { Text(stringResource(R.string.confirm_password)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        isError = error != null,
+                        supportingText = error?.let { { Text(it) } },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newPass.length < 4) {
+                        error = "কমপক্ষে ৪ সংখ্যার পাসওয়ার্ড দিন"
+                    } else if (newPass != confirmPass) {
+                        error = "পাসওয়ার্ড দুটি মেলেনি"
+                    } else {
+                        securityViewModel.setPassword(newPass)
+                        securityViewModel.unlockSecureMode(newPass)
+                        showCreateSafePasswordDialog = false
+                        navController.navigate(Screen.SecureStorage.route)
+                    }
+                }) { Text("Create & Open") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateSafePasswordDialog = false }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
+
     if (showUnlockDialog) {
         var password by remember { mutableStateOf("") }
         var error by remember { mutableStateOf<String?>(null) }
@@ -381,7 +431,7 @@ fun NavGraph(navController: NavHostController) {
                         value = password,
                         onValueChange = { password = it; error = null },
                         label = { Text(stringResource(R.string.password)) },
-                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        visualTransformation = PasswordVisualTransformation(),
                         isError = error != null,
                         supportingText = error?.let { { Text(it) } },
                         modifier = Modifier.fillMaxWidth()
