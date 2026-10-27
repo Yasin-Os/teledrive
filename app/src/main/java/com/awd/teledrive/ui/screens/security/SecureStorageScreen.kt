@@ -28,6 +28,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
@@ -43,6 +45,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -121,7 +124,6 @@ fun SecureStorageScreen(
     var showDeleteConfirm by remember { mutableStateOf<List<DriveItem>?>(null) }
     var isSearchActive by remember { mutableStateOf(false) }
 
-    // Safe Folder-এর নিজস্ব পিন লক অন/অফ এবং পরিবর্তনের ডায়ালগ
     if (showSafeLockSettingsDialog) {
         AlertDialog(
             onDismissRequest = { showSafeLockSettingsDialog = false },
@@ -452,6 +454,7 @@ fun SecureStorageScreen(
         topBar = {
             Column {
                 if (isSelectionMode) {
+                    // লং-প্রেস করলে উপরে Unhide এবং Select All অপশন আসবে
                     TopAppBar(
                         title = { Text("${selectedSafeItems.size} selected") },
                         navigationIcon = {
@@ -462,13 +465,33 @@ fun SecureStorageScreen(
                         actions = {
                             IconButton(
                                 onClick = {
-                                    viewModel.unhideFilesToCloud(selectedSafeItems.toList())
-                                    Toast.makeText(context, "Unhidden to Cloud", Toast.LENGTH_SHORT).show()
-                                    selectedSafeItems = emptySet()
+                                    selectedSafeItems = if (selectedSafeItems.size >= items.size) {
+                                        emptySet()
+                                    } else {
+                                        items.map { it.id }.toSet()
+                                    }
                                 }
                             ) {
-                                Icon(Icons.Default.LockOpen, contentDescription = "Unhide to Cloud")
+                                Icon(
+                                    imageVector = if (selectedSafeItems.size >= items.size && items.isNotEmpty()) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                    contentDescription = "Select All"
+                                )
                             }
+
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.unhideFilesToCloud(selectedSafeItems.toList())
+                                    Toast.makeText(context, "${selectedSafeItems.size} items unhidden", Toast.LENGTH_SHORT).show()
+                                    selectedSafeItems = emptySet()
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            ) {
+                                Icon(Icons.Default.LockOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Unhide")
+                            }
+
                             IconButton(
                                 onClick = {
                                     showDeleteConfirm = items.filter { it.id in selectedSafeItems }
@@ -542,14 +565,16 @@ fun SecureStorageScreen(
             }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { showCloudPickerSheet = true },
-                icon = { Icon(Icons.Default.Add, null) },
-                text = { Text("Add from Cloud") },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                elevation = FloatingActionButtonDefaults.elevation(8.dp)
-            )
+            if (!isSelectionMode) {
+                ExtendedFloatingActionButton(
+                    onClick = { showCloudPickerSheet = true },
+                    icon = { Icon(Icons.Default.Add, null) },
+                    text = { Text("Add from Cloud") },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    elevation = FloatingActionButtonDefaults.elevation(8.dp)
+                )
+            }
         }
     ) { padding ->
         PullToRefreshBox(
@@ -573,56 +598,37 @@ fun SecureStorageScreen(
                     }
                 }
             } else {
+                // ডান পাশের তালা রিমুভ করা হয়েছে, লং-প্রেস করলে সিলেক্ট হয়ে উপরে Unhide বাটন আসবে
                 LazyColumn(
                     contentPadding = PaddingValues(bottom = 88.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(items, key = { it.id }) { item ->
                         val isSelected = selectedSafeItems.contains(item.id)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Box(modifier = Modifier.weight(1f)) {
-                                DriveListItem(
-                                    item = item,
-                                    isSelected = isSelected,
-                                    onClick = {
-                                        if (isSelectionMode) {
-                                            selectedSafeItems = if (isSelected) selectedSafeItems - item.id else selectedSafeItems + item.id
-                                        } else {
-                                            onNavigateToPreview(item)
-                                        }
-                                    },
-                                    onLongClick = {
-                                        selectedSafeItems = setOf(item.id)
-                                    },
-                                    onStarClick = {},
-                                    onShareClick = {},
-                                    onDownloadClick = {
-                                        viewModel.downloadFile(item.id, item.parentChatId, item.name)
-                                    },
-                                    onRenameClick = {
-                                        itemToRename = item
-                                        renameValue = item.name
-                                    },
-                                    onDeleteClick = { showDeleteConfirm = listOf(item) }
-                                )
-                            }
-                            IconButton(
-                                onClick = {
-                                    viewModel.unhideFilesToCloud(listOf(item.id))
-                                    Toast.makeText(context, "Unhidden to Cloud", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.padding(end = 8.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.LockOpen,
-                                    contentDescription = "Unhide to Cloud",
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
+                        DriveListItem(
+                            item = item,
+                            isSelected = isSelected,
+                            onClick = {
+                                if (isSelectionMode) {
+                                    selectedSafeItems = if (isSelected) selectedSafeItems - item.id else selectedSafeItems + item.id
+                                } else {
+                                    onNavigateToPreview(item)
+                                }
+                            },
+                            onLongClick = {
+                                selectedSafeItems = if (isSelected) selectedSafeItems - item.id else selectedSafeItems + item.id
+                            },
+                            onStarClick = {},
+                            onShareClick = {},
+                            onDownloadClick = {
+                                viewModel.downloadFile(item.id, item.parentChatId, item.name)
+                            },
+                            onRenameClick = {
+                                itemToRename = item
+                                renameValue = item.name
+                            },
+                            onDeleteClick = { showDeleteConfirm = listOf(item) }
+                        )
                     }
                 }
             }
