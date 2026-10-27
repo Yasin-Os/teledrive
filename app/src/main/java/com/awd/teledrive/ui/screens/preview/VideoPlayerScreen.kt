@@ -11,9 +11,11 @@ import android.content.pm.ActivityInfo
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -22,6 +24,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -38,6 +42,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -50,9 +55,9 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ContentCut
-import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Headset
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowLeft
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowRight
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
@@ -92,14 +97,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -150,6 +158,53 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME }
+
+// ব্যাকগ্রাউন্ডে অডিও প্লে চালু রাখার সিঙ্গেলটন ইঞ্জিন
+@AndroidOptIn(UnstableApi::class)
+object BackgroundAudioEngine {
+    var activePlayer: ExoPlayer? = null
+    var activeUrl: String? = null
+
+    fun getOrCreatePlayer(context: Context): ExoPlayer {
+        val existing = activePlayer
+        if (existing != null) return existing
+
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15_000, 50_000, 1_500, 3_000)
+            .build()
+        val audioAttrs = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+        return ExoPlayer.Builder(context.applicationContext)
+            .setLoadControl(loadControl)
+            .setAudioAttributes(audioAttrs, true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .build()
+            .also { activePlayer = it }
+    }
+
+    fun stopAndRelease(context: Context) {
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(2026)
+        } catch (e: Exception) {}
+        try {
+            activePlayer?.stop()
+            activePlayer?.release()
+        } catch (e: Exception) {}
+        activePlayer = null
+        activeUrl = null
+    }
+}
+
+private fun resetWindowBrightness(activity: Activity?) {
+    activity?.window?.let { win ->
+        val lp = win.attributes
+        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        win.attributes = lp
+    }
+}
 
 @HiltViewModel
 class VideoPlayerViewModel @Inject constructor(
@@ -457,8 +512,10 @@ fun VideoPlayerScreen(
     var isAudioPlayerMode by remember(isNativeAudioFile) { mutableStateOf(isNativeAudioFile) }
     var showAudioTooltip by remember { mutableStateOf(!isNativeAudioFile) }
 
-    var isPlaying by remember { mutableStateOf(true) }
-    var isBuffering by remember { mutableStateOf(true) }
+    val exoPlayer = remember { BackgroundAudioEngine.getOrCreatePlayer(context) }
+
+    var isPlaying by remember { mutableStateOf(exoPlayer.isPlaying) }
+    var isBuffering by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var controlsVisible by remember { mutableStateOf(true) }
@@ -474,29 +531,21 @@ fun VideoPlayerScreen(
     var verticalGestureProgress by remember { mutableFloatStateOf(0f) }
     var seekOverlayText by remember { mutableStateOf<String?>(null) }
 
-    // ডাবল-ট্যাপ ১০ সেকেন্ড স্কিপ কাউন্টার স্টেট
     var doubleTapSkipSeconds by remember { mutableIntStateOf(0) }
     var isSkipForward by remember { mutableStateOf(true) }
 
-    val exoPlayer = remember {
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 50_000, 1_500, 3_000)
-            .build()
-        val audioAttrs = AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-            .build()
-        ExoPlayer.Builder(context)
-            .setLoadControl(loadControl)
-            .setAudioAttributes(audioAttrs, true)
-            .setWakeMode(C.WAKE_MODE_NETWORK)
-            .build()
-    }
-
     LaunchedEffect(activeMediaUrl) {
+        isStarred = playlist.find { it.id == messageId || it.name == fileName }?.isStarred == true
+        // যদি আগে থেকেই একই অডিও ব্যাকগ্রাউন্ডে বাজতে থাকে তবে রিস্টার্ট করবে না
+        if (BackgroundAudioEngine.activeUrl == activeMediaUrl && exoPlayer.isPlaying) {
+            duration = exoPlayer.duration.coerceAtLeast(0L)
+            currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+            return@LaunchedEffect
+        }
+
+        BackgroundAudioEngine.activeUrl = activeMediaUrl
         currentPosition = 0L
         duration = 0L
-        isStarred = playlist.find { it.id == messageId || it.name == fileName }?.isStarred == true
         if (isStreamUrl) {
             viewModel.startWatchingAndDownloading(chatId, messageId, telegramFileId)
             val factory = DataSource.Factory {
@@ -520,7 +569,6 @@ fun VideoPlayerScreen(
         }
     }
 
-    // ব্যাকগ্রাউন্ড অডিও প্লে নোটিফিকেশন
     LaunchedEffect(isAudioPlayerMode, isPlaying, fileName) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "mycloud_bg_audio"
@@ -533,19 +581,20 @@ fun VideoPlayerScreen(
             val intent = Intent(context, MainActivity::class.java)
             val pi = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
             val notif = NotificationCompat.Builder(context, channelId)
-                .setContentTitle(fileName)
-                .setContentText("<unknown>")
+                .setContentTitle(fileName.substringBeforeLast('.'))
+                .setContentText("<unknown> • Playing in background")
                 .setSmallIcon(R.drawable.ic_mycloud_logo)
                 .setOngoing(true)
                 .setContentIntent(pi)
                 .build()
             nm.notify(2026, notif)
-        } else {
+        } else if (!isAudioPlayerMode) {
             nm.cancel(2026)
         }
     }
 
-    DisposableEffect(exoPlayer) {
+    // ভিডিও থেকে বের হলে সাথে সাথে ব্রাইটনেস রিসেট হবে, কিন্তু অডিও মোডে থাকলে অডিও ব্যাকগ্রাউন্ডে বাজতে থাকবে!
+    DisposableEffect(Unit) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 isBuffering = state == Player.STATE_BUFFERING
@@ -559,11 +608,13 @@ fun VideoPlayerScreen(
         }
         exoPlayer.addListener(listener)
         onDispose {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.cancel(2026)
+            resetWindowBrightness(activity)
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             exoPlayer.removeListener(listener)
-            exoPlayer.release()
+            // শুধুমাত্র ভিডিও মোডে থাকলে প্লেয়ার বন্ধ হবে; অডিও মোডে থাকলে ব্যাকগ্রাউন্ডে চলতে থাকবে!
+            if (!isAudioPlayerMode) {
+                BackgroundAudioEngine.stopAndRelease(context)
+            }
         }
     }
 
@@ -587,13 +638,13 @@ fun VideoPlayerScreen(
 
     LaunchedEffect(doubleTapSkipSeconds) {
         if (doubleTapSkipSeconds != 0) {
-            delay(850)
+            delay(800)
             doubleTapSkipSeconds = 0
         }
     }
 
-    // যদি অডিও মোড চালু থাকে, তবে হুবহু ৩য় স্ক্রিনশটের PLAYit অডিও প্লেয়ার দেখাবে
     if (isAudioPlayerMode) {
+        LaunchedEffect(Unit) { resetWindowBrightness(activity) }
         PlayItVinylAudioPlayerUI(
             fileName = fileName,
             isPlaying = isPlaying,
@@ -602,9 +653,21 @@ fun VideoPlayerScreen(
             isRepeatOne = isRepeatOne,
             isStarred = isStarred,
             isVideoSource = !isNativeAudioFile,
-            onBack = onBack,
+            onBack = {
+                // অডিও মোড থেকে ব্যাকে গেলে অডিও ব্যাকগ্রাউন্ডে চলতে থাকবে
+                resetWindowBrightness(activity)
+                onBack()
+            },
             onSwitchToVideo = { isAudioPlayerMode = false },
-            onPlayPause = { if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play() },
+            onPlayPause = {
+                if (exoPlayer.isPlaying) {
+                    exoPlayer.pause()
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.cancel(2026)
+                } else {
+                    exoPlayer.play()
+                }
+            },
             onSeek = { target ->
                 currentPosition = target
                 exoPlayer.seekTo(target)
@@ -633,7 +696,17 @@ fun VideoPlayerScreen(
         return
     }
 
-    // হুবহু ৫ম স্ক্রিনশটের PLAYit ভিডিও প্লেয়ার
+    val skipWaveTransition = rememberInfiniteTransition(label = "SkipWave")
+    val skipArrowSlide by skipWaveTransition.animateFloat(
+        initialValue = -8f,
+        targetValue = 8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(450, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "SkipArrowSlide"
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -700,7 +773,6 @@ fun VideoPlayerScreen(
 
                             when (activeGestureMode) {
                                 GestureMode.SEEK -> {
-                                    // PLAYit ডিফল্ট প্লেয়ারের মতোই ন্যাচারাল আনুপাতিক স্ক্রাবিং
                                     accumulatedX += dragAmount.x
                                     val fullWidthSeekMs = 90_000f
                                     val deltaMs = ((accumulatedX / size.width.toFloat()) * fullWidthSeekMs).toLong()
@@ -747,6 +819,7 @@ fun VideoPlayerScreen(
                 }
             },
             update = { view ->
+                view.player = exoPlayer
                 view.resizeMode = resizeMode
             },
             modifier = Modifier.fillMaxSize()
@@ -760,35 +833,52 @@ fun VideoPlayerScreen(
             )
         }
 
-        // ডাবল ট্যাপ ১০ সেকেন্ড স্কিপ সেকেন্ড সংখ্যা ইন্ডিকেটর
+        // বক্স ছাড়া PLAYit স্টাইলে স্মুথ অ্যানিমেশনে ডাবল-ট্যাপ সেকেন্ড ইন্ডিকেটর (» +10s / « -10s)
         AnimatedVisibility(
             visible = doubleTapSkipSeconds != 0,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = fadeIn(tween(150)) + scaleIn(tween(150), initialScale = 0.85f),
+            exit = fadeOut(tween(250)) + scaleOut(tween(250), targetScale = 1.1f),
             modifier = Modifier
                 .align(if (isSkipForward) Alignment.CenterEnd else Alignment.CenterStart)
-                .padding(horizontal = 48.dp)
+                .padding(horizontal = 56.dp)
         ) {
-            Surface(
-                shape = CircleShape,
-                color = Color.Black.copy(alpha = 0.55f)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp)
-                ) {
+                if (!isSkipForward) {
                     Icon(
-                        imageVector = if (isSkipForward) Icons.Default.FastForward else Icons.Default.FastRewind,
+                        imageVector = Icons.Default.KeyboardDoubleArrowLeft,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier
+                            .size(36.dp)
+                            .offset(x = skipArrowSlide.dp)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "${abs(doubleTapSkipSeconds)} secs",
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
+                Text(
+                    text = if (isSkipForward) "+${abs(doubleTapSkipSeconds)}s" else "-${abs(doubleTapSkipSeconds)}s",
+                    style = TextStyle(
                         color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                        shadow = Shadow(
+                            color = Color.Black.copy(alpha = 0.75f),
+                            offset = Offset(0f, 2f),
+                            blurRadius = 8f
+                        )
+                    )
+                )
+                if (isSkipForward) {
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Default.KeyboardDoubleArrowRight,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .offset(x = skipArrowSlide.dp)
                     )
                 }
             }
@@ -834,7 +924,6 @@ fun VideoPlayerScreen(
             }
         }
 
-        // টেনে ভিডিও দেখার সময় টেক্সট (00:18[+00:03])
         if (activeGestureMode == GestureMode.SEEK && seekOverlayText != null) {
             Text(
                 text = seekOverlayText!!,
@@ -845,7 +934,6 @@ fun VideoPlayerScreen(
             )
         }
 
-        // স্ক্রিন লক করা থাকলে শুধু বাম পাশে আনলক বাটন দেখাবে
         if (isLocked && controlsVisible) {
             Surface(
                 onClick = { isLocked = false },
@@ -862,7 +950,6 @@ fun VideoPlayerScreen(
             }
         }
 
-        // স্ক্রিনশট ৫ অনুযায়ী হুবহু PLAYit কন্ট্রোল লেআউট (ক্রস দেওয়া আইকনগুলো ছাড়া)
         AnimatedVisibility(
             visible = controlsVisible && !isLocked,
             enter = fadeIn(),
@@ -883,7 +970,6 @@ fun VideoPlayerScreen(
                         )
                     )
             ) {
-                // ১. উপরের বার: শুধু Back, Title এবং 🎧 Headphone (ক্রস দেওয়া ৪টি আইকন রিমুভ করা হয়েছে)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -895,7 +981,13 @@ fun VideoPlayerScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = onBack) {
+                        IconButton(
+                            onClick = {
+                                resetWindowBrightness(activity)
+                                BackgroundAudioEngine.stopAndRelease(context)
+                                onBack()
+                            }
+                        ) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                         }
                         Text(
@@ -909,6 +1001,7 @@ fun VideoPlayerScreen(
                         IconButton(
                             onClick = {
                                 showAudioTooltip = false
+                                resetWindowBrightness(activity)
                                 isAudioPlayerMode = true
                             }
                         ) {
@@ -925,6 +1018,7 @@ fun VideoPlayerScreen(
                         Surface(
                             onClick = {
                                 showAudioTooltip = false
+                                resetWindowBrightness(activity)
                                 isAudioPlayerMode = true
                             },
                             color = Color(0xFF1DB954),
@@ -944,7 +1038,6 @@ fun VideoPlayerScreen(
                     }
                 }
 
-                // ২. মাঝখানের বাম পাশের ফ্লোটিং আইকন (Mute এবং Lock)
                 Column(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
@@ -987,7 +1080,6 @@ fun VideoPlayerScreen(
                     }
                 }
 
-                // ৩. মাঝখানের ডান পাশের ফ্লোটিং আইকন (Cut এবং Screen Rotation)
                 Column(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
@@ -1036,7 +1128,6 @@ fun VideoPlayerScreen(
                     }
                 }
 
-                // ৪. নিচের বার: সবুজ সিকবার + গোল Play/Pause, Prev, Next, Speed, Fit, PIP
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1191,7 +1282,6 @@ fun VideoPlayerScreen(
     }
 }
 
-// স্ক্রিনশট ৩ অনুযায়ী হুবহু PLAYit Vinyl Record Disc ও সবুজ Circular Equalizer অডিও প্লেয়ার
 @Composable
 private fun PlayItVinylAudioPlayerUI(
     fileName: String,
@@ -1249,7 +1339,6 @@ private fun PlayItVinylAudioPlayerUI(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // 1. Top Bar (Back, Title + <unknown>, Share)
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -1281,7 +1370,6 @@ private fun PlayItVinylAudioPlayerUI(
             }
         }
 
-        // 2. Center Vinyl Record Disc + 80 Green Radial Spectrum Equalizer Bars
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier.size(300.dp)
@@ -1293,7 +1381,6 @@ private fun PlayItVinylAudioPlayerUI(
                 val barStartRadius = discRadius + 14f
                 val maxBarLength = size.minDimension * 0.11f
 
-                // 84 Radial Green Equalizer Bars
                 val barCount = 84
                 for (i in 0 until barCount) {
                     val angleDeg = (i * 360f / barCount) + (if (isPlaying) discAngle * 0.1f else 0f)
@@ -1318,14 +1405,12 @@ private fun PlayItVinylAudioPlayerUI(
                     )
                 }
 
-                // Outer Dark Vinyl Ring
                 drawCircle(
                     color = Color(0xFF161616),
                     radius = discRadius,
                     center = Offset(cx, cy)
                 )
 
-                // Vinyl Grooves
                 for (g in 1..6) {
                     drawCircle(
                         color = Color.White.copy(alpha = 0.05f),
@@ -1335,7 +1420,6 @@ private fun PlayItVinylAudioPlayerUI(
                     )
                 }
 
-                // Inner Pastel Gradient Label (Blue -> Cyan -> Green -> Yellow)
                 val labelRadius = discRadius * 0.42f
                 drawCircle(
                     brush = Brush.linearGradient(
@@ -1358,7 +1442,6 @@ private fun PlayItVinylAudioPlayerUI(
                     style = Stroke(width = 2f)
                 )
 
-                // Center Black Spindle Hole
                 drawCircle(
                     color = Color(0xFF14160B),
                     radius = discRadius * 0.07f,
@@ -1367,9 +1450,7 @@ private fun PlayItVinylAudioPlayerUI(
             }
         }
 
-        // 3. Bottom Controls Section
         Column(modifier = Modifier.fillMaxWidth()) {
-            // 4 Action Icons Row (Star, Equalizer, Timer, More/Switch to Video)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1417,7 +1498,6 @@ private fun PlayItVinylAudioPlayerUI(
                 }
             }
 
-            // SeekBar Row
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
@@ -1450,7 +1530,6 @@ private fun PlayItVinylAudioPlayerUI(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Main Transport Row (Repeat, Prev, Big White Circle Play/Pause, Next, Queue)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
