@@ -42,6 +42,7 @@ import kotlinx.serialization.json.Json
 import org.drinkless.tdlib.TdApi
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -66,20 +67,74 @@ class DriveRepository @Inject constructor(
     private val _savedMessagesChatIdFlow = MutableStateFlow(0L)
     private val isBackupRunning = AtomicBoolean(false)
 
+    // আপলোড হওয়া মাত্রই ফোন স্টোরেজ থেকে ফাইল ডিলিট ও ট্রান্সফার ক্লিয়ার করার ম্যাপ
+    private val pendingUploadTempIds = ConcurrentHashMap<Long, String>()
+    private val pendingAutoDeleteFiles = ConcurrentHashMap<Long, File>()
+
     fun getSavedMessagesChatIdFlow(): Flow<Long> = _savedMessagesChatIdFlow.asStateFlow()
 
     init {
         scope.launch {
             transferRepository.clearCompleted()
 
-            telegramClient.fileUpdates.collect { update ->
-                val file = update.file
-                if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
-                    driveDao.updateLocalPath(file.id, file.local.path)
-                    driveDao.updateLocalPathByUniqueId(file.remote.uniqueId, file.local.path)
-                    driveDao.updateThumbnailPathByUniqueId(file.remote.uniqueId, file.local.path)
+            telegramClient.updates.collect { update ->
+                when (update) {
+                    is TdApi.UpdateFile -> {
+                        val file = update.file
+                        if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
+                            driveDao.updateLocalPath(file.id, file.local.path)
+                            driveDao.updateLocalPathByUniqueId(file.remote.uniqueId, file.local.path)
+                            driveDao.updateThumbnailPathByUniqueId(file.remote.uniqueId, file.local.path)
+                        }
+                    }
+                    is TdApi.UpdateMessageSendSucceeded -> {
+                        val msg = update.message
+                        val oldId = update.oldMessageId
+                        val tempId = pendingUploadTempIds.remove(oldId)
+                        val file = extractTdFileFromMessage(msg)
+
+                        if (tempId != null || file != null) {
+                            transferRepository.completeAndCleanupTransfer(
+                                key = tempId ?: (file?.remote?.uniqueId ?: ""),
+                                uniqueId = file?.remote?.uniqueId ?: "",
+                                fileId = file?.id ?: 0
+                            )
+                        }
+
+                        // আপলোড শেষ হওয়া মাত্রই সাথে সাথে অ্যাপের তালিকায় ফাইলটি চলে আসবে
+                        if (msg.chatId == savedMessagesChatId || savedMessagesChatId == 0L) {
+                            mapMessageToEntity(msg.chatId, msg)?.let { entity ->
+                                val cleanEntity = entity.copy(localPath = null)
+                                driveDao.insertItemsPreservingStarred(listOf(cleanEntity))
+                            }
+                        }
+
+                        // অটো-ডিলিট চালু থাকলে সাথে সাথে ফোনের মূল ফাইলটি কেটে দেবে
+                        pendingAutoDeleteFiles.remove(oldId)?.let { phoneFile ->
+                            deletePhoneFileCompletely(phoneFile)
+                        }
+                    }
+                    is TdApi.UpdateMessageSendFailed -> {
+                        val oldId = update.oldMessageId
+                        val tempId = pendingUploadTempIds.remove(oldId)
+                        pendingAutoDeleteFiles.remove(oldId)
+                        if (tempId != null) {
+                            transferRepository.completeAndCleanupTransfer(tempId)
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    private fun extractTdFileFromMessage(msg: TdApi.Message): TdApi.File? {
+        return when (val c = msg.content) {
+            is TdApi.MessageDocument -> c.document.document
+            is TdApi.MessagePhoto -> c.photo.sizes.lastOrNull()?.photo
+            is TdApi.MessageVideo -> c.video.video
+            is TdApi.MessageAudio -> c.audio.audio
+            is TdApi.MessageAnimation -> c.animation.animation
+            else -> null
         }
     }
 
@@ -127,19 +182,13 @@ class DriveRepository @Inject constructor(
                 this.query = MANIFEST_PREFIX
                 this.limit = 50
             }
-            
             telegramClient.send(searchRequest) { result ->
-                if (result is TdApi.Messages) {
-                    synchronized(allMessages) { allMessages.addAll(result.messages.toList()) }
-                }
+                if (result is TdApi.Messages) synchronized(allMessages) { allMessages.addAll(result.messages.toList()) }
                 searchDone = true
                 tryFinish()
             }
-
             telegramClient.send(TdApi.GetChatHistory(chatId, 0, 0, 100, false)) { result ->
-                if (result is TdApi.Messages) {
-                    synchronized(allMessages) { allMessages.addAll(result.messages.toList()) }
-                }
+                if (result is TdApi.Messages) synchronized(allMessages) { allMessages.addAll(result.messages.toList()) }
                 historyDone = true
                 tryFinish()
             }
@@ -151,18 +200,15 @@ class DriveRepository @Inject constructor(
             val content = msg.content
             if (content is TdApi.MessageText) {
                 val text = content.text.text
-                text.contains(MANIFEST_PREFIX) || 
-                text.contains(MANIFEST_BACKUP_PREFIX) || 
-                text.contains("\"virtualFolders\"")
+                text.contains(MANIFEST_PREFIX) || text.contains(MANIFEST_BACKUP_PREFIX) || text.contains("\"virtualFolders\"")
             } else false
         }
-        
         if (possibleManifests.isEmpty()) return
-        
+
         manifestMessageId = possibleManifests
             .filter { (it.content as? TdApi.MessageText)?.text?.text?.contains(MANIFEST_PREFIX) == true && !(it.content as TdApi.MessageText).text.text.contains(MANIFEST_BACKUP_PREFIX) }
             .maxByOrNull { it.date }?.id ?: 0L
-        
+
         var mergedManifest = TeleDriveManifest()
         possibleManifests.sortedBy { it.date }.forEach { msg ->
             val content = msg.content
@@ -177,7 +223,6 @@ class DriveRepository @Inject constructor(
                 }
             }
         }
-        
         currentManifest = mergedManifest
         syncVirtualFoldersToDb()
     }
@@ -193,7 +238,6 @@ class DriveRepository @Inject constructor(
             val deletedAt = mergedDeletedIds[id]
             deletedAt != null && (mergedFolders[id]?.createdAt ?: 0L) <= deletedAt
         }
-        
         return base.copy(
             updatedAt = maxOf(base.updatedAt, other.updatedAt),
             virtualFolders = mergedFolders,
@@ -210,17 +254,12 @@ class DriveRepository @Inject constructor(
         scope.launch {
             val targetVirtualParent = if (hideInSafeFolder) SAFE_SPACE_VIRTUAL_ID else "0"
             val updatedMappings = currentManifest.fileMappings.toMutableMap()
-
             itemIds.forEach { id ->
                 driveDao.updateVirtualParent(id, targetVirtualParent)
                 updatedMappings[id.toString()] = targetVirtualParent
             }
-
             synchronized(currentManifest) {
-                currentManifest = currentManifest.copy(
-                    fileMappings = updatedMappings,
-                    updatedAt = System.currentTimeMillis() / 1000
-                )
+                currentManifest = currentManifest.copy(fileMappings = updatedMappings, updatedAt = System.currentTimeMillis() / 1000)
             }
             saveCloudManifest()
         }
@@ -247,6 +286,7 @@ class DriveRepository @Inject constructor(
                 if (backupFolders.isEmpty()) return@launch
 
                 val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+                val deleteEnabled = customPrefs.getBoolean("delete_after_backup", false)
                 val backedUpSet = customPrefs.getStringSet("backed_up_paths_v2", emptySet())?.toMutableSet() ?: mutableSetOf()
 
                 val filesToUpload = mutableListOf<File>()
@@ -267,8 +307,8 @@ class DriveRepository @Inject constructor(
                         val key = "${file.absolutePath}_${file.length()}"
                         backedUpSet.add(key)
                         customPrefs.edit().putStringSet("backed_up_paths_v2", backedUpSet).apply()
-                        uploadFile(file.absolutePath, file.name, forceDeleteSource = true)
-                        delay(150)
+                        uploadFile(file.absolutePath, file.name, forceDeleteSource = deleteEnabled)
+                        delay(120)
                     }
                 }
                 secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
@@ -297,14 +337,10 @@ class DriveRepository @Inject constructor(
 
     fun importManifestFromJson(jsonStr: String): Boolean {
         return try {
-            val imported = json.decodeFromString<TeleDriveManifest>(jsonStr)
-            currentManifest = imported
+            currentManifest = json.decodeFromString<TeleDriveManifest>(jsonStr)
             saveCloudManifest()
             syncVirtualFoldersToDb()
-            scope.launch {
-                driveDao.resetAllFileVirtualParents()
-                fetchFiles()
-            }
+            scope.launch { driveDao.resetAllFileVirtualParents(); fetchFiles() }
             true
         } catch (e: Exception) { false }
     }
@@ -348,10 +384,7 @@ class DriveRepository @Inject constructor(
                             currentManifest = json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex))
                             saveCloudManifest()
                             syncVirtualFoldersToDb()
-                            scope.launch {
-                                driveDao.resetAllFileVirtualParents()
-                                fetchFiles()
-                            }
+                            scope.launch { driveDao.resetAllFileVirtualParents(); fetchFiles() }
                             onResult(true)
                         } catch (e: Exception) { onResult(false) }
                     } else onResult(false)
@@ -362,10 +395,8 @@ class DriveRepository @Inject constructor(
 
     fun createManualCloudBackup() {
         ensureSavedMessagesChat { chatId ->
-            val manifestJson = json.encodeToString(currentManifest)
-            val text = "$MANIFEST_BACKUP_PREFIX${System.currentTimeMillis()}\n\n$manifestJson"
-            val formatted = TdApi.FormattedText(text, emptyArray())
-            telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(formatted, null, true)))
+            val text = "$MANIFEST_BACKUP_PREFIX${System.currentTimeMillis()}\n\n${json.encodeToString(currentManifest)}"
+            telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(TdApi.FormattedText(text, emptyArray()), null, true)))
         }
     }
 
@@ -462,7 +493,7 @@ class DriveRepository @Inject constructor(
                     if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
                     else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, entity.thumbnailPath, entity.localPath, entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
                 }
-        }.debounce(50)
+        }.debounce(40)
     }
 
     fun fetchFiles(chatId: Long? = null) {
@@ -696,6 +727,8 @@ class DriveRepository @Inject constructor(
 
             val vfTag = if (virtualFolderId != null && virtualFolderId != "0") "[VF:$virtualFolderId]" else ""
             val sourceFile = File(filePath)
+            if (!sourceFile.exists()) return@ensureSavedMessagesChat
+
             if (sourceFile.length() > FileUtils.MAX_FILE_SIZE) {
                 if (!FileUtils.hasEnoughSpace(context, sourceFile.length())) return@ensureSavedMessagesChat
                 startTransferService()
@@ -795,9 +828,27 @@ class DriveRepository @Inject constructor(
             fileName = originalFileName,
             isDownload = false,
             totalSize = originalSourceFile.length(),
-            localPath = if (isSecure) null else filePath
+            localPath = filePath
         ) {
-            var finalPath = filePath
+            // অ্যান্ড্রয়েড ১১+ Scoped Storage যাতে C++ ইঞ্জিনকে ব্লক করতে না পারে সেজন্য ক্যাশ স্ট্রিম তৈরি
+            var uploadReadyFile = originalSourceFile
+            var tempCopyFile: File? = null
+            if (!isTempCacheFile) {
+                try {
+                    val copyTarget = File(context.cacheDir, "send_${System.nanoTime()}_$originalFileName")
+                    originalSourceFile.inputStream().use { input ->
+                        FileOutputStream(copyTarget).use { output ->
+                            input.copyTo(output, bufferSize = 256 * 1024)
+                        }
+                    }
+                    if (copyTarget.exists() && copyTarget.length() > 0) {
+                        uploadReadyFile = copyTarget
+                        tempCopyFile = copyTarget
+                    }
+                } catch (e: Exception) {}
+            }
+
+            var finalPath = uploadReadyFile.absolutePath
             var finalCaption = caption ?: originalFileName
             var tempEncFile: File? = null
             var tempThumbFile: File? = null
@@ -806,7 +857,7 @@ class DriveRepository @Inject constructor(
             if (isSecure && password != null) {
                 try {
                     tempEncFile = File(context.cacheDir, "enc_${System.nanoTime()}_$originalFileName")
-                    encryptionManager.encryptFile(originalSourceFile, tempEncFile, password) { progress ->
+                    encryptionManager.encryptFile(uploadReadyFile, tempEncFile, password) { progress ->
                         transferRepository.updateTransferManual(tempId, progress, context.getString(R.string.encrypting_perc, (progress * 100).toInt()), throttled = true)
                     }
                     finalPath = tempEncFile.absolutePath
@@ -817,7 +868,7 @@ class DriveRepository @Inject constructor(
                     return@enqueueTransfer 
                 }
             } else {
-                generateUploadThumbnail(originalSourceFile, originalFileName)?.let { (thumbObj, tFile) ->
+                generateUploadThumbnail(uploadReadyFile, originalFileName)?.let { (thumbObj, tFile) ->
                     inputThumb = thumbObj
                     tempThumbFile = tFile
                 }
@@ -831,28 +882,29 @@ class DriveRepository @Inject constructor(
             ) { result ->
                 if (result is TdApi.Message) {
                     onMessageSent(result.id)
-                    val content = result.content
-                    val file = when (content) {
-                        is TdApi.MessageDocument -> content.document.document
-                        is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo
-                        is TdApi.MessageVideo -> content.video.video
-                        is TdApi.MessageAudio -> content.audio.audio
-                        else -> null
+                    pendingUploadTempIds[result.id] = tempId
+                    if (deleteSourceAfter && !isTempCacheFile) {
+                        pendingAutoDeleteFiles[result.id] = originalSourceFile
                     }
-                    
+
+                    val file = extractTdFileFromMessage(result)
                     if (file != null) {
                         transferRepository.updateRemoteUniqueId(tempId, file.remote.uniqueId, file.id, finalPath)
                         if (file.remote.isUploadingCompleted) {
-                            transferRepository.updateTransferManual(file.remote.uniqueId, 1.0f, TransferRepository.Status.COMPLETED)
+                            transferRepository.completeAndCleanupTransfer(file.remote.uniqueId, tempId, file.id)
+                            if (deleteSourceAfter && !isTempCacheFile) {
+                                pendingAutoDeleteFiles.remove(result.id)
+                                deletePhoneFileCompletely(originalSourceFile)
+                            }
                         }
                         if (!finalCaption.contains("[TD_SPLIT|")) {
                             sendFileMetadata(result.id, originalFileName, virtualFolderId, isSecure)
                         }
                     } else {
-                        transferRepository.updateTransferManual(tempId, 1.0f, TransferRepository.Status.COMPLETED)
+                        transferRepository.completeAndCleanupTransfer(tempId)
                     }
                 } else {
-                    transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
+                    transferRepository.completeAndCleanupTransfer(tempId)
                 }
             }
             
@@ -861,14 +913,13 @@ class DriveRepository @Inject constructor(
             try {
                 tempEncFile?.let { if (it.exists()) it.delete() }
                 tempThumbFile?.let { if (it.exists()) it.delete() }
+                tempCopyFile?.let { if (it.exists()) it.delete() }
                 if (isTempCacheFile) {
                     if (originalSourceFile.exists()) originalSourceFile.delete()
                 } else if (deleteSourceAfter) {
                     deletePhoneFileCompletely(originalSourceFile)
                 }
             } catch (e: Exception) {}
-            
-            fetchFiles(targetChatId)
         }
     }
 
@@ -906,35 +957,42 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    // ০ মিলিসেকেন্ডে সাথে সাথে ডাউনলোড শুরু হবে
     fun downloadFile(messageId: Long, chatId: Long, fileName: String) {
         startTransferService()
-        telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
-            if (result is TdApi.Message) {
-                val fileId = when (val content = result.content) {
-                    is TdApi.MessageDocument -> content.document.document.id
-                    is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo?.id ?: 0
-                    is TdApi.MessageVideo -> content.video.video.id
-                    is TdApi.MessageAudio -> content.audio.audio.id
-                    else -> 0
+        scope.launch {
+            val cachedEntity = driveDao.getItemById(messageId, chatId)
+            if (cachedEntity != null && cachedEntity.telegramFileId != 0) {
+                transferRepository.enqueueTransfer(
+                    fileId = cachedEntity.telegramFileId,
+                    remoteUniqueId = cachedEntity.remoteUniqueId ?: "dl_${cachedEntity.telegramFileId}",
+                    fileName = fileName,
+                    isDownload = true,
+                    totalSize = cachedEntity.size,
+                    localPath = null
+                ) {
+                    telegramClient.send(TdApi.DownloadFile(cachedEntity.telegramFileId, 32, 0, 0, false))
                 }
-                val remoteUniqueId = when (val content = result.content) {
-                    is TdApi.MessageDocument -> content.document.document.remote.uniqueId
-                    is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo?.remote?.uniqueId ?: ""
-                    is TdApi.MessageVideo -> content.video.video.remote.uniqueId
-                    is TdApi.MessageAudio -> content.audio.audio.remote.uniqueId
-                    else -> ""
-                }
-                val expectedSize = when (val content = result.content) {
-                    is TdApi.MessageDocument -> content.document.document.expectedSize
-                    is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo?.expectedSize ?: 0L
-                    is TdApi.MessageVideo -> content.video.video.expectedSize
-                    is TdApi.MessageAudio -> content.audio.audio.expectedSize
-                    else -> 0L
-                }
+            }
 
-                if (fileId != 0) {
-                    transferRepository.enqueueTransfer(fileId, remoteUniqueId, fileName, true, expectedSize, null) {
-                        telegramClient.send(TdApi.DownloadFile(fileId, 32, 0, 0, false))
+            telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
+                if (result is TdApi.Message) {
+                    val file = extractTdFileFromMessage(result)
+                    if (file != null && file.id != 0) {
+                        if (cachedEntity == null || cachedEntity.telegramFileId != file.id) {
+                            transferRepository.enqueueTransfer(
+                                fileId = file.id,
+                                remoteUniqueId = file.remote.uniqueId.ifEmpty { "dl_${file.id}" },
+                                fileName = fileName,
+                                isDownload = true,
+                                totalSize = file.expectedSize.takeIf { it > 0 } ?: file.size,
+                                localPath = null
+                            ) {
+                                telegramClient.send(TdApi.DownloadFile(file.id, 32, 0, 0, false))
+                            }
+                        } else {
+                            telegramClient.send(TdApi.DownloadFile(file.id, 32, 0, 0, false))
+                        }
                     }
                 }
             }
@@ -944,15 +1002,9 @@ class DriveRepository @Inject constructor(
     fun downloadForPreview(messageId: Long, chatId: Long, fileName: String) {
         telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
             if (result is TdApi.Message) {
-                val fileId = when (val content = result.content) {
-                    is TdApi.MessageDocument -> content.document.document.id
-                    is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo?.id ?: 0
-                    is TdApi.MessageVideo -> content.video.video.id
-                    is TdApi.MessageAudio -> content.audio.audio.id
-                    else -> 0
-                }
-                if (fileId != 0) {
-                    telegramClient.send(TdApi.DownloadFile(fileId, 32, 0, 0, false))
+                val file = extractTdFileFromMessage(result)
+                if (file != null && file.id != 0) {
+                    telegramClient.send(TdApi.DownloadFile(file.id, 32, 0, 0, false))
                 }
             }
         }
@@ -1157,8 +1209,8 @@ class DriveRepository @Inject constructor(
 
     private fun cleanEncryptedFileName(fileName: String): String {
         return fileName
-            .replace(Regex("^(enc|up|bkp)_\\d+_"), "")
-            .replace(Regex("^(enc|up|bkp)_"), "")
+            .replace(Regex("^(enc|up|bkp|send)_\\d+_"), "")
+            .replace(Regex("^(enc|up|bkp|send)_"), "")
     }
 
     private data class SplitMetadata(val groupId: String, val partIndex: Int, val totalParts: Int, val originalName: String)
