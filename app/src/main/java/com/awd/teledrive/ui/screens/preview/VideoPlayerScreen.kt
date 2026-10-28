@@ -1,16 +1,28 @@
 package com.awd.teledrive.ui.screens.preview
 
 import android.app.Activity
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
 import android.media.AudioManager
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.annotation.OptIn as AndroidOptIn
@@ -97,7 +109,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -113,7 +124,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -159,13 +170,59 @@ import kotlin.math.sin
 
 private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME }
 
-// ব্যাকগ্রাউন্ডে অডিও প্লে চালু রাখার সিঙ্গেলটন ইঞ্জিন
+// ব্যাকগ্রাউন্ডে অডিও প্লে এবং ইন্টারেক্টিভ সিকবার ও ক্লোজ বাটনসহ নোটিফিকেশন ইঞ্জিন
 @AndroidOptIn(UnstableApi::class)
 object BackgroundAudioEngine {
+    private const val CHANNEL_ID = "mycloud_media_playback"
+    private const val NOTIF_ID = 2026
+    private const val ACTION_PREV = "com.awd.teledrive.MEDIA_PREV"
+    private const val ACTION_PLAY_PAUSE = "com.awd.teledrive.MEDIA_PLAY_PAUSE"
+    private const val ACTION_NEXT = "com.awd.teledrive.MEDIA_NEXT"
+    private const val ACTION_CLOSE = "com.awd.teledrive.MEDIA_CLOSE"
+
     var activePlayer: ExoPlayer? = null
     var activeUrl: String? = null
+    var currentTitle: String = "MyCloud Media"
+    var onSkipPrevCallback: (() -> Unit)? = null
+    var onSkipNextCallback: (() -> Unit)? = null
+
+    private var mediaSession: MediaSession? = null
+    private var receiverRegistered = false
+    private var cachedVinylArt: Bitmap? = null
+
+    private val controlReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                ACTION_PREV -> {
+                    onSkipPrevCallback?.invoke() ?: run {
+                        activePlayer?.let { p -> p.seekTo((p.currentPosition - 10_000L).coerceAtLeast(0L)) }
+                    }
+                    updateNotification(context)
+                }
+                ACTION_PLAY_PAUSE -> {
+                    activePlayer?.let { p ->
+                        if (p.isPlaying) p.pause() else p.play()
+                    }
+                    updateNotification(context)
+                }
+                ACTION_NEXT -> {
+                    onSkipNextCallback?.invoke() ?: run {
+                        activePlayer?.let { p -> p.seekTo(p.currentPosition + 10_000L) }
+                    }
+                    updateNotification(context)
+                }
+                ACTION_CLOSE -> {
+                    stopAndRelease(context)
+                }
+            }
+        }
+    }
 
     fun getOrCreatePlayer(context: Context): ExoPlayer {
+        val appCtx = context.applicationContext
+        registerReceiverIfNeeded(appCtx)
+        ensureMediaSession(appCtx)
+
         val existing = activePlayer
         if (existing != null) return existing
 
@@ -176,19 +233,236 @@ object BackgroundAudioEngine {
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
-        return ExoPlayer.Builder(context.applicationContext)
+        return ExoPlayer.Builder(appCtx)
             .setLoadControl(loadControl)
             .setAudioAttributes(audioAttrs, true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
-            .also { activePlayer = it }
+            .also { player ->
+                activePlayer = player
+                player.addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        if (mediaSession?.isActive == true) {
+                            updateNotification(appCtx)
+                        }
+                    }
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (mediaSession?.isActive == true) {
+                            updateNotification(appCtx)
+                        }
+                    }
+                })
+            }
+    }
+
+    private fun registerReceiverIfNeeded(appCtx: Context) {
+        if (receiverRegistered) return
+        try {
+            val filter = IntentFilter().apply {
+                addAction(ACTION_PREV)
+                addAction(ACTION_PLAY_PAUSE)
+                addAction(ACTION_NEXT)
+                addAction(ACTION_CLOSE)
+            }
+            ContextCompat.registerReceiver(appCtx, controlReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            receiverRegistered = true
+        } catch (e: Exception) {}
+    }
+
+    private fun ensureMediaSession(appCtx: Context) {
+        if (mediaSession != null) return
+        val session = MediaSession(appCtx, "MyCloudMediaSession")
+        session.setCallback(object : MediaSession.Callback() {
+            override fun onPlay() {
+                activePlayer?.play()
+                updateNotification(appCtx)
+            }
+            override fun onPause() {
+                activePlayer?.pause()
+                updateNotification(appCtx)
+            }
+            override fun onSeekTo(pos: Long) {
+                activePlayer?.seekTo(pos)
+                updateNotification(appCtx)
+            }
+            override fun onSkipToPrevious() {
+                onSkipPrevCallback?.invoke() ?: run {
+                    activePlayer?.let { p -> p.seekTo((p.currentPosition - 10_000L).coerceAtLeast(0L)) }
+                }
+                updateNotification(appCtx)
+            }
+            override fun onSkipToNext() {
+                onSkipNextCallback?.invoke() ?: run {
+                    activePlayer?.let { p -> p.seekTo(p.currentPosition + 10_000L) }
+                }
+                updateNotification(appCtx)
+            }
+            override fun onStop() {
+                stopAndRelease(appCtx)
+            }
+            override fun onCustomAction(action: String, extras: Bundle?) {
+                if (action == ACTION_CLOSE) {
+                    stopAndRelease(appCtx)
+                }
+            }
+        })
+        session.isActive = true
+        mediaSession = session
+    }
+
+    private fun getVinylArtBitmap(): Bitmap {
+        cachedVinylArt?.let { return it }
+        val size = 256
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(bmp)
+        val cx = size / 2f
+        val cy = size / 2f
+
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#181A12") }
+        canvas.drawRect(0f, 0f, size.toFloat(), size.toFloat(), bgPaint)
+
+        val discPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#242424") }
+        canvas.drawCircle(cx, cy, size * 0.44f, discPaint)
+
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                cx - 45f, cy - 45f, cx + 45f, cy + 45f,
+                intArrayOf(
+                    android.graphics.Color.parseColor("#64B5F6"),
+                    android.graphics.Color.parseColor("#81C784"),
+                    android.graphics.Color.parseColor("#DCE775")
+                ),
+                null, Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawCircle(cx, cy, size * 0.19f, labelPaint)
+
+        val holePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#121212") }
+        canvas.drawCircle(cx, cy, size * 0.035f, holePaint)
+
+        cachedVinylArt = bmp
+        return bmp
+    }
+
+    fun updateNotification(context: Context) {
+        val appCtx = context.applicationContext
+        val player = activePlayer ?: return
+        ensureMediaSession(appCtx)
+        val session = mediaSession ?: return
+        session.isActive = true
+
+        val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "Media Playback", NotificationManager.IMPORTANCE_LOW).apply {
+                    setShowBadge(false)
+                }
+            )
+        }
+
+        val isPlaying = player.isPlaying
+        val duration = player.duration.takeIf { it > 0 } ?: -1L
+        val pos = player.currentPosition.coerceAtLeast(0L)
+
+        // MediaMetadata সেট করা হচ্ছে যাতে নোটিফিকেশনে সিকবার (Seekbar) আসে
+        val metadata = MediaMetadata.Builder()
+            .putString(MediaMetadata.METADATA_KEY_TITLE, currentTitle)
+            .putString(MediaMetadata.METADATA_KEY_ARTIST, "<unknown>")
+            .putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
+            .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, getVinylArtBitmap())
+            .build()
+        session.setMetadata(metadata)
+
+        val playbackState = PlaybackState.Builder()
+            .setActions(
+                PlaybackState.ACTION_PLAY or
+                PlaybackState.ACTION_PAUSE or
+                PlaybackState.ACTION_PLAY_PAUSE or
+                PlaybackState.ACTION_SEEK_TO or
+                PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackState.ACTION_SKIP_TO_NEXT or
+                PlaybackState.ACTION_STOP
+            )
+            .addCustomAction(ACTION_CLOSE, "Close", android.R.drawable.ic_menu_close_clear_cancel)
+            .setState(
+                if (isPlaying) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+                pos,
+                if (isPlaying) 1.0f else 0f
+            )
+            .build()
+        session.setPlaybackState(playbackState)
+
+        val openAppIntent = PendingIntent.getActivity(
+            appCtx, 0, Intent(appCtx, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val prevPi = PendingIntent.getBroadcast(
+            appCtx, 1, Intent(ACTION_PREV).setPackage(appCtx.packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val playPausePi = PendingIntent.getBroadcast(
+            appCtx, 2, Intent(ACTION_PLAY_PAUSE).setPackage(appCtx.packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val nextPi = PendingIntent.getBroadcast(
+            appCtx, 3, Intent(ACTION_NEXT).setPackage(appCtx.packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val closePi = PendingIntent.getBroadcast(
+            appCtx, 4, Intent(ACTION_CLOSE).setPackage(appCtx.packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(appCtx, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(appCtx)
+        }
+
+        val mediaStyle = Notification.MediaStyle()
+            .setMediaSession(session.sessionToken)
+            .setShowActionsInCompactView(0, 1, 3)
+
+        val notification = builder
+            .setSmallIcon(R.drawable.ic_mycloud_logo)
+            .setLargeIcon(getVinylArtBitmap())
+            .setContentTitle(currentTitle)
+            .setContentText("<unknown>")
+            .setContentIntent(openAppIntent)
+            .setDeleteIntent(closePi)
+            .setOngoing(isPlaying)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .addAction(Notification.Action.Builder(android.R.drawable.ic_media_previous, "Previous", prevPi).build())
+            .addAction(
+                Notification.Action.Builder(
+                    if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                    if (isPlaying) "Pause" else "Play",
+                    playPausePi
+                ).build()
+            )
+            .addAction(Notification.Action.Builder(android.R.drawable.ic_media_next, "Next", nextPi).build())
+            .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Close", closePi).build())
+            .setStyle(mediaStyle)
+            .build()
+
+        nm.notify(NOTIF_ID, notification)
+    }
+
+    fun hideNotification(context: Context) {
+        try {
+            val nm = context.applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(NOTIF_ID)
+            mediaSession?.isActive = false
+        } catch (e: Exception) {}
     }
 
     fun stopAndRelease(context: Context) {
+        hideNotification(context)
         try {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.cancel(2026)
+            mediaSession?.release()
         } catch (e: Exception) {}
+        mediaSession = null
         try {
             activePlayer?.stop()
             activePlayer?.release()
@@ -501,7 +775,10 @@ fun VideoPlayerScreen(
     val messageId = streamParts.getOrNull(1)?.toLongOrNull() ?: 0L
     val telegramFileId = streamParts.getOrNull(2)?.toIntOrNull() ?: 0
     val expectedSize = streamParts.getOrNull(3)?.toLongOrNull() ?: 0L
-    val fileName = if (isStreamUrl) (streamParts.getOrNull(4) ?: "Media") else activeMediaUrl.substringAfterLast('/')
+    val rawName = if (isStreamUrl) (streamParts.getOrNull(4) ?: "Media") else activeMediaUrl.substringAfterLast('/')
+    val fileName = remember(rawName, playlist, messageId, telegramFileId) {
+        playlist.find { it.id == messageId || (telegramFileId != 0 && it.telegramFileId == telegramFileId) }?.name ?: rawName
+    }
 
     val isNativeAudioFile = remember(fileName) {
         val lower = fileName.lowercase()
@@ -534,9 +811,16 @@ fun VideoPlayerScreen(
     var doubleTapSkipSeconds by remember { mutableIntStateOf(0) }
     var isSkipForward by remember { mutableStateOf(true) }
 
-    LaunchedEffect(activeMediaUrl) {
+    LaunchedEffect(activeMediaUrl, fileName) {
+        BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
+        BackgroundAudioEngine.onSkipPrevCallback = {
+            viewModel.getAdjacentMediaUrl(activeMediaUrl, next = false)?.let { activeMediaUrl = it }
+        }
+        BackgroundAudioEngine.onSkipNextCallback = {
+            viewModel.getAdjacentMediaUrl(activeMediaUrl, next = true)?.let { activeMediaUrl = it }
+        }
+
         isStarred = playlist.find { it.id == messageId || it.name == fileName }?.isStarred == true
-        // যদি আগে থেকেই একই অডিও ব্যাকগ্রাউন্ডে বাজতে থাকে তবে রিস্টার্ট করবে না
         if (BackgroundAudioEngine.activeUrl == activeMediaUrl && exoPlayer.isPlaying) {
             duration = exoPlayer.duration.coerceAtLeast(0L)
             currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -569,31 +853,16 @@ fun VideoPlayerScreen(
         }
     }
 
-    LaunchedEffect(isAudioPlayerMode, isPlaying, fileName) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val channelId = "mycloud_bg_audio"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(channelId, "Background Audio", NotificationManager.IMPORTANCE_LOW)
-            )
-        }
-        if (isAudioPlayerMode && isPlaying) {
-            val intent = Intent(context, MainActivity::class.java)
-            val pi = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-            val notif = NotificationCompat.Builder(context, channelId)
-                .setContentTitle(fileName.substringBeforeLast('.'))
-                .setContentText("<unknown> • Playing in background")
-                .setSmallIcon(R.drawable.ic_mycloud_logo)
-                .setOngoing(true)
-                .setContentIntent(pi)
-                .build()
-            nm.notify(2026, notif)
-        } else if (!isAudioPlayerMode) {
-            nm.cancel(2026)
+    // ব্যাকগ্রাউন্ডে অডিও মোড চালু থাকলে প্রতি সেকেন্ডে মিডিয়া নোটিফিকেশনের সিকবার আপডেট হবে
+    LaunchedEffect(isAudioPlayerMode, isPlaying, currentPosition, duration, fileName) {
+        if (isAudioPlayerMode) {
+            BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
+            BackgroundAudioEngine.updateNotification(context)
+        } else {
+            BackgroundAudioEngine.hideNotification(context)
         }
     }
 
-    // ভিডিও থেকে বের হলে সাথে সাথে ব্রাইটনেস রিসেট হবে, কিন্তু অডিও মোডে থাকলে অডিও ব্যাকগ্রাউন্ডে বাজতে থাকবে!
     DisposableEffect(Unit) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -611,7 +880,6 @@ fun VideoPlayerScreen(
             resetWindowBrightness(activity)
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             exoPlayer.removeListener(listener)
-            // শুধুমাত্র ভিডিও মোডে থাকলে প্লেয়ার বন্ধ হবে; অডিও মোডে থাকলে ব্যাকগ্রাউন্ডে চলতে থাকবে!
             if (!isAudioPlayerMode) {
                 BackgroundAudioEngine.stopAndRelease(context)
             }
@@ -620,10 +888,16 @@ fun VideoPlayerScreen(
 
     LaunchedEffect(exoPlayer) {
         while (true) {
-            if (activeGestureMode != GestureMode.SEEK) {
-                currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
+            val active = BackgroundAudioEngine.activePlayer
+            if (active == null) {
+                onBack()
+                break
             }
-            if (exoPlayer.duration > 0) duration = exoPlayer.duration
+            if (activeGestureMode != GestureMode.SEEK) {
+                currentPosition = active.currentPosition.coerceAtLeast(0L)
+            }
+            if (active.duration > 0) duration = active.duration
+            isPlaying = active.isPlaying
             delay(250)
         }
     }
@@ -654,23 +928,18 @@ fun VideoPlayerScreen(
             isStarred = isStarred,
             isVideoSource = !isNativeAudioFile,
             onBack = {
-                // অডিও মোড থেকে ব্যাকে গেলে অডিও ব্যাকগ্রাউন্ডে চলতে থাকবে
                 resetWindowBrightness(activity)
                 onBack()
             },
             onSwitchToVideo = { isAudioPlayerMode = false },
             onPlayPause = {
-                if (exoPlayer.isPlaying) {
-                    exoPlayer.pause()
-                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    nm.cancel(2026)
-                } else {
-                    exoPlayer.play()
-                }
+                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                BackgroundAudioEngine.updateNotification(context)
             },
             onSeek = { target ->
                 currentPosition = target
                 exoPlayer.seekTo(target)
+                BackgroundAudioEngine.updateNotification(context)
             },
             onPrevTrack = {
                 viewModel.getAdjacentMediaUrl(activeMediaUrl, next = false)?.let { activeMediaUrl = it }
@@ -833,7 +1102,6 @@ fun VideoPlayerScreen(
             )
         }
 
-        // বক্স ছাড়া PLAYit স্টাইলে স্মুথ অ্যানিমেশনে ডাবল-ট্যাপ সেকেন্ড ইন্ডিকেটর (» +10s / « -10s)
         AnimatedVisibility(
             visible = doubleTapSkipSeconds != 0,
             enter = fadeIn(tween(150)) + scaleIn(tween(150), initialScale = 0.85f),
@@ -851,9 +1119,7 @@ fun VideoPlayerScreen(
                         imageVector = Icons.Default.KeyboardDoubleArrowLeft,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .offset(x = skipArrowSlide.dp)
+                        modifier = Modifier.size(36.dp).offset(x = skipArrowSlide.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                 }
@@ -876,15 +1142,12 @@ fun VideoPlayerScreen(
                         imageVector = Icons.Default.KeyboardDoubleArrowRight,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .offset(x = skipArrowSlide.dp)
+                        modifier = Modifier.size(36.dp).offset(x = skipArrowSlide.dp)
                     )
                 }
             }
         }
 
-        // আলো ও সাউন্ড বাড়ানো-কমানোর ভার্টিক্যাল বার (PLAYit স্টাইল)
         if (activeGestureMode == GestureMode.BRIGHTNESS || activeGestureMode == GestureMode.VOLUME) {
             Column(
                 modifier = Modifier.align(Alignment.Center),
