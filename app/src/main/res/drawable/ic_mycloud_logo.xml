@@ -5,114 +5,200 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 1. Exact Image 1 Royal Blue to Bright Cyan-Aqua Diagonal Gradient -->
+    <!-- 1. Crisp White to Soft Ice-White Background -->
     <path android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="10"
-                android:startY="98"
-                android:endX="98"
-                android:endY="10"
+                android:startX="54"
+                android:startY="0"
+                android:endX="54"
+                android:endY="108"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FF003B95" />
-                <item android:offset="0.45" android:color="#FF0078D7" />
-                <item android:offset="0.82" android:color="#FF00C4EB" />
-                <item android:offset="1.0" android:color="#FF00F0DF" />
+                <item android:offset="0.0" android:color="#FFFFFFFF" />
+                <item android:offset="1.0" android:color="#FFF2F7FC" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 2. Two Bold White Wireless Signal Arcs at Top-Right -->
+    <!-- 2. Soft 3D Ambient Shadow Under Cloud -->
     <path
-        android:pathData="M71.5,30.2 A13.5,13.5 0 0,1 81.8,41.2"
-        android:strokeWidth="4.8"
-        android:strokeColor="#FFFFFFFF"
-        android:fillColor="#00000000"
-        android:strokeLineCap="round" />
+        android:pathData="M24,78 C38,83 72,82 84,77 C76,84 34,85 24,78 Z"
+        android:fillColor="#220044AA" />
 
+    <!-- 3. Upper-Right Cyan Cloud Lobe -->
     <path
-        android:pathData="M73.5,21.2 A22.5,22.5 0 0,1 90.8,39.8"
-        android:strokeWidth="4.8"
-        android:strokeColor="#FFFFFFFF"
-        android:fillColor="#00000000"
-        android:strokeLineCap="round" />
-
-    <!-- 3. Main Fluffy White Cloud Silhouette -->
-    <path
-        android:pathData="M53.0,73.5 L77.5,73.5 C84.8,73.5 90.5,67.8 90.5,60.5 C90.5,54.1 85.8,48.8 79.6,47.8 C78.5,40.2 71.9,34.5 63.8,34.5 C61.4,34.5 59.1,35.1 57.0,36.0 C53.3,29.5 46.3,25.2 38.2,25.2 C26.5,25.2 17.0,34.5 16.6,46.1 C15.2,48.5 14.5,51.5 14.5,54.8 C14.5,64.5 23.2,72.2 34.5,73.2 Z"
-        android:fillColor="#FFFFFFFF" />
-
-    <!-- 4. Translucent Crescent Swoosh Ribbon Trails at Bottom-Left -->
-    <path
-        android:pathData="M13.5,55.5 C13.0,73.5 26.5,82.5 44.5,71.5 L61.5,54.5 L53.0,73.5 L34.0,77.5 C19.5,78.5 12.5,68.5 13.5,55.5 Z">
+        android:pathData="M54,39 C64,39 73,45 75,55 L50,58 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="13"
-                android:startY="75"
-                android:endX="58"
-                android:endY="52"
+                android:startX="54"
+                android:startY="39"
+                android:endX="75"
+                android:endY="56"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#5599E6FF" />
-                <item android:offset="0.6" android:color="#AA99E6FF" />
+                <item android:offset="0.0" android:color="#FF2CE0FF" />
+                <item android:offset="1.0" android:color="#FF0099F0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 4. Far-Right Glossy Aqua-Turquoise 3D Lobe -->
+    <path
+        android:pathData="M48,75.5 L77.5,75.5 C84.8,75.5 90.5,69.8 90.5,62.5 C90.5,55.2 84.5,49.5 77.0,49.5 C70.5,49.5 65.0,53.8 63.2,59.8 L48,75.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="65"
+                android:startY="49"
+                android:endX="88"
+                android:endY="76"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF48F7E8" />
+                <item android:offset="0.55" android:color="#FF00D2DC" />
+                <item android:offset="1.0" android:color="#FF00A2C2" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glossy Top Highlight on Aqua Lobe -->
+    <path
+        android:pathData="M68,54 C74,50 83,52 87,58 C82,54 74,53 68,54 Z"
+        android:fillColor="#66FFFFFF" />
+
+    <!-- 5. Left Deep Royal Blue 3D Cloud Lobe -->
+    <path
+        android:pathData="M34,43.5 C23.2,43.5 14.5,52.0 14.5,62.5 C14.5,71.5 21.5,78.5 31.0,78.5 L48,62 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="16"
+                android:startY="44"
+                android:endX="36"
+                android:endY="78"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF0095FF" />
+                <item android:offset="0.55" android:color="#FF0055E0" />
+                <item android:offset="1.0" android:color="#FF0033B8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 6. Main Top-Center 3D Blue Sphere -->
+    <path
+        android:pathData="M46.5,27.0 C35.5,27.0 26.8,35.8 26.8,46.8 C26.8,57.8 35.5,66.5 46.5,66.5 C57.5,66.5 66.2,57.8 66.2,46.8 C66.2,35.8 57.5,27.0 46.5,27.0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="36"
+                android:startY="28"
+                android:endX="58"
+                android:endY="64"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF28D8FF" />
+                <item android:offset="0.5" android:color="#FF0080FF" />
+                <item android:offset="1.0" android:color="#FF0040C8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 7. 3D White-to-Ice-Blue Ribbon Wrapping Around Cloud -->
+    <path
+        android:pathData="M14.5,60.5 C14.8,74.8 26.5,81.5 41.5,78.5 C52.5,76.2 63.5,68.5 72.5,58.5 C76.8,53.5 76.5,45.5 71.2,41.5 C66.0,37.8 58.2,39.2 53.0,44.2 C43.5,53.5 34.5,62.5 25.5,65.2 C19.5,67.0 15.2,64.5 14.5,60.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="15"
+                android:startY="76"
+                android:endX="72"
+                android:endY="42"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF0078FF" />
+                <item android:offset="0.25" android:color="#FF88DCFF" />
+                <item android:offset="0.55" android:color="#FFE8F8FF" />
                 <item android:offset="1.0" android:color="#FFFFFFFF" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 5. Left Tapered Swoosh Arrow (1st Main Arrow) -->
+    <!-- 8. Left/Inner Curved Blue Arrow Inside White Ribbon (Arrow 1) -->
     <path
-        android:pathData="M13.5,55.0 C14.5,69.5 25.5,72.5 36.5,61.5 L45.5,52.5 L42.0,49.0 L54.0,45.5 L50.5,57.5 L47.0,54.0 L38.0,63.0 C25.0,75.5 13.0,71.0 13.5,55.0 Z">
+        android:pathData="M16.0,63.0 C20.5,72.5 31.5,72.5 45.5,58.5 L42.5,55.5 L53.5,51.5 L51.0,62.5 L48.0,59.5 C32.5,75.0 19.5,75.5 16.0,63.0 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="14"
-                android:startY="70"
-                android:endX="54"
-                android:endY="45"
+                android:startX="16"
+                android:startY="72"
+                android:endX="53"
+                android:endY="51"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FF0052B5" />
-                <item android:offset="1.0" android:color="#FF008CE6" />
+                <item android:offset="0.0" android:color="#FF0055D4" />
+                <item android:offset="1.0" android:color="#FF00B4FF" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 6. Small Inner Parallel Arrow 1 -->
+    <!-- 9. Right/Outer Large Curved Blue Arrow Inside White Ribbon (Arrow 2) -->
     <path
-        android:pathData="M26.0,72.5 C32.0,71.0 38.0,66.0 45.0,59.0 L43.0,57.0 L49.5,55.0 L47.5,61.5 L45.5,59.5 C38.5,66.5 32.5,71.5 26.0,72.5 Z"
-        android:fillColor="#880078D7" />
-
-    <!-- 7. Center Longest Tapered Swoosh Arrow (2nd Main Arrow) -->
-    <path
-        android:pathData="M21.5,75.0 C29.5,78.0 39.5,72.0 50.5,61.0 L64.5,47.0 L61.0,43.5 L73.5,40.0 L70.0,52.5 L66.5,49.0 L52.5,63.0 C40.5,75.0 29.0,80.0 21.5,75.0 Z">
+        android:pathData="M24.0,78.0 C36.5,80.5 49.5,71.5 60.0,53.5 L55.5,50.5 L67.5,43.0 L69.5,56.5 L65.0,54.0 C53.5,73.5 38.5,82.0 24.0,78.0 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="22"
-                android:startY="77"
-                android:endX="73"
-                android:endY="40"
+                android:startX="24"
+                android:startY="79"
+                android:endX="68"
+                android:endY="43"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FF005AC0" />
-                <item android:offset="1.0" android:color="#FF00A2F0" />
+                <item android:offset="0.0" android:color="#FF0038B8" />
+                <item android:offset="0.5" android:color="#FF0078F0" />
+                <item android:offset="1.0" android:color="#FF00A8FF" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 8. Small Inner Parallel Arrow 2 -->
+    <!-- 10. Three (3) Blue 3D Signal Arcs at Top-Right -->
     <path
-        android:pathData="M36.5,76.0 C42.5,74.5 48.5,69.5 55.5,62.5 L53.5,60.5 L60.0,58.5 L58.0,65.0 L56.0,63.0 C49.0,70.0 43.0,75.0 36.5,76.0 Z"
-        android:fillColor="#880088E6" />
-
-    <!-- 9. Right Bottom Tapered Swoosh Arrow (3rd Main Arrow) -->
-    <path
-        android:pathData="M36.0,76.5 C43.5,77.5 51.5,73.0 60.5,64.0 L65.0,59.5 L61.5,56.0 L73.5,52.5 L70.0,64.5 L66.5,61.0 L62.0,65.5 C52.5,75.0 43.5,79.0 36.0,76.5 Z">
-        <aapt:attr name="android:fillColor">
+        android:pathData="M67.5,35.5 A9.0,9.0 0 0,1 74.8,42.8"
+        android:strokeWidth="4.5"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
             <gradient
-                android:startX="36"
-                android:startY="77"
-                android:endX="73"
-                android:endY="52"
+                android:startX="67"
+                android:startY="35"
+                android:endX="75"
+                android:endY="43"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FF0066CC" />
-                <item android:offset="1.0" android:color="#FF00B4F5" />
+                <item android:offset="0.0" android:color="#FF18B8FF" />
+                <item android:offset="1.0" android:color="#FF0055D4" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path
+        android:pathData="M67.5,28.2 A16.2,16.2 0 0,1 81.8,42.5"
+        android:strokeWidth="4.5"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="67"
+                android:startY="28"
+                android:endX="82"
+                android:endY="43"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF18B8FF" />
+                <item android:offset="1.0" android:color="#FF0055D4" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path
+        android:pathData="M67.5,21.0 A23.5,23.5 0 0,1 88.8,42.2"
+        android:strokeWidth="4.5"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="67"
+                android:startY="21"
+                android:endX="89"
+                android:endY="43"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF18B8FF" />
+                <item android:offset="1.0" android:color="#FF0055D4" />
             </gradient>
         </aapt:attr>
     </path>
