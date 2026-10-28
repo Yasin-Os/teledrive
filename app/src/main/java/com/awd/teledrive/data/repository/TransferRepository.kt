@@ -1,7 +1,9 @@
+// File: app/src/main/java/com/awd/teledrive/data/repository/TransferRepository.kt
 package com.awd.teledrive.data.repository
 
 import android.content.ContentValues
 import android.content.Context
+import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -11,7 +13,6 @@ import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.TransferDao
-import com.awd.teledrive.data.local.TransferEntity
 import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.remote.TelegramClient
 import com.awd.teledrive.data.secure.SecureSettings
@@ -24,6 +25,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import org.drinkless.tdlib.TdApi
 import java.io.File
@@ -53,12 +56,14 @@ class TransferRepository @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // ফাস্ট ইন-মেমোরি ট্র্যাকার (যাতে ডাটাবেসের কারণে কখনোই আপলোড/ডাউনলোড আটকে না থাকে বা ল্যাগ না করে)
+    private val uploadSemaphore = Semaphore(4)
+    private val downloadSemaphore = Semaphore(4)
+
     private val activeMap = ConcurrentHashMap<String, TransferInfo>()
     private val fileIdToKey = ConcurrentHashMap<Int, String>()
     private val pathToKey = ConcurrentHashMap<String, String>()
     private val idMigrationMap = ConcurrentHashMap<String, String>()
-    private val completionDeferreds = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val completionDeferreds = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val pausedIds = ConcurrentHashMap.newKeySet<String>()
     private val lastEmitTime = ConcurrentHashMap<String, Long>()
 
@@ -71,7 +76,7 @@ class TransferRepository @Inject constructor(
 
     init {
         scope.launch {
-            transferDao.clearCompleted()
+            try { transferDao.clearCompleted() } catch (e: Exception) {}
 
             telegramClient.fileUpdates.collect { update ->
                 val file = update.file
@@ -85,6 +90,7 @@ class TransferRepository @Inject constructor(
                     ?: (if (uniqueId.isNotEmpty()) idMigrationMap.entries.find { it.value == uniqueId }?.key else null)
 
                 if (key == null) {
+                    // ব্যাকগ্রাউন্ড বা প্রিভিউ ডাউনলোড শেষ হলে লোকাল ডাটাবেসে অফলাইন পাথ সেভ করে রাখবে
                     if (file.local.isDownloadingCompleted && localPath.isNotEmpty()) {
                         driveDao.updateLocalPath(fileId, localPath)
                         if (uniqueId.isNotEmpty()) {
@@ -102,24 +108,24 @@ class TransferRepository @Inject constructor(
                 val done = if (isDownload) file.local.isDownloadingCompleted else file.remote.isUploadingCompleted
                 val totalSize = if (file.expectedSize > 0L) file.expectedSize else (if (file.size > 0L) file.size else currentInfo.totalSize)
                 val currentSize = if (isDownload) file.local.downloadedSize else file.remote.uploadedSize
-                val progress = if (done) 1.0f else (if (totalSize > 0L) (currentSize.toFloat() / totalSize.toFloat()).coerceIn(0f, 0.99f) else 0.0f)
-                val isEffectivelyCompleted = done || (totalSize > 0L && currentSize >= totalSize)
+                val progress = if (done) 1.0f else (if (totalSize > 0L) (currentSize.toFloat() / totalSize.toFloat()).coerceIn(0.01f, 0.99f) else 0.01f)
+                val isEffectivelyCompleted = done || (totalSize > 0L && currentSize >= totalSize && (!isDownload || localPath.isNotEmpty()))
 
                 if (isEffectivelyCompleted) {
                     if (isDownload && localPath.isNotEmpty()) {
+                        // ডাউনলোড হওয়া ফাইল শুধুমাত্র অ্যাপের ভেতরে অফলাইনে চলার জন্য রেডি থাকবে (ফোন স্টোরেজে অটো সেভ হবে না)
                         driveDao.updateLocalPath(fileId, localPath)
                         if (uniqueId.isNotEmpty()) {
                             driveDao.updateLocalPathByUniqueId(uniqueId, localPath)
                         }
                     }
-                    completeAndCleanupTransfer(key, uniqueId, fileId)
+                    completeAndCleanupTransfer(key, uniqueId, fileId, success = true)
                     return@collect
                 }
 
-                // UI স্মুথ রাখতে প্রতি ১২০ মিলিসেকেন্ডে প্রোগ্রেস আপডেট হবে
                 val now = System.currentTimeMillis()
                 val last = lastEmitTime[key] ?: 0L
-                if (now - last >= 120L) {
+                if (now - last >= 80L) {
                     lastEmitTime[key] = now
                     val activeStatus = if (isDownload) Status.DOWNLOADING else Status.UPLOADING
                     val updatedInfo = currentInfo.copy(
@@ -137,16 +143,22 @@ class TransferRepository @Inject constructor(
         }
     }
 
-    fun completeAndCleanupTransfer(key: String, uniqueId: String = "", fileId: Int = 0) {
+    fun completeAndCleanupTransfer(key: String, uniqueId: String = "", fileId: Int = 0, success: Boolean = true) {
         val info = activeMap.remove(key)
         if (uniqueId.isNotEmpty()) activeMap.remove(uniqueId)
         if (fileId != 0) fileIdToKey.remove(fileId)
         info?.localPath?.let { pathToKey.remove(it) }
         lastEmitTime.remove(key)
 
-        completionDeferreds.remove(key)?.complete(Unit)
-        if (uniqueId.isNotEmpty()) completionDeferreds.remove(uniqueId)?.complete(Unit)
-        if (fileId != 0) completionDeferreds.remove(fileId.toString())?.complete(Unit)
+        completionDeferreds.remove(key)?.complete(success)
+        if (uniqueId.isNotEmpty()) completionDeferreds.remove(uniqueId)?.complete(success)
+        if (fileId != 0) completionDeferreds.remove(fileId.toString())?.complete(success)
+
+        idMigrationMap.entries.filter { it.value == key || (uniqueId.isNotEmpty() && it.value == uniqueId) }.forEach { (oldK, _) ->
+            activeMap.remove(oldK)
+            completionDeferreds.remove(oldK)?.complete(success)
+            idMigrationMap.remove(oldK)
+        }
 
         publishState()
 
@@ -181,18 +193,21 @@ class TransferRepository @Inject constructor(
             localPath = localPath
         )
 
+        completionDeferreds.putIfAbsent(key, CompletableDeferred())
         activeMap[key] = info
         if (fileId != 0) fileIdToKey[fileId] = key
         if (!localPath.isNullOrEmpty()) pathToKey[localPath] = key
         publishState()
 
-        // কোনো কিউ লক ছাড়াই সাথে সাথে রকেট স্পিডে আপলোড বা ডাউনলোড শুরু হবে
+        val semaphore = if (isDownload) downloadSemaphore else uploadSemaphore
         scope.launch {
-            try {
-                block()
-            } catch (e: Exception) {
-                Log.e("TransferRepo", "Transfer error: ${e.message}")
-                completeAndCleanupTransfer(key, remoteUniqueId, fileId)
+            semaphore.withPermit {
+                try {
+                    block()
+                } catch (e: Exception) {
+                    Log.e("TransferRepo", "Transfer error: ${e.message}")
+                    completeAndCleanupTransfer(key, remoteUniqueId, fileId, success = false)
+                }
             }
         }
     }
@@ -213,7 +228,7 @@ class TransferRepository @Inject constructor(
         if (oldId != targetKey) {
             idMigrationMap[oldId] = targetKey
             activeMap.remove(oldId)
-            completionDeferreds.remove(oldId)?.let { completionDeferreds[targetKey] = it }
+            completionDeferreds[oldId]?.let { completionDeferreds[targetKey] = it }
         }
         activeMap[targetKey] = updated
         publishState()
@@ -242,6 +257,7 @@ class TransferRepository @Inject constructor(
             downloadedSize = 0L,
             localPath = localPath
         )
+        completionDeferreds.putIfAbsent(key, CompletableDeferred())
         activeMap[key] = info
         if (fileId != 0) fileIdToKey[fileId] = key
         if (!localPath.isNullOrEmpty()) pathToKey[localPath] = key
@@ -253,14 +269,15 @@ class TransferRepository @Inject constructor(
         val isDone = progress >= 1.0f || status == Status.COMPLETED || status == Status.FAILED || status == Status.CANCELLED
 
         if (isDone) {
-            completeAndCleanupTransfer(targetId, remoteUniqueId)
+            val ok = status != Status.FAILED && status != Status.CANCELLED
+            completeAndCleanupTransfer(targetId, remoteUniqueId, success = ok)
             return
         }
 
         if (throttled) {
             val now = System.currentTimeMillis()
             val last = lastEmitTime[targetId] ?: 0L
-            if (now - last < 200L) return
+            if (now - last < 150L) return
             lastEmitTime[targetId] = now
         }
 
@@ -306,7 +323,7 @@ class TransferRepository @Inject constructor(
             val f = File(path)
             if (f.exists() && path.startsWith(context.cacheDir.absolutePath)) f.delete()
         }
-        completeAndCleanupTransfer(targetId, remoteUniqueId, info?.fileId ?: 0)
+        completeAndCleanupTransfer(targetId, remoteUniqueId, info?.fileId ?: 0, success = false)
     }
 
     fun cancelTransfer(uniqueId: String) {
@@ -317,7 +334,6 @@ class TransferRepository @Inject constructor(
             if (info.fileId != 0) {
                 if (info.isDownload) {
                     telegramClient.send(TdApi.CancelDownloadFile(info.fileId, false))
-                    telegramClient.send(TdApi.DeleteFile(info.fileId))
                 } else {
                     telegramClient.send(TdApi.CancelPreliminaryUploadFile(info.fileId))
                 }
@@ -327,7 +343,7 @@ class TransferRepository @Inject constructor(
                 if (f.exists() && path.startsWith(context.cacheDir.absolutePath)) f.delete()
             }
         }
-        completeAndCleanupTransfer(targetId, uniqueId, info?.fileId ?: 0)
+        completeAndCleanupTransfer(targetId, uniqueId, info?.fileId ?: 0, success = false)
     }
 
     fun clearCompleted() {
@@ -336,30 +352,33 @@ class TransferRepository @Inject constructor(
         }
         publishState()
         scope.launch {
-            try {
-                transferDao.clearCompleted()
-            } catch (e: Exception) {}
+            try { transferDao.clearCompleted() } catch (e: Exception) {}
         }
     }
 
-    suspend fun waitForCompletion(remoteUniqueId: String) {
+    suspend fun waitForCompletion(remoteUniqueId: String): Boolean {
         val finalId = idMigrationMap[remoteUniqueId] ?: remoteUniqueId
-        if (!activeMap.containsKey(finalId) && !activeMap.containsKey(remoteUniqueId)) return
-        val deferred = completionDeferreds.getOrPut(finalId) { CompletableDeferred() }
-        // কখনোই যাতে ইনফিনিট লুপে আটকে না থাকে সেজন্য সেফটি ওয়েট
-        withTimeoutOrNull(30 * 60 * 1000L) {
-            deferred.await()
+        val deferred = completionDeferreds[finalId] ?: completionDeferreds[remoteUniqueId]
+        if (deferred == null && !activeMap.containsKey(finalId) && !activeMap.containsKey(remoteUniqueId)) {
+            return true
         }
+        val activeDeferred = deferred ?: completionDeferreds.getOrPut(finalId) { CompletableDeferred() }
+        val result = withTimeoutOrNull(30 * 60 * 1000L) {
+            activeDeferred.await()
+        } ?: false
         completionDeferreds.remove(finalId)
+        completionDeferreds.remove(remoteUniqueId)
+        return result
     }
 
+    // শুধুমাত্র ইউজার যখন নিজে "Save to Phone Storage" বাটনে চাপ দেবে তখনই এই ফাংশনটি কল হবে
     fun saveToPublicDownloads(internalPath: String, fileName: String) {
         scope.launch(Dispatchers.IO) {
             try {
                 val sourceFile = File(internalPath)
                 if (!sourceFile.exists()) {
                     launch(Dispatchers.Main) {
-                        Toast.makeText(context, "File not downloaded yet", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "আগে ফাইলটি অফলাইনে ডাউনলোড হতে দিন", Toast.LENGTH_SHORT).show()
                     }
                     return@launch
                 }
@@ -368,7 +387,7 @@ class TransferRepository @Inject constructor(
                 if (!userDownloadUri.isNullOrEmpty()) {
                     saveToUserSelectedFolder(sourceFile, fileName, userDownloadUri)
                     launch(Dispatchers.Main) {
-                        Toast.makeText(context, "Saved to Phone: $fileName", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "ফোন স্টোরেজে সেভ হয়েছে: $fileName", Toast.LENGTH_SHORT).show()
                     }
                     return@launch
                 }
@@ -380,29 +399,30 @@ class TransferRepository @Inject constructor(
                     val contentValues = ContentValues().apply {
                         put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                         put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/MyCloud")
                     }
                     val resolver = context.contentResolver
                     val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                     if (uri != null) {
                         resolver.openOutputStream(uri)?.use { output ->
                             FileInputStream(sourceFile).use { input ->
-                                input.copyTo(output, bufferSize = 128 * 1024)
+                                input.copyTo(output, bufferSize = 256 * 1024)
                             }
                         }
                     }
                 } else {
-                    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "MyCloud")
                     if (!downloadsDir.exists()) downloadsDir.mkdirs()
                     val destFile = File(downloadsDir, fileName)
                     FileOutputStream(destFile).use { output ->
                         FileInputStream(sourceFile).use { input ->
-                            input.copyTo(output, bufferSize = 128 * 1024)
+                            input.copyTo(output, bufferSize = 256 * 1024)
                         }
                     }
+                    MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
                 }
                 launch(Dispatchers.Main) {
-                    Toast.makeText(context, "Saved to Phone Downloads: $fileName", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Saved to Phone (Downloads/MyCloud): $fileName", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 Log.e("TransferRepo", "Error saving file: ${e.message}")
@@ -424,7 +444,7 @@ class TransferRepository @Inject constructor(
             if (newFile != null) {
                 context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
                     FileInputStream(sourceFile).use { input ->
-                        input.copyTo(output, bufferSize = 128 * 1024)
+                        input.copyTo(output, bufferSize = 256 * 1024)
                     }
                 }
             }
