@@ -8,15 +8,6 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -126,7 +117,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -136,7 +126,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -252,7 +241,6 @@ fun HomeScreen(
         onPauseTransfer = viewModel::pauseTransfer,
         onResumeTransfer = viewModel::resumeTransfer,
         onCancelTransfer = viewModel::cancelTransfer,
-        onRemoveTransfer = viewModel::removeTransfer,
         onClearCompletedTransfers = viewModel::clearCompletedTransfers,
         onSaveAsPhone = viewModel::saveAsPhone,
         onGetInviteLink = viewModel::getFolderInviteLink,
@@ -306,7 +294,6 @@ fun HomeContent(
     onPauseTransfer: (String) -> Unit = {},
     onResumeTransfer: (String) -> Unit = {},
     onCancelTransfer: (String) -> Unit = {},
-    onRemoveTransfer: (String) -> Unit = {},
     onClearCompletedTransfers: () -> Unit = {},
     onSaveAsPhone: (String, String) -> Unit = { _, _ -> },
     onGetInviteLink: (Long, (String?) -> Unit) -> Unit,
@@ -323,26 +310,11 @@ fun HomeContent(
     val uploadTransfers = remember(transfers) { transfers.values.filter { !it.isDownload } }
     val downloadTransfers = remember(transfers) { transfers.values.filter { it.isDownload } }
 
-    val activeUploads = remember(uploadTransfers) {
-        uploadTransfers.filter {
-            it.status != TransferRepository.Status.COMPLETED &&
-            it.status != TransferRepository.Status.CANCELLED &&
-            !it.status.startsWith(TransferRepository.Status.FAILED)
-        }
+    val uploadProgress = remember(uploadTransfers) {
+        if (uploadTransfers.isEmpty()) null else (uploadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
     }
-    val activeDownloads = remember(downloadTransfers) {
-        downloadTransfers.filter {
-            it.status != TransferRepository.Status.COMPLETED &&
-            it.status != TransferRepository.Status.CANCELLED &&
-            !it.status.startsWith(TransferRepository.Status.FAILED)
-        }
-    }
-
-    val uploadProgress = remember(activeUploads) {
-        if (activeUploads.isEmpty()) null else (activeUploads.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
-    }
-    val downloadProgress = remember(activeDownloads) {
-        if (activeDownloads.isEmpty()) null else (activeDownloads.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
+    val downloadProgress = remember(downloadTransfers) {
+        if (downloadTransfers.isEmpty()) null else (downloadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
     }
 
     val isOffline = connectivityStatus == ConnectivityObserver.Status.Unavailable || connectivityStatus == ConnectivityObserver.Status.Lost
@@ -357,11 +329,11 @@ fun HomeContent(
         if (isMediaStreamOrImage(file)) {
             onNavigateToPreview(file)
         } else {
-            val localFile = file.localPath?.let { File(it) }
-            if (localFile != null && localFile.exists()) {
+            val path = file.localPath
+            if (!path.isNullOrEmpty()) {
                 val isPdfOrTxt = file.mimeType == "application/pdf" || file.mimeType.startsWith("text/") || file.name.endsWith(".txt", true)
                 if (isPdfOrTxt) onNavigateToPreview(file)
-                else FileSharingHelper.openFileExternally(context, localFile.absolutePath, file.mimeType)
+                else FileSharingHelper.openFileExternally(context, path, file.mimeType)
             } else {
                 onDownloadFile(file.id, file.parentChatId, file.name)
                 Toast.makeText(context, "Downloading ${file.name}...", Toast.LENGTH_SHORT).show()
@@ -433,23 +405,17 @@ fun HomeContent(
                         if (c.moveToFirst() && nameIndex >= 0) c.getString(nameIndex) else null
                     } ?: "File_${System.currentTimeMillis()}"
 
-                    val directPhoneFile = resolveDirectFileFromUri(uri)
-                    val uploadTargetFile = if (directPhoneFile != null && directPhoneFile.exists() && directPhoneFile.canRead()) {
-                        directPhoneFile
-                    } else {
-                        val tempFile = File(context.cacheDir, fileName)
-                        context.contentResolver.openInputStream(uri)?.use { input ->
-                            FileOutputStream(tempFile).use { output -> input.copyTo(output, bufferSize = 128 * 1024) }
-                        }
-                        if (shouldDeleteOriginal) deleteOriginalUriFromPhone(context, uri)
-                        tempFile
+                    val tempFile = File(context.cacheDir, "up_${System.nanoTime()}_$fileName")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(tempFile).use { output -> input.copyTo(output, bufferSize = 256 * 1024) }
                     }
+                    if (shouldDeleteOriginal) deleteOriginalUriFromPhone(context, uri)
 
                     withContext(Dispatchers.Main) {
-                        if (uploadTargetFile.length() > 2000 * 1024 * 1024L) {
-                            largeFileToUpload = uploadTargetFile to fileName
+                        if (tempFile.length() > 2000 * 1024 * 1024L) {
+                            largeFileToUpload = tempFile to fileName
                         } else {
-                            onUploadFile(uploadTargetFile.absolutePath, fileName)
+                            onUploadFile(tempFile.absolutePath, fileName)
                         }
                     }
                 }
@@ -624,144 +590,138 @@ fun HomeContent(
 
     Scaffold(
         topBar = {
-            AnimatedContent(
-                targetState = if (isSelectionMode) "selection" else if ((currentFolderId != null || currentVirtualFolderId != "0" || isCategoryActive) && !isSearchActive) "folder" else "main",
-                transitionSpec = { (fadeIn() + slideInVertically { -it / 2 }).togetherWith(fadeOut() + slideOutVertically { -it / 2 }) },
-                label = "TopBarTransition"
-            ) { state ->
-                when (state) {
-                    "selection" -> {
+            when {
+                isSelectionMode -> {
+                    TopAppBar(
+                        title = { Text(stringResource(R.string.selected_count, selectedItems.size)) },
+                        modifier = Modifier.statusBarsPadding(),
+                        navigationIcon = {
+                            IconButton(onClick = { selectedItems = emptySet() }) {
+                                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cancel))
+                            }
+                        },
+                        actions = {
+                            IconButton(onClick = {
+                                val files = items.filterIsInstance<DriveItem.File>()
+                                selectedItems = if (selectedItems.size >= files.size && files.isNotEmpty()) emptySet() else files.map { it.id }.toSet()
+                            }) {
+                                val files = items.filterIsInstance<DriveItem.File>()
+                                Icon(
+                                    if (selectedItems.size >= files.size && files.isNotEmpty()) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                    contentDescription = stringResource(R.string.select_all)
+                                )
+                            }
+                            IconButton(onClick = {
+                                val selectedFiles = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>()
+                                val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
+                                selectedFiles.forEach { onDownloadFile(it.id, it.parentChatId, it.name) }
+                                selectedFolders.forEach { onDownloadFolderContents(it) }
+                                selectedItems = emptySet()
+                            }) {
+                                Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
+                            }
+                            IconButton(onClick = { showDeleteConfirm = items.filter { it.id in selectedItems } }) {
+                                Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete))
+                            }
+                        }
+                    )
+                }
+                (currentFolderId != null || currentVirtualFolderId != "0" || isCategoryActive) && !isSearchActive -> {
+                    Column {
                         TopAppBar(
-                            title = { Text(stringResource(R.string.selected_count, selectedItems.size)) },
-                            modifier = Modifier.statusBarsPadding(),
+                            title = {
+                                Text(
+                                    text = activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                                )
+                            },
                             navigationIcon = {
-                                IconButton(onClick = { selectedItems = emptySet() }) {
-                                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cancel))
+                                IconButton(onClick = onNavigateBack) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                                 }
                             },
                             actions = {
-                                IconButton(onClick = {
-                                    val files = items.filterIsInstance<DriveItem.File>()
-                                    selectedItems = if (selectedItems.size >= files.size && files.isNotEmpty()) emptySet() else files.map { it.id }.toSet()
-                                }) {
-                                    val files = items.filterIsInstance<DriveItem.File>()
-                                    Icon(
-                                        if (selectedItems.size >= files.size && files.isNotEmpty()) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                                        contentDescription = stringResource(R.string.select_all)
-                                    )
+                                IconButton(onClick = { isSearchActive = true }) {
+                                    Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search_teledrive))
                                 }
-                                IconButton(onClick = {
-                                    val selectedFiles = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>()
-                                    val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
-                                    selectedFiles.forEach { onDownloadFile(it.id, it.parentChatId, it.name) }
-                                    selectedFolders.forEach { onDownloadFolderContents(it) }
-                                    selectedItems = emptySet()
-                                }) {
-                                    Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
+                                IconButton(onClick = onToggleViewMode) {
+                                    Icon(if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView, contentDescription = null)
                                 }
-                                IconButton(onClick = { showDeleteConfirm = items.filter { it.id in selectedItems } }) {
-                                    Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete))
-                                }
-                            }
+                            },
+                            modifier = Modifier.statusBarsPadding()
                         )
-                    }
-                    "folder" -> {
-                        Column {
-                            TopAppBar(
-                                title = {
-                                    Text(
-                                        text = activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                },
-                                navigationIcon = {
-                                    IconButton(onClick = { onNavigateBack() }) {
-                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                                    }
-                                },
-                                actions = {
-                                    IconButton(onClick = { isSearchActive = true }) {
-                                        Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search_teledrive))
-                                    }
-                                    IconButton(onClick = { onToggleViewMode() }) {
-                                        Icon(if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView, contentDescription = null)
-                                    }
-                                },
-                                modifier = Modifier.statusBarsPadding()
+                        if (isCategoryActive && customCategory != CustomCategory.ALL_STORAGE && currentVirtualFolderId == "0") {
+                            CategoryFolderTabsRow(
+                                virtualFolders = virtualFolders, selectedFolderId = selectedCategoryFolderId,
+                                sortOrder = sortOrder, onSelectFolder = onSetSelectedCategoryFolder,
+                                onSetSortOrder = onSetSortOrder, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                             )
-                            if (isCategoryActive && customCategory != CustomCategory.ALL_STORAGE && currentVirtualFolderId == "0") {
-                                CategoryFolderTabsRow(
-                                    virtualFolders = virtualFolders, selectedFolderId = selectedCategoryFolderId,
-                                    sortOrder = sortOrder, onSelectFolder = onSetSelectedCategoryFolder,
-                                    onSetSortOrder = onSetSortOrder, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                                )
-                            }
                         }
                     }
-                    "main" -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)
-                        ) {
-                            if (!isSearchActive) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    SplitTransferBarItem(
-                                        icon = Icons.Default.ArrowUpward, percentage = downloadProgress,
-                                        hasActiveOrHistory = downloadTransfers.isNotEmpty(), onClick = { showDownloadPopup = true }
-                                    )
+                }
+                else -> {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        if (!isSearchActive) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SplitTransferBarItem(
+                                    icon = Icons.Default.ArrowUpward, percentage = downloadProgress,
+                                    hasActiveOrHistory = downloadTransfers.isNotEmpty(), onClick = { showDownloadPopup = true }
+                                )
 
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                                        shape = RoundedCornerShape(26.dp),
-                                        border = BorderStroke(
-                                            1.dp,
-                                            Brush.linearGradient(
-                                                colors = listOf(
-                                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                                                )
-                                            )
-                                        ),
-                                        modifier = Modifier.weight(1f).height(52.dp).clickable { isSearchActive = true }
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
-                                            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Text("Search", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                                        }
-                                    }
-
-                                    SplitTransferBarItem(
-                                        icon = Icons.Default.ArrowDownward, percentage = uploadProgress,
-                                        hasActiveOrHistory = uploadTransfers.isNotEmpty(), onClick = { showUploadPopup = true }
-                                    )
-                                }
-                            } else {
                                 Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                                     shape = RoundedCornerShape(26.dp),
-                                    modifier = Modifier.fillMaxWidth().height(52.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
-                                        IconButton(onClick = { isSearchActive = false; onSearchQueryChange("") }) {
-                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                                        }
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                                            BasicTextField(
-                                                value = searchQuery, onValueChange = onSearchQueryChange,
-                                                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                                                modifier = Modifier.fillMaxWidth()
+                                    border = BorderStroke(
+                                        1.dp,
+                                        Brush.linearGradient(
+                                            colors = listOf(
+                                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
                                             )
-                                            if (searchQuery.isEmpty()) Text("Search", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                        if (searchQuery.isNotEmpty()) {
-                                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                                Icon(Icons.Default.Close, contentDescription = null)
-                                            }
+                                        )
+                                    ),
+                                    modifier = Modifier.weight(1f).height(52.dp).clickable { isSearchActive = true }
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
+                                        Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text("Search", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                                    }
+                                }
+
+                                SplitTransferBarItem(
+                                    icon = Icons.Default.ArrowDownward, percentage = uploadProgress,
+                                    hasActiveOrHistory = uploadTransfers.isNotEmpty(), onClick = { showUploadPopup = true }
+                                )
+                            }
+                        } else {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(26.dp),
+                                modifier = Modifier.fillMaxWidth().height(52.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+                                    IconButton(onClick = { isSearchActive = false; onSearchQueryChange("") }) {
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                        BasicTextField(
+                                            value = searchQuery, onValueChange = onSearchQueryChange,
+                                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                        if (searchQuery.isEmpty()) Text("Search", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { onSearchQueryChange("") }) {
+                                            Icon(Icons.Default.Close, contentDescription = null)
                                         }
                                     }
                                 }
@@ -789,146 +749,140 @@ fun HomeContent(
             modifier = Modifier.padding(padding).fillMaxSize()
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                if (isInitialLoading) {
+                if (isRefreshing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+
+                if (isOffline) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.CloudOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.offline_msg), style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+
+                val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && !isCategoryActive
+
+                if (showDashboard) {
+                    LazyColumn(
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        item(key = "dashboard_main") {
+                            GoogleFilesDashboardSection(
+                                totalStorageUsed = totalStorageUsed,
+                                allFiles = allCloudFiles,
+                                recentFiles = recentFiles,
+                                transfers = transfers,
+                                onSelectFilter = onSetFilterType,
+                                onSelectCustom = onSetCustomCategory,
+                                onOpenFile = handleFileItemClick,
+                                onShareFile = { shareItem = it },
+                                onDownloadFile = { onDownloadFile(it.id, it.parentChatId, it.name) },
+                                onSaveAsPhone = onSaveAsPhone,
+                                onStarFile = onToggleStarred,
+                                onRemoveRecent = onRemoveFromRecents,
+                                onNavigateToStarred = onNavigateToStarred,
+                                onNavigateToSafeFolder = onNavigateToSafeFolder,
+                                onNavigateToCloudAnalysis = onNavigateToCloudAnalysis
+                            )
+                            Spacer(modifier = Modifier.height(80.dp))
+                        }
+                    }
+                } else if (items.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = if (searchQuery.isEmpty()) Icons.Default.CloudQueue else Icons.Default.SearchOff,
+                                contentDescription = null, modifier = Modifier.size(80.dp),
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = if (searchQuery.isEmpty()) stringResource(R.string.drive_empty) else stringResource(R.string.no_results),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 } else {
-                    if (isRefreshing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-
-                    if (isOffline) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(8.dp).fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Icon(Icons.Default.CloudOff, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(stringResource(R.string.offline_msg), style = MaterialTheme.typography.labelMedium)
-                            }
-                        }
-                    }
-
-                    val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && !isCategoryActive
-
-                    if (showDashboard) {
-                        LazyColumn(
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    if (isGridView) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            contentPadding = PaddingValues(16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxSize()
                         ) {
-                            item {
-                                GoogleFilesDashboardSection(
-                                    totalStorageUsed = totalStorageUsed,
-                                    allFiles = allCloudFiles.ifEmpty { items.filterIsInstance<DriveItem.File>() },
-                                    recentFiles = recentFiles,
-                                    transfers = transfers,
-                                    onSelectFilter = onSetFilterType,
-                                    onSelectCustom = onSetCustomCategory,
-                                    onOpenFile = handleFileItemClick,
-                                    onShareFile = { shareItem = it },
-                                    onDownloadFile = { onDownloadFile(it.id, it.parentChatId, it.name) },
-                                    onSaveAsPhone = onSaveAsPhone,
-                                    onStarFile = onToggleStarred,
-                                    onRemoveRecent = onRemoveFromRecents,
-                                    onNavigateToStarred = onNavigateToStarred,
-                                    onNavigateToSafeFolder = onNavigateToSafeFolder,
-                                    onNavigateToCloudAnalysis = onNavigateToCloudAnalysis
-                                )
-                                Spacer(modifier = Modifier.height(80.dp))
-                            }
-                        }
-                    } else if (items.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = if (searchQuery.isEmpty()) Icons.Default.CloudQueue else Icons.Default.SearchOff,
-                                    contentDescription = null, modifier = Modifier.size(80.dp),
-                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = if (searchQuery.isEmpty()) stringResource(R.string.drive_empty) else stringResource(R.string.no_results),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            items(items, key = { it.id }) { item ->
+                                val isSelected = selectedItems.contains(item.id)
+                                val itemTransfer = if (item is DriveItem.File) {
+                                    transfers[item.remoteUniqueId] ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
+                                } else null
+
+                                DriveGridItem(
+                                    item = item, isSelected = isSelected, activeTransfer = itemTransfer,
+                                    onClick = {
+                                        if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
+                                        else if (item is DriveItem.File) handleFileItemClick(item)
+                                        else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
+                                    },
+                                    onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
+                                    onStarClick = { onToggleStarred(item) },
+                                    onShareClick = { shareItem = item },
+                                    onDownloadClick = {
+                                        if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
+                                        else if (item is DriveItem.Folder) folderToDownload = item
+                                    },
+                                    onSaveAsPhoneClick = {
+                                        if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
+                                    },
+                                    onMoveClick = null,
+                                    onRenameClick = { itemToRename = item; renameValue = item.name },
+                                    onDeleteClick = { showDeleteConfirm = listOf(item) }
                                 )
                             }
                         }
                     } else {
-                        if (isGridView) {
-                            LazyVerticalGrid(
-                                columns = GridCells.Fixed(2),
-                                contentPadding = PaddingValues(16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(16.dp),
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                items(items, key = { it.id }) { item ->
-                                    val isSelected = selectedItems.contains(item.id)
-                                    val itemTransfer = if (item is DriveItem.File) {
-                                        transfers[item.remoteUniqueId] ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
-                                    } else null
+                        LazyColumn(
+                            contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(items, key = { it.id }) { item ->
+                                val isSelected = selectedItems.contains(item.id)
+                                val itemTransfer = if (item is DriveItem.File) {
+                                    transfers[item.remoteUniqueId] ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
+                                } else null
 
-                                    DriveGridItem(
-                                        item = item, isSelected = isSelected, activeTransfer = itemTransfer,
-                                        onClick = {
-                                            if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                            else if (item is DriveItem.File) handleFileItemClick(item)
-                                            else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                        },
-                                        onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
-                                        onStarClick = { onToggleStarred(item) },
-                                        onShareClick = { shareItem = item },
-                                        onDownloadClick = {
-                                            if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
-                                            else if (item is DriveItem.Folder) folderToDownload = item
-                                        },
-                                        onSaveAsPhoneClick = {
-                                            if (item is DriveItem.File && item.localPath != null) onSaveAsPhone(item.localPath, item.name)
-                                        },
-                                        onMoveClick = null,
-                                        onRenameClick = { itemToRename = item; renameValue = item.name },
-                                        onDeleteClick = { showDeleteConfirm = listOf(item) }
-                                    )
-                                }
-                            }
-                        } else {
-                            LazyColumn(
-                                contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                items(items, key = { it.id }) { item ->
-                                    val isSelected = selectedItems.contains(item.id)
-                                    val itemTransfer = if (item is DriveItem.File) {
-                                        transfers[item.remoteUniqueId] ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
-                                    } else null
-
-                                    DriveListItem(
-                                        item = item, isSelected = isSelected, activeTransfer = itemTransfer,
-                                        onClick = {
-                                            if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                            else if (item is DriveItem.File) handleFileItemClick(item)
-                                            else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                        },
-                                        onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
-                                        onStarClick = { onToggleStarred(item) },
-                                        onShareClick = { shareItem = item },
-                                        onDownloadClick = {
-                                            if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
-                                            else if (item is DriveItem.Folder) folderToDownload = item
-                                        },
-                                        onSaveAsPhoneClick = {
-                                            if (item is DriveItem.File && item.localPath != null) onSaveAsPhone(item.localPath, item.name)
-                                        },
-                                        onMoveClick = null,
-                                        onRenameClick = { itemToRename = item; renameValue = item.name },
-                                        onDeleteClick = { showDeleteConfirm = listOf(item) }
-                                    )
-                                }
+                                DriveListItem(
+                                    item = item, isSelected = isSelected, activeTransfer = itemTransfer,
+                                    onClick = {
+                                        if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
+                                        else if (item is DriveItem.File) handleFileItemClick(item)
+                                        else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
+                                    },
+                                    onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
+                                    onStarClick = { onToggleStarred(item) },
+                                    onShareClick = { shareItem = item },
+                                    onDownloadClick = {
+                                        if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
+                                        else if (item is DriveItem.Folder) folderToDownload = item
+                                    },
+                                    onSaveAsPhoneClick = {
+                                        if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
+                                    },
+                                    onMoveClick = null,
+                                    onRenameClick = { itemToRename = item; renameValue = item.name },
+                                    onDeleteClick = { showDeleteConfirm = listOf(item) }
+                                )
                             }
                         }
                     }
@@ -1191,26 +1145,30 @@ fun GoogleFilesDashboardSection(
     onNavigateToSafeFolder: () -> Unit,
     onNavigateToCloudAnalysis: () -> Unit
 ) {
-    var appear by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { appear = true }
+    // মেমোরি ক্যাশড সাইজ ক্যালকুলেশন (মেইন থ্রেডে কোনো File.exists() কল হবে না)
+    val sizes = remember(allFiles) {
+        var vid = 0L
+        var img = 0L
+        var aud = 0L
+        var app = 0L
+        var dl = 0L
+        var total = 0L
 
-    val sectionScale by animateFloatAsState(
-        targetValue = if (appear) 1f else 0.94f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
-        label = "DashboardScale"
-    )
+        for (f in allFiles) {
+            total += f.size
+            if (!f.localPath.isNullOrEmpty()) dl += f.size
+            when {
+                f.mimeType.startsWith("video/") -> vid += f.size
+                f.mimeType.startsWith("image/") -> img += f.size
+                f.mimeType.startsWith("audio/") -> aud += f.size
+                f.mimeType.contains("android.package-archive") || f.name.endsWith(".apk", true) -> app += f.size
+            }
+        }
+        val doc = (total - (vid + img + aud + app)).coerceAtLeast(0L)
+        longArrayOf(dl, img, vid, aud, doc, app)
+    }
 
-    val videoSize = allFiles.filter { it.mimeType.startsWith("video/") }.sumOf { it.size }
-    val imageSize = allFiles.filter { it.mimeType.startsWith("image/") }.sumOf { it.size }
-    val audioSize = allFiles.filter { it.mimeType.startsWith("audio/") }.sumOf { it.size }
-    val appSize = allFiles.filter { it.mimeType.contains("android.package-archive") || it.name.lowercase().endsWith(".apk") }.sumOf { it.size }
-    // Downloads বক্সে ডাউনলোড হওয়া সকল ফাইলের মোট সাইজ দেখাবে
-    val downloadedSize = allFiles.filter { it.localPath != null && File(it.localPath).exists() }.sumOf { it.size }
-    // ভিডিও, অডিও, ফটো এবং অ্যাপস ছাড়া বাকি সব (জিপ/রার সহ) Documents বক্সে দেখাবে
-    val docSize = (allFiles.sumOf { it.size } - (videoSize + imageSize + audioSize + appSize)).coerceAtLeast(0L)
-
-    Column(modifier = Modifier.fillMaxWidth().scale(sectionScale)) {
-        // 1. Recents (শুধু ভিডিও ও ফটো)
+    Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1258,7 +1216,7 @@ fun GoogleFilesDashboardSection(
                         onClick = { onOpenFile(file) },
                         onShareClick = { onShareFile(file) },
                         onDownloadClick = { onDownloadFile(file) },
-                        onSaveAsPhoneClick = { if (file.localPath != null) onSaveAsPhone(file.localPath, file.name) },
+                        onSaveAsPhoneClick = { if (!file.localPath.isNullOrEmpty()) onSaveAsPhone(file.localPath, file.name) },
                         onStarClick = { onStarFile(file) },
                         onRemoveRecentClick = { onRemoveRecent(file.id) }
                     )
@@ -1268,7 +1226,6 @@ fun GoogleFilesDashboardSection(
 
         Spacer(modifier = Modifier.height(26.dp))
 
-        // 2. Categories Section (প্রথম বক্সটি Downloads এবং জিপসহ বাকি সব Documents বক্সে)
         Text(
             text = "Categories",
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.3.sp),
@@ -1280,7 +1237,7 @@ fun GoogleFilesDashboardSection(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 GoogleFilesCategoryCard(
                     title = "Downloads",
-                    subtitle = formatSize(downloadedSize),
+                    subtitle = formatSize(sizes[0]),
                     icon = Icons.Default.Download,
                     accentColor = Color(0xFFA855F7),
                     modifier = Modifier.weight(1f),
@@ -1288,7 +1245,7 @@ fun GoogleFilesDashboardSection(
                 )
                 GoogleFilesCategoryCard(
                     title = "Images",
-                    subtitle = formatSize(imageSize),
+                    subtitle = formatSize(sizes[1]),
                     icon = Icons.Outlined.Image,
                     accentColor = Color(0xFF10B981),
                     modifier = Modifier.weight(1f),
@@ -1298,7 +1255,7 @@ fun GoogleFilesDashboardSection(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 GoogleFilesCategoryCard(
                     title = "Videos",
-                    subtitle = formatSize(videoSize),
+                    subtitle = formatSize(sizes[2]),
                     icon = Icons.Outlined.Movie,
                     accentColor = Color(0xFFF43F5E),
                     modifier = Modifier.weight(1f),
@@ -1306,7 +1263,7 @@ fun GoogleFilesDashboardSection(
                 )
                 GoogleFilesCategoryCard(
                     title = "Audio",
-                    subtitle = formatSize(audioSize),
+                    subtitle = formatSize(sizes[3]),
                     icon = Icons.Default.MusicNote,
                     accentColor = Color(0xFFF59E0B),
                     modifier = Modifier.weight(1f),
@@ -1316,7 +1273,7 @@ fun GoogleFilesDashboardSection(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 GoogleFilesCategoryCard(
                     title = "Documents",
-                    subtitle = formatSize(docSize),
+                    subtitle = formatSize(sizes[4]),
                     icon = Icons.Default.Description,
                     accentColor = Color(0xFF0EA5E9),
                     modifier = Modifier.weight(1f),
@@ -1324,7 +1281,7 @@ fun GoogleFilesDashboardSection(
                 )
                 GoogleFilesCategoryCard(
                     title = "Apps",
-                    subtitle = formatSize(appSize),
+                    subtitle = formatSize(sizes[5]),
                     icon = Icons.Default.Apps,
                     accentColor = Color(0xFF22C55E),
                     modifier = Modifier.weight(1f),
@@ -1335,7 +1292,6 @@ fun GoogleFilesDashboardSection(
 
         Spacer(modifier = Modifier.height(26.dp))
 
-        // 3. Collections Section
         Text(
             text = "Collections",
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.3.sp),
@@ -1358,7 +1314,6 @@ fun GoogleFilesDashboardSection(
 
         Spacer(modifier = Modifier.height(26.dp))
 
-        // 4. All storage Section
         Text(
             text = "All storage",
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.3.sp),
@@ -1400,8 +1355,8 @@ fun RecentOpenedFileCard(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val (icon, accent) = getFileIconAndColor(file)
-    val thumbnailModel = file.thumbnailPath?.takeIf { File(it).exists() } ?: file.localPath?.takeIf { File(it).exists() }
-    val isDownloaded = file.localPath != null && File(file.localPath).exists()
+    val thumbnailModel = file.thumbnailPath?.takeIf { it.isNotEmpty() } ?: file.localPath?.takeIf { it.isNotEmpty() }
+    val isDownloaded = !file.localPath.isNullOrEmpty()
 
     Surface(
         onClick = onClick,
@@ -1744,7 +1699,7 @@ fun DriveListItem(
 ) {
     val (icon, color) = getFileIconAndColor(item)
     val isSecure = (item is DriveItem.Folder && item.isSecure) || (item is DriveItem.File && item.isEncrypted)
-    val isDownloaded = item is DriveItem.File && item.localPath != null && File(item.localPath).exists()
+    val isDownloaded = item is DriveItem.File && !item.localPath.isNullOrEmpty()
 
     ListItem(
         headlineContent = { 
@@ -1784,7 +1739,7 @@ fun DriveListItem(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     val thumbnailModel = if (item is DriveItem.File) {
-                        item.thumbnailPath?.takeIf { File(it).exists() } ?: item.localPath?.takeIf { File(it).exists() }
+                        item.thumbnailPath?.takeIf { it.isNotEmpty() } ?: item.localPath?.takeIf { it.isNotEmpty() }
                     } else null
 
                     if (thumbnailModel != null) {
@@ -1891,7 +1846,7 @@ fun DriveGridItem(
     var showInfoDialog by remember { mutableStateOf(false) }
     val (icon, color) = getFileIconAndColor(item)
     val isSecure = (item is DriveItem.Folder && item.isSecure) || (item is DriveItem.File && item.isEncrypted)
-    val isDownloaded = item is DriveItem.File && item.localPath != null && File(item.localPath).exists()
+    val isDownloaded = item is DriveItem.File && !item.localPath.isNullOrEmpty()
 
     OutlinedCard(
         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
@@ -1908,7 +1863,7 @@ fun DriveGridItem(
                     modifier = Modifier.size(68.dp).background(color.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
                 ) {
                     val thumbnailModel = if (item is DriveItem.File) {
-                        item.thumbnailPath?.takeIf { File(it).exists() } ?: item.localPath?.takeIf { File(it).exists() }
+                        item.thumbnailPath?.takeIf { it.isNotEmpty() } ?: item.localPath?.takeIf { it.isNotEmpty() }
                     } else null
 
                     if (thumbnailModel != null) {
@@ -2018,7 +1973,7 @@ fun InfoDialog(item: DriveItem, onDismiss: () -> Unit) {
                     Text(
                         stringResource(
                             R.string.status_label, 
-                            if (item.localPath != null) stringResource(R.string.available_offline) else stringResource(R.string.cloud_only)
+                            if (!item.localPath.isNullOrEmpty()) stringResource(R.string.available_offline) else stringResource(R.string.cloud_only)
                         ), 
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -2096,19 +2051,6 @@ fun ShareDialog(
     )
 }
 
-private fun resolveDirectFileFromUri(uri: Uri): File? {
-    return try {
-        val path = uri.path ?: return null
-        when {
-            path.contains("primary:") -> File("/storage/emulated/0/${path.substringAfter("primary:")}")
-            path.startsWith("/storage/") -> File(path)
-            else -> null
-        }
-    } catch (e: Exception) {
-        null
-    }
-}
-
 private fun deleteOriginalUriFromPhone(context: Context, uri: Uri) {
     try {
         if (DocumentsContract.isDocumentUri(context, uri)) {
@@ -2117,11 +2059,7 @@ private fun deleteOriginalUriFromPhone(context: Context, uri: Uri) {
         }
     } catch (e: Exception) {}
     try {
-        val deleted = context.contentResolver.delete(uri, null, null)
-        if (deleted > 0) return
-    } catch (e: Exception) {}
-    try {
-        resolveDirectFileFromUri(uri)?.let { if (it.exists()) it.delete() }
+        context.contentResolver.delete(uri, null, null)
     } catch (e: Exception) {}
 }
 
