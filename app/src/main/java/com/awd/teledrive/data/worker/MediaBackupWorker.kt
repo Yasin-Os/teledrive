@@ -1,12 +1,11 @@
+// File: app/src/main/java/com/awd/teledrive/data/worker/MediaBackupWorker.kt
 package com.awd.teledrive.data.worker
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
-import android.media.MediaScannerConnection
 import android.os.Build
-import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
@@ -23,7 +22,6 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.io.File
 
 class MediaBackupWorker(
     context: Context,
@@ -58,13 +56,15 @@ class MediaBackupWorker(
             val backupFolders = secureSettings.getStringList("backup_folders")
             if (backupFolders.isEmpty()) return@withContext Result.success()
 
+            // Saved Messages চ্যাট রুম প্রস্তুত না হওয়া পর্যন্ত অপেক্ষা করবে
+            val chatId = driveRepository.awaitSavedMessagesChatId()
+            if (chatId == 0L) return@withContext Result.retry()
+
             val customPrefs = applicationContext.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
             val deleteAfterBackup = customPrefs.getBoolean("delete_after_backup", false)
-            val backedUpSet = customPrefs.getStringSet("backed_up_paths_v2", emptySet())?.toMutableSet() ?: mutableSetOf()
 
-            val lastBackupTime = secureSettings.getLong("last_backup_time", 0L)
-            val filesToBackup = scanFoldersForFiles(backupFolders, lastBackupTime, backedUpSet)
-            
+            // Tri-Engine স্ক্যানার দিয়ে টার্গেট ফোল্ডারের সব ফাইল বের করা হচ্ছে
+            val filesToBackup = driveRepository.collectTargetBackupFiles(backupFolders)
             if (filesToBackup.isEmpty()) return@withContext Result.success()
 
             filesToBackup.forEachIndexed { index, file ->
@@ -84,15 +84,20 @@ class MediaBackupWorker(
                 
                 setForeground(createForegroundInfo(currentCount, totalCount))
 
-                driveRepository.uploadFile(originalPath, file.name)
+                driveRepository.uploadFile(
+                    filePath = originalPath,
+                    originalFileName = file.name,
+                    forceDeleteSource = deleteAfterBackup,
+                    backupTrackingKey = fileKey
+                )
 
                 // ফাইলটি ক্লাউডে সম্পূর্ণ আপলোড হওয়া পর্যন্ত অপেক্ষা করবে
                 var waitedMs = 0L
-                val maxWaitMs = 15 * 60 * 1000L
-                delay(1500)
+                val maxWaitMs = 20 * 60 * 1000L
+                delay(800)
                 while (waitedMs < maxWaitMs) {
                     val activeForFile = transferRepository.transfers.value.values.find {
-                        !it.isDownload && it.fileName == file.name
+                        !it.isDownload && (it.localPath == originalPath || it.fileName == file.name)
                     }
                     if (activeForFile == null || activeForFile.status == TransferRepository.Status.COMPLETED) {
                         break
@@ -101,16 +106,8 @@ class MediaBackupWorker(
                         activeForFile.status.startsWith(TransferRepository.Status.FAILED)) {
                         break
                     }
-                    delay(1000)
-                    waitedMs += 1000
-                }
-
-                backedUpSet.add(fileKey)
-                customPrefs.edit().putStringSet("backed_up_paths_v2", backedUpSet).apply()
-
-                // ক্লাউডে আপলোড শেষ হলে ফোন স্টোরেজ থেকে অটো ডিলিট
-                if (deleteAfterBackup) {
-                    deleteFileFromPhoneStorage(file)
+                    delay(600)
+                    waitedMs += 600
                 }
             }
             
@@ -119,28 +116,6 @@ class MediaBackupWorker(
         } catch (e: Exception) {
             Result.retry()
         }
-    }
-
-    private fun deleteFileFromPhoneStorage(file: File) {
-        val path = file.absolutePath
-        try {
-            if (file.exists()) {
-                file.delete()
-            }
-        } catch (e: Exception) {}
-
-        try {
-            val externalUri = MediaStore.Files.getContentUri("external")
-            applicationContext.contentResolver.delete(
-                externalUri,
-                "${MediaStore.MediaColumns.DATA}=?",
-                arrayOf(path)
-            )
-        } catch (e: Exception) {}
-
-        try {
-            MediaScannerConnection.scanFile(applicationContext, arrayOf(path), null, null)
-        } catch (e: Exception) {}
     }
 
     private fun createForegroundInfo(current: Int, total: Int): ForegroundInfo {
@@ -175,68 +150,6 @@ class MediaBackupWorker(
             val channel = NotificationChannel(CHANNEL_ID, name, importance)
             val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun scanFoldersForFiles(
-        folders: List<String>,
-        sinceTimestamp: Long,
-        backedUpSet: Set<String>
-    ): List<File> {
-        val result = mutableListOf<File>()
-
-        folders.forEach { folderPath ->
-            val root = File(folderPath)
-            if (root.exists() && root.isDirectory) {
-                collectFilesRecursively(root, backedUpSet, result)
-            }
-        }
-
-        if (result.isEmpty()) {
-            val projection = arrayOf(MediaStore.MediaColumns.DATA)
-            val uris = listOf(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-            )
-            uris.forEach { uri ->
-                try {
-                    applicationContext.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-                        val idx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
-                        while (cursor.moveToNext()) {
-                            val path = cursor.getString(idx) ?: continue
-                            if (folders.any { path.startsWith(it) }) {
-                                val f = File(path)
-                                val key = "${f.absolutePath}_${f.length()}"
-                                if (f.exists() && f.length() > 0 && !backedUpSet.contains(key)) {
-                                    result.add(f)
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {}
-            }
-        }
-
-        return result.distinctBy { it.absolutePath }.sortedBy { it.lastModified() }
-    }
-
-    private fun collectFilesRecursively(
-        dir: File,
-        backedUpSet: Set<String>,
-        outList: MutableList<File>
-    ) {
-        val children = dir.listFiles() ?: return
-        for (child in children) {
-            if (child.name.startsWith(".")) continue
-            if (child.isDirectory) {
-                collectFilesRecursively(child, backedUpSet, outList)
-            } else if (child.isFile && child.length() > 0) {
-                val key = "${child.absolutePath}_${child.length()}"
-                if (!backedUpSet.contains(key)) {
-                    outList.add(child)
-                }
-            }
         }
     }
 }
