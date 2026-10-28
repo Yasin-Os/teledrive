@@ -11,18 +11,13 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -43,7 +38,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,21 +51,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -186,7 +178,7 @@ class MainActivity : AppCompatActivity() {
                 TeledriveTheme(darkTheme = darkTheme, primaryColor = themeColor) {
                     Crossfade(
                         targetState = showSplash,
-                        animationSpec = tween(450),
+                        animationSpec = tween(400),
                         label = "StartupSplashTransition"
                     ) { isSplash ->
                         if (isSplash) {
@@ -212,264 +204,130 @@ class MainActivity : AppCompatActivity() {
 
 @Composable
 fun StartupSplashScreen(onFinished: () -> Unit) {
-    var cloudPhase by remember { mutableStateOf(false) }
-    var swooshPhase by remember { mutableStateOf(false) }
-    var signalPhase by remember { mutableStateOf(false) }
+    var ringPhase by remember { mutableStateOf(false) }
+    var iconPhase by remember { mutableStateOf(false) }
     var titlePhase by remember { mutableStateOf(false) }
     var devPhase by remember { mutableStateOf(false) }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "SplashPulse")
-    val glowPulse by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "GlowPulse"
+    val ringSweep by animateFloatAsState(
+        targetValue = if (ringPhase) 360f else 0f,
+        animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+        label = "RingSweep"
     )
-    val shimmerShift by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 600f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1600, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ShimmerShift"
-    )
-
-    val badgeScale by animateFloatAsState(
-        targetValue = if (cloudPhase) 1f else 0.5f,
+    val iconScale by animateFloatAsState(
+        targetValue = if (iconPhase) 1f else 0.72f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-        label = "BadgeScale"
+        label = "IconScale"
     )
-    val cloudAlpha by animateFloatAsState(
-        targetValue = if (cloudPhase) 1f else 0f,
-        animationSpec = tween(500),
-        label = "CloudAlpha"
-    )
-    val swooshProgress by animateFloatAsState(
-        targetValue = if (swooshPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing),
-        label = "SwooshProgress"
-    )
-    val signalProgress by animateFloatAsState(
-        targetValue = if (signalPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing),
-        label = "SignalProgress"
+    val iconAlpha by animateFloatAsState(
+        targetValue = if (iconPhase) 1f else 0f,
+        animationSpec = tween(durationMillis = 450),
+        label = "IconAlpha"
     )
 
     val titleAlpha by animateFloatAsState(
         targetValue = if (titlePhase) 1f else 0f,
-        animationSpec = tween(450),
+        animationSpec = tween(400),
         label = "TitleAlpha"
     )
     val titleOffsetY by animateDpAsState(
-        targetValue = if (titlePhase) 0.dp else 18.dp,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+        targetValue = if (titlePhase) 0.dp else 10.dp,
+        animationSpec = tween(400, easing = FastOutSlowInEasing),
         label = "TitleOffset"
     )
 
     val devAlpha by animateFloatAsState(
         targetValue = if (devPhase) 1f else 0f,
-        animationSpec = tween(500),
+        animationSpec = tween(450),
         label = "DevAlpha"
     )
     val devOffsetY by animateDpAsState(
-        targetValue = if (devPhase) 0.dp else 12.dp,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+        targetValue = if (devPhase) 0.dp else 8.dp,
+        animationSpec = tween(450, easing = FastOutSlowInEasing),
         label = "DevOffset"
     )
 
     LaunchedEffect(Unit) {
-        cloudPhase = true
-        delay(300)
-        swooshPhase = true
-        delay(350)
-        signalPhase = true
-        titlePhase = true
+        ringPhase = true
         delay(220)
+        iconPhase = true
+        delay(280)
+        titlePhase = true
+        delay(180)
         devPhase = true
-        delay(1050)
+        delay(900)
         onFinished()
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.radialGradient(
-                    colors = listOf(Color(0xFF0C1E3E), Color(0xFF070B14)),
-                    radius = 1100f
-                )
-            ),
+            .background(Color(0xFF070B14)),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Box(contentAlignment = Alignment.Center) {
-                // Background Halo Glow
-                Canvas(modifier = Modifier.size(160.dp).scale(glowPulse)) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(104.dp)) {
+                // ড্রয়িং রিং অ্যানিমেশন
+                Canvas(modifier = Modifier.fillMaxSize()) {
                     drawCircle(
                         brush = Brush.radialGradient(
-                            colors = listOf(Color(0xFF00E5CE).copy(alpha = 0.28f * cloudAlpha), Color.Transparent)
+                            colors = listOf(Color(0xFF00C4EB).copy(alpha = 0.25f * iconAlpha), Color.Transparent)
                         ),
-                        radius = size.minDimension / 2f
+                        radius = size.minDimension * 0.65f
                     )
-                }
-
-                // হুবহু ২য় ছবির আইকনটির লাইভ অ্যানিমেশন
-                Canvas(
-                    modifier = Modifier
-                        .size(116.dp)
-                        .scale(badgeScale)
-                ) {
-                    val w = size.width
-                    val h = size.height
-                    val s = w / 108f
-
-                    // 1. Vibrant Royal Blue to Cyan-Aqua Squircle Card
-                    drawRoundRect(
+                    drawArc(
                         brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color(0xFF003894),
-                                Color(0xFF0074D9),
-                                Color(0xFF00B8E6),
-                                Color(0xFF00E5CE)
-                            ),
-                            start = Offset(10f * s, 98f * s),
-                            end = Offset(98f * s, 10f * s)
+                            colors = listOf(Color(0xFF00F0DF), Color(0xFF0078D7))
                         ),
-                        cornerRadius = CornerRadius(26f * s, 26f * s),
-                        size = Size(w, h)
+                        startAngle = -90f,
+                        sweepAngle = ringSweep,
+                        useCenter = false,
+                        style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
                     )
-
-                    // 2. White Cloud Silhouette
-                    val cloudPath = Path().apply {
-                        moveTo(34f * s, 74f * s)
-                        lineTo(76f * s, 74f * s)
-                        cubicTo(83.5f * s, 74f * s, 89.5f * s, 68.2f * s, 89.5f * s, 60.8f * s)
-                        cubicTo(89.5f * s, 54.3f * s, 84.8f * s, 48.9f * s, 78.5f * s, 47.9f * s)
-                        cubicTo(77.3f * s, 40.0f * s, 70.5f * s, 34.0f * s, 62.2f * s, 34.0f * s)
-                        cubicTo(59.7f * s, 34.0f * s, 57.3f * s, 34.6f * s, 55.2f * s, 35.6f * s)
-                        cubicTo(51.4f * s, 29.0f * s, 44.3f * s, 24.6f * s, 36.0f * s, 24.6f * s)
-                        cubicTo(24.0f * s, 24.6f * s, 14.2f * s, 34.1f * s, 13.8f * s, 46.0f * s)
-                        cubicTo(8.8f * s, 48.0f * s, 5.5f * s, 53.0f * s, 5.5f * s, 58.8f * s)
-                        cubicTo(5.5f * s, 66.2f * s, 11.2f * s, 72.2f * s, 18.5f * s, 73.2f * s)
-                        close()
-                    }
-                    drawPath(path = cloudPath, color = Color.White.copy(alpha = cloudAlpha))
-
-                    // 3. Three Dynamic Swoosh Arrows Shooting Up-Right
-                    if (swooshProgress > 0f) {
-                        val s1 = Path().apply {
-                            moveTo(12f * s, 53f * s)
-                            cubicTo(15f * s, 72f * s, 30f * s, 70f * s, 46f * s, 48f * s)
-                        }
-                        val s2 = Path().apply {
-                            moveTo(15f * s, 62f * s)
-                            cubicTo(23f * s, 80f * s, 43f * s, 71f * s, 64f * s, 42f * s)
-                        }
-                        val s3 = Path().apply {
-                            moveTo(24f * s, 74f * s)
-                            cubicTo(38f * s, 84f * s, 53f * s, 74f * s, 65f * s, 57f * s)
-                        }
-
-                        val pm = PathMeasure()
-                        listOf(
-                            Triple(s1, Color(0xFF0088E0), 4.2f * s),
-                            Triple(s2, Color(0xFF009CE8), 4.6f * s),
-                            Triple(s3, Color(0xFF00AEEF), 4.2f * s)
-                        ).forEach { (fullPath, col, strokeW) ->
-                            pm.setPath(fullPath, false)
-                            val seg = Path()
-                            pm.getSegment(0f, pm.length * swooshProgress, seg, true)
-                            drawPath(seg, col, style = Stroke(width = strokeW, cap = StrokeCap.Round))
-                        }
-
-                        if (swooshProgress > 0.8f) {
-                            val headAlpha = ((swooshProgress - 0.8f) * 5f).coerceIn(0f, 1f)
-                            val h1 = Path().apply {
-                                moveTo(50f * s, 43f * s); lineTo(40f * s, 46.5f * s); lineTo(47.5f * s, 52.5f * s); close()
-                            }
-                            val h2 = Path().apply {
-                                moveTo(68f * s, 37f * s); lineTo(57.5f * s, 40.5f * s); lineTo(65.5f * s, 47f * s); close()
-                            }
-                            val h3 = Path().apply {
-                                moveTo(69f * s, 52f * s); lineTo(58.5f * s, 55.5f * s); lineTo(66.5f * s, 62f * s); close()
-                            }
-                            drawPath(h1, Color(0xFF0088E0).copy(alpha = headAlpha))
-                            drawPath(h2, Color(0xFF009CE8).copy(alpha = headAlpha))
-                            drawPath(h3, Color(0xFF00AEEF).copy(alpha = headAlpha))
-                        }
-                    }
-
-                    // 4. Two Wireless Signal Waves Pulsing at Top-Right
-                    if (signalProgress > 0f) {
-                        drawArc(
-                            color = Color.White.copy(alpha = signalProgress),
-                            startAngle = -68f,
-                            sweepAngle = 68f * signalProgress,
-                            useCenter = false,
-                            topLeft = Offset(55f * s, 27f * s),
-                            size = Size(28f * s, 28f * s),
-                            style = Stroke(width = 4.6f * s, cap = StrokeCap.Round)
-                        )
-                        drawArc(
-                            color = Color.White.copy(alpha = signalProgress),
-                            startAngle = -68f,
-                            sweepAngle = 68f * signalProgress,
-                            useCenter = false,
-                            topLeft = Offset(47f * s, 17f * s),
-                            size = Size(46f * s, 46f * s),
-                            style = Stroke(width = 4.6f * s, cap = StrokeCap.Round)
-                        )
-                    }
                 }
+
+                // হুবহু ১ম ছবির মূল আইকন
+                Image(
+                    painter = painterResource(id = R.drawable.ic_mycloud_logo),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(86.dp)
+                        .scale(iconScale)
+                        .alpha(iconAlpha)
+                        .clip(RoundedCornerShape(22.dp))
+                )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // Shimmering App Name
+            // ছোট ও ক্লিন সাইজে অ্যাপের নাম
             Text(
                 text = stringResource(R.string.app_name),
-                style = TextStyle(
-                    brush = Brush.linearGradient(
-                        colors = listOf(Color.White, Color(0xFF00E5CE), Color.White),
-                        start = Offset(shimmerShift - 200f, 0f),
-                        end = Offset(shimmerShift + 100f, 0f)
-                    ),
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 0.8.sp
-                ),
+                color = Color.White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.5.sp,
                 modifier = Modifier
                     .offset(y = titleOffsetY)
                     .alpha(titleAlpha)
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
-            // Sleek Glass Pill Developer Badge Right Below App Name
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = Color.White.copy(alpha = 0.06f),
-                border = BorderStroke(0.8.dp, Color(0xFF00E5CE).copy(alpha = 0.35f)),
+            // অ্যাপ নামের ঠিক নিচেই ছোট ও ক্লিন ফন্টে ডেভেলপার নাম
+            Text(
+                text = "Developer: Yasin Adnan",
+                color = Color(0xFF38BDF8).copy(alpha = 0.8f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Normal,
+                letterSpacing = 0.4.sp,
                 modifier = Modifier
                     .offset(y = devOffsetY)
                     .alpha(devAlpha)
-            ) {
-                Text(
-                    text = "Developer: Yasin Adnan",
-                    color = Color(0xFFE0F7FA),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.6.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                )
-            }
+            )
         }
     }
 }
