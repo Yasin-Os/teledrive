@@ -57,9 +57,7 @@ import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
@@ -509,165 +507,122 @@ fun SettingsContent(
                 .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            // 1. Backup Bar Section (Emerald Accent)
             SettingsSectionBar(title = "Backup", accentColor = Color(0xFF10B981), glowAlpha = glowAlpha) {
                 ModernToggleBarItem(
-                    icon = Icons.Default.CloudUpload,
-                    title = "Auto Backup",
-                    accentColor = Color(0xFF10B981),
-                    checked = uiState.isAutoBackupEnabled,
+                    icon = Icons.Default.CloudUpload, title = "Auto Backup",
+                    accentColor = Color(0xFF10B981), checked = uiState.isAutoBackupEnabled,
                     onCheckedChange = onSetAutoBackupEnabled
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.Delete,
-                    title = "Auto-Delete Phone Copy",
-                    accentColor = Color(0xFF10B981),
-                    checked = deleteAfterBackup,
+                    icon = Icons.Default.Delete, title = "Auto-Delete Phone Copy",
+                    accentColor = Color(0xFF10B981), checked = deleteAfterBackup,
                     onCheckedChange = onSetDeleteAfterBackup
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.Wifi,
-                    title = "Wi-Fi Only",
-                    accentColor = Color(0xFF10B981),
-                    checked = isBackupWifiOnly,
-                    enabled = uiState.isAutoBackupEnabled,
-                    onCheckedChange = onSetBackupWifiOnly
+                    icon = Icons.Default.Wifi, title = "Wi-Fi Only",
+                    accentColor = Color(0xFF10B981), checked = isBackupWifiOnly,
+                    enabled = uiState.isAutoBackupEnabled, onCheckedChange = onSetBackupWifiOnly
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Folder,
-                    title = "Target Folders",
-                    accentColor = Color(0xFF10B981),
-                    badgeText = "Select",
+                    icon = Icons.Default.Folder, title = "Target Folders",
+                    accentColor = Color(0xFF10B981), badgeText = "Select",
                     onClick = onNavigateToBackupFolders
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.CloudUpload,
-                    title = "Sync Now",
-                    accentColor = Color(0xFF10B981),
-                    onClick = onTriggerManualBackup
+                    icon = Icons.Default.CloudUpload, title = "Sync Now",
+                    accentColor = Color(0xFF10B981), onClick = onTriggerManualBackup
                 )
             }
 
-            // 2. Storage & Cache Bar Section (Cyan Accent)
             SettingsSectionBar(title = "Storage", accentColor = Color(0xFF0EA5E9), glowAlpha = glowAlpha) {
                 ModernActionBarItem(
-                    icon = Icons.Default.Cloud,
-                    title = "Cloud Usage",
-                    accentColor = Color(0xFF0EA5E9),
-                    badgeText = formatSize(uiState.totalStorageUsed),
+                    icon = Icons.Default.Cloud, title = "Cloud Usage",
+                    accentColor = Color(0xFF0EA5E9), badgeText = formatSize(uiState.totalStorageUsed),
                     onClick = onNavigateToCloudAnalysis
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Storage,
-                    title = "Local Cache",
-                    accentColor = Color(0xFF0EA5E9),
-                    badgeText = formatSize(uiState.internalCacheSize),
+                    icon = Icons.Default.Storage, title = "Local Cache",
+                    accentColor = Color(0xFF0EA5E9), badgeText = formatSize(uiState.internalCacheSize),
                     onClick = onNavigateToCacheDetails
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Storage,
-                    title = "Cache Limit",
+                    icon = Icons.Default.Storage, title = "Cache Limit",
                     accentColor = Color(0xFF0EA5E9),
                     badgeText = if (uiState.cacheSizeLimit == 0L) "Unlimited" else formatSize(uiState.cacheSizeLimit),
                     onClick = { showCacheSizeDialog = true }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.History,
-                    title = "Cache Duration",
-                    accentColor = Color(0xFF0EA5E9),
-                    badgeText = formatCacheAge(uiState.cacheAgeLimit, context),
+                    icon = Icons.Default.History, title = "Cache Duration",
+                    accentColor = Color(0xFF0EA5E9), badgeText = formatCacheAge(uiState.cacheAgeLimit, context),
                     onClick = { showCacheAgeDialog = true }
                 )
             }
 
-            // 3. Security Bar Section (Violet Accent)
             SettingsSectionBar(title = "Security", accentColor = Color(0xFF8B5CF6), glowAlpha = glowAlpha) {
                 ModernToggleBarItem(
-                    icon = Icons.Default.Lock,
-                    title = "App PIN Lock",
-                    accentColor = Color(0xFF8B5CF6),
-                    checked = uiState.isSecurityEnabled,
+                    icon = Icons.Default.Lock, title = "App PIN Lock",
+                    accentColor = Color(0xFF8B5CF6), checked = uiState.isSecurityEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled && !uiState.isAppPinSet) showCreateAppPinDialog = true
                         else onSetSecurityEnabled(enabled)
                     }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Edit,
-                    title = "Change App PIN",
-                    accentColor = Color(0xFF8B5CF6),
-                    badgeText = if (uiState.isAppPinSet) "4-Digit" else "Not Set",
+                    icon = Icons.Default.Edit, title = "Change App PIN",
+                    accentColor = Color(0xFF8B5CF6), badgeText = if (uiState.isAppPinSet) "4-Digit" else "Not Set",
                     onClick = {
                         if (!uiState.isAppPinSet) showCreateAppPinDialog = true
                         else showChangeAppPinDialog = true
                     }
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.Fingerprint,
-                    title = "Biometric Unlock",
-                    accentColor = Color(0xFF8B5CF6),
-                    checked = uiState.isBiometricEnabled,
-                    enabled = uiState.isSecurityEnabled,
-                    onCheckedChange = onSetBiometricEnabled
+                    icon = Icons.Default.Fingerprint, title = "Biometric Unlock",
+                    accentColor = Color(0xFF8B5CF6), checked = uiState.isBiometricEnabled,
+                    enabled = uiState.isSecurityEnabled, onCheckedChange = onSetBiometricEnabled
                 )
             }
 
-            // 4. Appearance & Downloads Bar Section (Amber Accent)
             SettingsSectionBar(title = "Appearance & Files", accentColor = Color(0xFFF59E0B), glowAlpha = glowAlpha) {
                 ModernToggleBarItem(
-                    icon = Icons.Default.DarkMode,
-                    title = "Dark Theme",
-                    accentColor = Color(0xFFF59E0B),
-                    checked = uiState.isDarkMode,
+                    icon = Icons.Default.DarkMode, title = "Dark Theme",
+                    accentColor = Color(0xFFF59E0B), checked = uiState.isDarkMode,
                     onCheckedChange = { onSetDarkMode(it); showThemeRestartConfirm = true }
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.PhotoLibrary,
-                    title = "Auto-Load Thumbnails",
-                    accentColor = Color(0xFFF59E0B),
-                    checked = isThumbnailAutoDownloadEnabled,
+                    icon = Icons.Default.PhotoLibrary, title = "Auto-Load Thumbnails",
+                    accentColor = Color(0xFFF59E0B), checked = isThumbnailAutoDownloadEnabled,
                     onCheckedChange = onSetThumbnailAutoDownload
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Palette,
-                    title = "Accent Color",
-                    accentColor = uiState.themeColor,
-                    onClick = { showThemeColorDialog = true }
+                    icon = Icons.Default.Palette, title = "Accent Color",
+                    accentColor = uiState.themeColor, onClick = { showThemeColorDialog = true }
                 )
                 val downloadPath = if (uiState.downloadUri.isNullOrEmpty()) "Downloads"
                 else Uri.parse(uiState.downloadUri).path?.substringAfterLast(':') ?: "Custom"
                 ModernActionBarItem(
-                    icon = Icons.Default.FolderOpen,
-                    title = "Save Location",
-                    accentColor = Color(0xFF3B82F6),
-                    badgeText = downloadPath,
+                    icon = Icons.Default.FolderOpen, title = "Save Location",
+                    accentColor = Color(0xFF3B82F6), badgeText = downloadPath,
                     onClick = { folderLauncher.launch(null) }
                 )
             }
 
-            // 5. System Update & Account Bar Section (Rose/Primary Accent)
             SettingsSectionBar(title = "System", accentColor = Color(0xFFEC4899), glowAlpha = glowAlpha) {
                 ModernActionBarItem(
-                    icon = Icons.Default.SystemUpdate,
-                    title = "App Update",
+                    icon = Icons.Default.SystemUpdate, title = "App Update",
                     accentColor = Color(0xFFEC4899),
                     badgeText = if (uiState.updateState is UpdateState.Checking) "Checking..." else "v${uiState.versionName}",
                     onClick = onCheckForUpdates
                 )
                 ModernActionBarItem(
-                    icon = Icons.AutoMirrored.Filled.Logout,
-                    title = "Log Out",
+                    icon = Icons.AutoMirrored.Filled.Logout, title = "Log Out",
                     accentColor = MaterialTheme.colorScheme.error,
                     titleColor = MaterialTheme.colorScheme.error,
                     onClick = { showLogoutConfirm = true }
                 )
             }
 
-            // Copyright Footer
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp, bottom = 36.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 36.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -702,7 +657,7 @@ private fun SettingsSectionBar(
                 modifier = Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .ClickableOrStaticBg(accentColor)
+                    .background(accentColor, CircleShape)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
@@ -730,17 +685,11 @@ private fun SettingsSectionBar(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                 content = content
             )
         }
     }
-}
-
-private fun Modifier.ClickableOrStaticBg(color: Color): Modifier {
-    return this.background(color, CircleShape)
 }
 
 @Composable
@@ -835,11 +784,7 @@ private fun ModernToggleBarItem(
             color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
             modifier = Modifier.weight(1f)
         )
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            enabled = enabled
-        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 
