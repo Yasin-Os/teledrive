@@ -12,6 +12,7 @@ import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.data.secure.SecureSettings
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,11 +21,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
-import java.io.File
 import javax.inject.Inject
 
 enum class SortOrder {
@@ -49,6 +50,11 @@ class HomeViewModel @Inject constructor(
     private val secureSessionManager: SecureSessionManager,
     private val secureSettings: SecureSettings
 ) : ViewModel() {
+
+    companion object {
+        @Volatile
+        private var hasInitialSynced = false
+    }
 
     val connectivityStatus = connectivityObserver.status
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ConnectivityObserver.Status.Available)
@@ -85,7 +91,7 @@ class HomeViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing = _isRefreshing.asStateFlow()
 
-    private val _isInitialLoading = MutableStateFlow(true)
+    private val _isInitialLoading = MutableStateFlow(false)
     val isInitialLoading = _isInitialLoading.asStateFlow()
 
     private val _isSyncingMetadata = MutableStateFlow(false)
@@ -95,17 +101,20 @@ class HomeViewModel @Inject constructor(
         secureSettings.getStringList("recent_opened_files").mapNotNull { it.toLongOrNull() }
     )
 
+    // র‍্যামে (RAM) প্রি-লোডেড ফাস্ট ফাইল ক্যাশ
     val allCloudFiles: StateFlow<List<DriveItem.File>> = driveRepository.getAllFiles()
         .map { list -> list.filter { !it.isEncrypted } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val virtualFolders: StateFlow<List<DriveItem.Folder>> = driveRepository.getSavedMessagesChatIdFlow()
         .flatMapLatest { driveRepository.getItems(null, "0", "") }
         .map { list -> list.filterIsInstance<DriveItem.Folder>().filter { it.isVirtual && !it.isSecure } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    // রিসেন্টের মধ্যে শুধুমাত্র প্লে করা, ডাউনলোড করা বা আপলোড করা ভিডিও এবং ফটো দেখাবে
+    // রিসেন্টের মধ্যে শুধুমাত্র প্লে করা, ডাউনলোড করা বা আপলোড করা ভিডিও এবং ফটো
     val recentFiles: StateFlow<List<DriveItem.File>> = combine(
         allCloudFiles,
         _recentOpenedIds
@@ -116,14 +125,17 @@ class HomeViewModel @Inject constructor(
         val mediaMap = mediaOnly.associateBy { it.id }
 
         val playedMedia = recentIds.mapNotNull { mediaMap[it] }
-        val downloadedMedia = mediaOnly.filter { it.localPath != null && File(it.localPath).exists() }
+        val downloadedMedia = mediaOnly.filter { !it.localPath.isNullOrEmpty() }
         val recentUploadedMedia = mediaOnly.take(15)
 
         (playedMedia + downloadedMedia + recentUploadedMedia).distinctBy { it.id }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }
+    .flowOn(Dispatchers.Default)
+    .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
 
     fun recordFileOpened(fileId: Long) {
         val updated = listOf(fileId) + _recentOpenedIds.value.filter { it != fileId }
@@ -143,107 +155,94 @@ class HomeViewModel @Inject constructor(
         return file.mimeType.contains("android.package-archive") || ext.endsWith(".apk") || ext.endsWith(".apks") || ext.endsWith(".xapk")
     }
 
-    private fun isDownloadedFile(file: DriveItem.File): Boolean {
-        return file.localPath != null && File(file.localPath).exists()
-    }
-
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    // ইন-মেমোরি ০ মিলিসেকেন্ড ফিল্টারিং ইঞ্জিন (ব্যাকে আসলে বা ক্যাটাগরিতে ঢুকলে কখনোই আটকে যাবে না)
     val items: StateFlow<List<DriveItem>> = combine(
         listOf(
-            _currentFolderId,
+            allCloudFiles,
+            virtualFolders,
             _currentVirtualFolderId,
             _searchQuery,
             _sortOrder,
             _filterType,
             _customCategory,
-            driveRepository.getSavedMessagesChatIdFlow(),
             _recentOpenedIds,
             _selectedCategoryFolderId
         )
     ) { arr ->
-        val folderId = arr[0] as? Long
-        val virtualId = arr[1] as String
-        val query = arr[2] as String
-        val order = arr[3] as SortOrder
-        val filter = arr[4] as FilterType
-        val customCat = arr[5] as CustomCategory
+        @Suppress("UNCHECKED_CAST")
+        val allFiles = arr[0] as List<DriveItem.File>
+        @Suppress("UNCHECKED_CAST")
+        val allFolders = arr[1] as List<DriveItem.Folder>
+        val virtualId = arr[2] as String
+        val query = (arr[3] as String).trim()
+        val order = arr[4] as SortOrder
+        val filter = arr[5] as FilterType
+        val customCat = arr[6] as CustomCategory
         @Suppress("UNCHECKED_CAST")
         val recentIds = arr[7] as List<Long>
         val selectedCatFolder = arr[8] as String
 
-        val isFileCategoryActive = (filter != FilterType.ALL || (customCat != CustomCategory.NONE && customCat != CustomCategory.ALL_STORAGE)) && virtualId == "0" && query.isEmpty()
+        if (query.isNotEmpty()) {
+            val matchedFolders = allFolders.filter { it.name.contains(query, ignoreCase = true) }
+            val matchedFiles = allFiles.filter { it.name.contains(query, ignoreCase = true) }
+            return@combine matchedFolders + matchedFiles
+        }
 
-        val baseFlow = if (isFileCategoryActive) {
-            driveRepository.getAllFiles().map { files -> files as List<DriveItem> }
+        if (customCat == CustomCategory.RECENTS) {
+            val mediaOnly = allFiles.filter { it.mimeType.startsWith("video/") || it.mimeType.startsWith("image/") }
+            val fileMap = mediaOnly.associateBy { it.id }
+            val played = recentIds.mapNotNull { fileMap[it] }
+            val downloaded = mediaOnly.filter { !it.localPath.isNullOrEmpty() }
+            val combined = (played + downloaded + mediaOnly.take(15)).distinctBy { it.id }
+            return@combine if (selectedCatFolder == "ALL") combined else combined.filter { (it.virtualParentId ?: "0") == selectedCatFolder }
+        }
+
+        val isFileCategoryActive = (filter != FilterType.ALL || (customCat != CustomCategory.NONE && customCat != CustomCategory.ALL_STORAGE)) && virtualId == "0"
+
+        val baseFolders = if (isFileCategoryActive) emptyList() else allFolders.filter { (it.virtualParentId ?: "0") == virtualId }
+        val baseFiles = if (isFileCategoryActive) {
+            if (selectedCatFolder == "ALL") allFiles else allFiles.filter { (it.virtualParentId ?: "0") == selectedCatFolder }
         } else {
-            driveRepository.getItems(folderId, virtualId, query)
+            allFiles.filter { (it.virtualParentId ?: "0") == virtualId }
         }
 
-        baseFlow.map { allItems ->
-            val items = allItems.filter { item ->
-                !(item is DriveItem.Folder && item.isSecure) && 
-                !(item is DriveItem.File && item.isEncrypted) &&
-                !(item is DriveItem.Folder && !item.isVirtual)
+        val filteredFiles = when {
+            customCat == CustomCategory.APPS -> baseFiles.filter { isAppFile(it) }
+            customCat == CustomCategory.DOWNLOADS || customCat == CustomCategory.ARCHIVES -> baseFiles.filter { !it.localPath.isNullOrEmpty() }
+            filter == FilterType.PHOTOS -> baseFiles.filter { it.mimeType.startsWith("image/") }
+            filter == FilterType.VIDEOS -> baseFiles.filter { it.mimeType.startsWith("video/") }
+            filter == FilterType.AUDIO -> baseFiles.filter { it.mimeType.startsWith("audio/") }
+            filter == FilterType.DOCUMENTS -> baseFiles.filter {
+                !it.mimeType.startsWith("image/") &&
+                !it.mimeType.startsWith("video/") &&
+                !it.mimeType.startsWith("audio/") &&
+                !isAppFile(it)
             }
-
-            if (customCat == CustomCategory.RECENTS) {
-                val mediaOnly = items.filterIsInstance<DriveItem.File>().filter {
-                    it.mimeType.startsWith("video/") || it.mimeType.startsWith("image/")
-                }
-                val fileMap = mediaOnly.associateBy { it.id }
-                val played = recentIds.mapNotNull { fileMap[it] }
-                val downloaded = mediaOnly.filter { isDownloadedFile(it) }
-                val combined = (played + downloaded + mediaOnly.take(15)).distinctBy { it.id }
-                return@map if (selectedCatFolder == "ALL") combined else combined.filter { (it.virtualParentId ?: "0") == selectedCatFolder }
-            }
-
-            val filteredByType = when {
-                customCat == CustomCategory.APPS -> items.filter { it is DriveItem.File && isAppFile(it) }
-                customCat == CustomCategory.DOWNLOADS || customCat == CustomCategory.ARCHIVES -> {
-                    // Downloads বক্সে ডাউনলোড হওয়া সকল ডেটা দেখাবে
-                    items.filter { it is DriveItem.File && isDownloadedFile(it) }
-                }
-                filter == FilterType.PHOTOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("image/") }
-                filter == FilterType.VIDEOS -> items.filter { it is DriveItem.File && it.mimeType.startsWith("video/") }
-                filter == FilterType.AUDIO -> items.filter { it is DriveItem.File && it.mimeType.startsWith("audio/") }
-                filter == FilterType.DOCUMENTS -> items.filter { 
-                    // ভিডিও, অডিও, ফটো ও অ্যাপস ছাড়া বাকি সব (জিপ/রার সহ) Documents বক্সে দেখাবে
-                    it is DriveItem.File && 
-                    !it.mimeType.startsWith("image/") && 
-                    !it.mimeType.startsWith("video/") && 
-                    !it.mimeType.startsWith("audio/") && 
-                    !isAppFile(it)
-                }
-                else -> items
-            }
-
-            val folderFiltered = if (isFileCategoryActive && selectedCatFolder != "ALL") {
-                filteredByType.filter { it is DriveItem.File && (it.virtualParentId ?: "0") == selectedCatFolder }
-            } else {
-                filteredByType
-            }
-
-            val (folders, files) = folderFiltered.partition { it is DriveItem.Folder }
-            
-            val sortedFolders = when (order) {
-                SortOrder.NAME -> folders.sortedBy { it.name }
-                else -> folders.sortedByDescending { it.id }
-            }
-
-            val sortedFiles = when (order) {
-                SortOrder.NAME -> files.sortedBy { it.name }
-                SortOrder.DATE -> files
-                SortOrder.SIZE -> files.sortedByDescending { (it as? DriveItem.File)?.size ?: 0L }
-            }
-
-            sortedFolders + sortedFiles
+            else -> baseFiles
         }
-    }.flatMapLatest { it }
+
+        val sortedFolders = when (order) {
+            SortOrder.NAME -> baseFolders.sortedBy { it.name.lowercase() }
+            else -> baseFolders.sortedByDescending { it.id }
+        }
+
+        val sortedFiles = when (order) {
+            SortOrder.NAME -> filteredFiles.sortedBy { it.name.lowercase() }
+            SortOrder.DATE -> filteredFiles
+            SortOrder.SIZE -> filteredFiles.sortedByDescending { it.size }
+        }
+
+        sortedFolders + sortedFiles
+    }
     .distinctUntilChanged()
-    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    .flowOn(Dispatchers.Default)
+    .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
-        fetchItems()
+        if (!hasInitialSynced) {
+            hasInitialSynced = true
+            fetchItems()
+        }
     }
 
     fun setSortOrder(order: SortOrder) {
@@ -310,12 +309,9 @@ class HomeViewModel @Inject constructor(
 
     fun fetchItems() {
         viewModelScope.launch {
-            if (items.value.isEmpty()) _isInitialLoading.value = true
-            else _isRefreshing.value = true
-            
+            _isRefreshing.value = true
             driveRepository.fetchFiles(null)
-            
-            delay(300)
+            delay(250)
             _isSyncingMetadata.value = false
             _isInitialLoading.value = false
             _isRefreshing.value = false
