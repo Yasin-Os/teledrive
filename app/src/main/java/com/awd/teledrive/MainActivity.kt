@@ -10,9 +10,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -47,14 +47,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -88,16 +93,16 @@ class MainActivity : AppCompatActivity() {
 
     @Inject
     lateinit var workerManager: TeleDriveWorkerManager
-    
+
     @Inject
     lateinit var secureSettings: SecureSettings
 
     @Inject
     lateinit var settingsRepository: SettingsRepository
-    
+
     @Inject
     lateinit var updateRepository: UpdateRepository
-    
+
     private val securityViewModel: SecurityViewModel by viewModels()
     private var lastPauseTime: Long = 0
 
@@ -117,7 +122,7 @@ class MainActivity : AppCompatActivity() {
             permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
         permissions.add(Manifest.permission.CAMERA)
-        
+
         val missing = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -129,7 +134,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         checkAndRequestPermissions()
-        
+
         lifecycleScope.launch {
             updateRepository.checkForUpdates(manual = false)
         }
@@ -137,7 +142,7 @@ class MainActivity : AppCompatActivity() {
         if (settingsRepository.isAutoBackupEnabled.value) {
             workerManager.scheduleBackup(true)
         }
-        
+
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
@@ -156,16 +161,16 @@ class MainActivity : AppCompatActivity() {
         setContent {
             val themeViewModel: ThemeViewModel = hiltViewModel()
             val settingsViewModel: SettingsViewModel = hiltViewModel()
-            
+
             val isDarkModePref by themeViewModel.isDarkMode.collectAsState()
             val themeColor by themeViewModel.themeColor.collectAsState()
             val updateState by updateRepository.updateState.collectAsState()
-            
+
             val darkTheme = isDarkModePref ?: isSystemInDarkTheme()
             val configuration = LocalConfiguration.current
 
             var showSplash by remember { mutableStateOf(true) }
-            
+
             CompositionLocalProvider(
                 LocalConfiguration provides configuration
             ) {
@@ -182,7 +187,7 @@ class MainActivity : AppCompatActivity() {
                             NavGraph(navController = navController)
                         }
                     }
-                    
+
                     if (!showSplash) {
                         GlobalUpdateDialog(
                             updateState = updateState,
@@ -196,156 +201,139 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
+// ───────────────────────── Splash helpers ─────────────────────────
+
+private fun svgPath(d: String): Path = PathParser().parsePathString(d).toPath()
+
+private fun grad(
+    sx: Float, sy: Float, ex: Float, ey: Float,
+    vararg stops: Pair<Float, Color>
+): Brush = Brush.linearGradient(
+    *stops, start = Offset(sx, sy), end = Offset(ex, ey)
+)
+
+/** t এর [a, b] অংশকে 0..1 এ ম্যাপ করে, ইজিং সহ */
+private fun seg(t: Float, a: Float, b: Float): Float =
+    FastOutSlowInEasing.transform(((t - a) / (b - a)).coerceIn(0f, 1f))
+
+private fun DrawScope.drawTrimmed(
+    path: Path, pm: PathMeasure, fraction: Float,
+    brush: Brush, width: Float, alpha: Float = 1f
+) {
+    if (fraction <= 0f || alpha <= 0f) return
+    pm.setPath(path, false)
+    val out = Path()
+    pm.getSegment(0f, pm.length * fraction, out, true)
+    drawPath(
+        out, brush, alpha = alpha,
+        style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    )
+}
+
+/** আইকনের হুবহু pathData ও গ্রেডিয়েন্ট (viewport 108x108) */
+private class IconShapes {
+    val lobeUR = svgPath("M54,39 C64,39 73,45 75,55 L50,58 Z")
+    val aqua = svgPath("M48,75.5 L77.5,75.5 C84.8,75.5 90.5,69.8 90.5,62.5 C90.5,55.2 84.5,49.5 77.0,49.5 C70.5,49.5 65.0,53.8 63.2,59.8 L48,75.5 Z")
+    val gloss = svgPath("M68,54 C74,50 83,52 87,58 C82,54 74,53 68,54 Z")
+    val left = svgPath("M34,43.5 C23.2,43.5 14.5,52.0 14.5,62.5 C14.5,71.5 21.5,78.5 31.0,78.5 L48,62 Z")
+    val sphere = svgPath("M46.5,27.0 C35.5,27.0 26.8,35.8 26.8,46.8 C26.8,57.8 35.5,66.5 46.5,66.5 C57.5,66.5 66.2,57.8 66.2,46.8 C66.2,35.8 57.5,27.0 46.5,27.0 Z")
+    val ribbon = svgPath("M14.5,60.5 C14.8,74.8 26.5,81.5 41.5,78.5 C52.5,76.2 63.5,68.5 72.5,58.5 C76.8,53.5 76.5,45.5 71.2,41.5 C66.0,37.8 58.2,39.2 53.0,44.2 C43.5,53.5 34.5,62.5 25.5,65.2 C19.5,67.0 15.2,64.5 14.5,60.5 Z")
+    val arrow1 = svgPath("M16.0,63.0 C20.5,72.5 31.5,72.5 45.5,58.5 L42.5,55.5 L53.5,51.5 L51.0,62.5 L48.0,59.5 C32.5,75.0 19.5,75.5 16.0,63.0 Z")
+    val arrow2 = svgPath("M24.0,78.0 C36.5,80.5 49.5,71.5 60.0,53.5 L55.5,50.5 L67.5,43.0 L69.5,56.5 L65.0,54.0 C53.5,73.5 38.5,82.0 24.0,78.0 Z")
+
+    // সিগনাল আর্ক — তীরের দিক (৬০°) বরাবর
+    val arc1 = svgPath("M66.4,34.6 A9,9 0 0,1 75.4,39.8")
+    val arc2 = svgPath("M65.8,27.5 A16.2,16.2 0 0,1 81.9,36.8")
+    val arc3 = svgPath("M65.2,20.2 A23.5,23.5 0 0,1 88.5,33.7")
+
+    val bUR = grad(54f, 39f, 75f, 56f, 0f to Color(0xFF2CE0FF), 1f to Color(0xFF0099F0))
+    val bAqua = grad(65f, 49f, 88f, 76f, 0f to Color(0xFF48F7E8), 0.55f to Color(0xFF00D2DC), 1f to Color(0xFF00A2C2))
+    val bLeft = grad(16f, 44f, 36f, 78f, 0f to Color(0xFF0095FF), 0.55f to Color(0xFF0055E0), 1f to Color(0xFF0033B8))
+    val bSphere = grad(36f, 28f, 58f, 64f, 0f to Color(0xFF28D8FF), 0.5f to Color(0xFF0080FF), 1f to Color(0xFF0040C8))
+    val bRibbon = grad(15f, 76f, 72f, 42f, 0f to Color(0xFF0078FF), 0.25f to Color(0xFF88DCFF), 0.55f to Color(0xFFE8F8FF), 1f to Color(0xFFFFFFFF))
+    val bArrow1 = grad(16f, 72f, 53f, 51f, 0f to Color(0xFF0055D4), 1f to Color(0xFF00B4FF))
+    val bArrow2 = grad(24f, 79f, 68f, 43f, 0f to Color(0xFF0038B8), 0.5f to Color(0xFF0078F0), 1f to Color(0xFF00A8FF))
+    val bArc = grad(65f, 21f, 89f, 43f, 0f to Color(0xFF18B8FF), 1f to Color(0xFF0055D4))
+    val bOutline = grad(15f, 75f, 90f, 28f, 0f to Color(0xFF0088FF), 1f to Color(0xFF38F9E8))
+}
+
+// ───────────────────────── Splash screen ─────────────────────────
+
 @Composable
 fun StartupSplashScreen(onFinished: () -> Unit) {
-    var sketchPhase by remember { mutableStateOf(false) }
-    var fillPhase by remember { mutableStateOf(false) }
-    var textPhase by remember { mutableStateOf(false) }
-
-    // কোনো ব্যাকগ্রাউন্ড বক্স ছাড়াই লাইভ ড্রয়িং (Sketch) প্রোগ্রেস
-    val drawProgress by animateFloatAsState(
-        targetValue = if (sketchPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
-        label = "DrawProgress"
-    )
-    val fillAlpha by animateFloatAsState(
-        targetValue = if (fillPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
-        label = "FillAlpha"
-    )
-    val textAlpha by animateFloatAsState(
-        targetValue = if (textPhase) 1f else 0f,
-        animationSpec = tween(durationMillis = 450),
-        label = "TextAlpha"
-    )
-    val textOffsetY by animateDpAsState(
-        targetValue = if (textPhase) 0.dp else 8.dp,
-        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
-        label = "TextOffsetY"
-    )
+    val shapes = remember { IconShapes() }
+    val pm = remember { PathMeasure() }
+    val progress = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
-        sketchPhase = true
-        delay(550)
-        fillPhase = true
-        textPhase = true
-        delay(850)
+        progress.animateTo(1f, tween(durationMillis = 2100, easing = LinearEasing))
+        delay(350)
         onFinished()
     }
 
+    val t = progress.value
+    val textAlpha = seg(t, 0.72f, 0.95f)
+    val logoScale = 0.92f + 0.08f * seg(t, 0f, 0.9f)
+
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF070B14)),
+        modifier = Modifier.fillMaxSize().background(Color(0xFF070B14)),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // কোনো ব্যাকগ্রাউন্ড বক্স ছাড়াই সরাসরি মেঘ, ২টি তীর ও ৩টি ওয়েভ আঁকা হচ্ছে
-            Canvas(modifier = Modifier.size(120.dp)) {
-                val s = size.width / 108f
+            Canvas(
+                modifier = Modifier
+                    .size(150.dp)
+                    .graphicsLayer { scaleX = logoScale; scaleY = logoScale }
+            ) {
+                // আইকনের কনটেন্ট প্রায় ৮৪ ইউনিট চওড়া — সেটাই ক্যানভাস জুড়ে বসানো হচ্ছে
+                val s = size.width / 84f
+                translate(
+                    left = size.width / 2f - 52.5f * s,
+                    top = size.height / 2f - 50.5f * s
+                ) {
+                    scale(scale = s, pivot = Offset.Zero) {
 
-                val cloudPath = Path().apply {
-                    moveTo(48f * s, 75.5f * s)
-                    lineTo(77.5f * s, 75.5f * s)
-                    cubicTo(84.8f * s, 75.5f * s, 90.5f * s, 69.8f * s, 90.5f * s, 62.5f * s)
-                    cubicTo(90.5f * s, 55.2f * s, 84.5f * s, 49.5f * s, 77.0f * s, 49.5f * s)
-                    cubicTo(75.0f * s, 43.0f * s, 69.0f * s, 39.0f * s, 62.0f * s, 39.5f * s)
-                    cubicTo(59.0f * s, 31.8f * s, 51.5f * s, 27.0f * s, 43.0f * s, 27.0f * s)
-                    cubicTo(32.5f * s, 27.0f * s, 24.5f * s, 35.0f * s, 24.0f * s, 45.0f * s)
-                    cubicTo(18.0f * s, 47.5f * s, 14.5f * s, 54.0f * s, 14.5f * s, 61.5f * s)
-                    cubicTo(14.5f * s, 71.0f * s, 23.0f * s, 77.5f * s, 34.0f * s, 77.5f * s)
-                    close()
-                }
+                        // ১. আউটলাইন স্কেচ (০ → ০.৩৫), ফিল আসার সাথে মিলিয়ে যায়
+                        val sketch = seg(t, 0f, 0.35f)
+                        val outlineAlpha = 1f - seg(t, 0.28f, 0.5f)
+                        listOf(shapes.lobeUR, shapes.aqua, shapes.left, shapes.sphere).forEach {
+                            drawTrimmed(it, pm, sketch, shapes.bOutline, 1.4f, outlineAlpha)
+                        }
 
-                val arrow1Path = Path().apply {
-                    moveTo(16f * s, 63f * s)
-                    cubicTo(21f * s, 73f * s, 32f * s, 72f * s, 50f * s, 54f * s)
-                }
-                val arrow2Path = Path().apply {
-                    moveTo(24f * s, 78f * s)
-                    cubicTo(37f * s, 80f * s, 50f * s, 70f * s, 65f * s, 46f * s)
-                }
+                        // ২. গ্রেডিয়েন্ট ফিল, ক্রমানুসারে
+                        drawPath(shapes.lobeUR, shapes.bUR, alpha = seg(t, 0.28f, 0.45f))
+                        drawPath(shapes.aqua, shapes.bAqua, alpha = seg(t, 0.30f, 0.50f))
+                        drawPath(shapes.gloss, Color.White, alpha = 0.4f * seg(t, 0.48f, 0.58f))
+                        drawPath(shapes.left, shapes.bLeft, alpha = seg(t, 0.22f, 0.42f))
+                        drawPath(shapes.sphere, shapes.bSphere, alpha = seg(t, 0.25f, 0.46f))
 
-                val pm = PathMeasure()
+                        // ৩. সাদা রিবন — বাম থেকে ডানে উন্মোচন
+                        val ribbonP = seg(t, 0.42f, 0.65f)
+                        if (ribbonP > 0f) {
+                            clipRect(left = 0f, top = 0f, right = 14f + 80f * ribbonP, bottom = 108f) {
+                                drawPath(shapes.ribbon, shapes.bRibbon)
+                            }
+                        }
 
-                // 1. Live Sketching of Cloud Outline
-                pm.setPath(cloudPath, false)
-                val partialCloud = Path()
-                pm.getSegment(0f, pm.length * drawProgress, partialCloud, true)
-                drawPath(
-                    path = partialCloud,
-                    brush = Brush.linearGradient(
-                        colors = listOf(Color(0xFF0088FF), Color(0xFF38F9E8))
-                    ),
-                    style = Stroke(width = 3.2f * s, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                )
+                        // ৪. তীর দুটি — একে একে বেরিয়ে আসে
+                        val a1 = seg(t, 0.55f, 0.74f)
+                        val a2 = seg(t, 0.62f, 0.80f)
+                        if (a1 > 0f) clipRect(0f, 0f, 14f + 62f * a1, 108f) {
+                            drawPath(shapes.arrow1, shapes.bArrow1)
+                        }
+                        if (a2 > 0f) clipRect(0f, 0f, 14f + 62f * a2, 108f) {
+                            drawPath(shapes.arrow2, shapes.bArrow2)
+                        }
 
-                // 2. Smooth 3D Fill Reveal of Cloud Lobes
-                if (fillAlpha > 0f) {
-                    drawPath(
-                        path = cloudPath,
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color(0xFF0055E0).copy(alpha = fillAlpha),
-                                Color(0xFF1CB5FF).copy(alpha = fillAlpha),
-                                Color(0xFF38F9E8).copy(alpha = fillAlpha)
-                            ),
-                            start = Offset(15f * s, 75f * s),
-                            end = Offset(90f * s, 30f * s)
-                        )
-                    )
-
-                    // White 3D Ribbon Band
-                    val ribbonPath = Path().apply {
-                        moveTo(14.5f * s, 60.5f * s)
-                        cubicTo(15f * s, 75f * s, 27f * s, 81.5f * s, 41.5f * s, 78.5f * s)
-                        cubicTo(52.5f * s, 76.2f * s, 63.5f * s, 68.5f * s, 72.5f * s, 58.5f * s)
-                        cubicTo(76.8f * s, 53.5f * s, 76.5f * s, 45.5f * s, 71.2f * s, 41.5f * s)
-                        cubicTo(66.0f * s, 37.8f * s, 58.2f * s, 39.2f * s, 53.0f * s, 44.2f * s)
-                        cubicTo(43.5f * s, 53.5f * s, 34.5f * s, 62.5f * s, 25.5f * s, 65.2f * s)
-                        close()
+                        // ৫. তিনটি সিগনাল আর্ক — ভেতর থেকে বাইরে আঁকা হয়
+                        listOf(shapes.arc1, shapes.arc2, shapes.arc3).forEachIndexed { i, arc ->
+                            val p = seg(t, 0.68f + i * 0.07f, 0.84f + i * 0.07f)
+                            drawTrimmed(arc, pm, p, shapes.bArc, 4.5f)
+                        }
                     }
-                    drawPath(path = ribbonPath, color = Color.White.copy(alpha = fillAlpha))
-                }
-
-                // 3. Live Drawing of the 2 Curved Swoosh Arrows
-                listOf(
-                    Triple(arrow1Path, Color(0xFF0099FF), 3.8f * s),
-                    Triple(arrow2Path, Color(0xFF0066E6), 4.6f * s)
-                ).forEach { (p, col, strokeW) ->
-                    pm.setPath(p, false)
-                    val seg = Path()
-                    pm.getSegment(0f, pm.length * drawProgress, seg, true)
-                    drawPath(seg, col, style = Stroke(width = strokeW, cap = StrokeCap.Round))
-                }
-
-                if (drawProgress > 0.75f) {
-                    val headAlpha = ((drawProgress - 0.75f) * 4f).coerceIn(0f, 1f)
-                    val head1 = Path().apply {
-                        moveTo(53.5f * s, 51f * s); lineTo(43f * s, 54f * s); lineTo(50.5f * s, 61f * s); close()
-                    }
-                    val head2 = Path().apply {
-                        moveTo(67.5f * s, 43f * s); lineTo(55.5f * s, 49.5f * s); lineTo(68.5f * s, 56f * s); close()
-                    }
-                    drawPath(head1, Color(0xFF0099FF).copy(alpha = headAlpha))
-                    drawPath(head2, Color(0xFF0066E6).copy(alpha = headAlpha))
-                }
-
-                // 4. Live Drawing of the 3 Signal Waves at Top-Right
-                val waveSweep = 72f * drawProgress
-                listOf(18f to 35f, 32f to 28f, 46f to 21f).forEach { (boxDim, topY) ->
-                    drawArc(
-                        color = Color(0xFF18B8FF),
-                        startAngle = -75f,
-                        sweepAngle = waveSweep,
-                        useCenter = false,
-                        topLeft = Offset((67.5f - boxDim / 2f) * s, topY * s),
-                        size = Size(boxDim * s, boxDim * s),
-                        style = Stroke(width = 4.2f * s, cap = StrokeCap.Round)
-                    )
                 }
             }
 
@@ -354,11 +342,11 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
             Text(
                 text = stringResource(R.string.app_name),
                 color = Color.White,
-                fontSize = 19.sp,
+                fontSize = 20.sp,
                 fontWeight = FontWeight.SemiBold,
                 letterSpacing = 0.5.sp,
                 modifier = Modifier
-                    .offset(y = textOffsetY)
+                    .offset(y = (8f * (1f - textAlpha)).dp)
                     .alpha(textAlpha)
             )
 
@@ -368,15 +356,16 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
                 text = "Developer: Yasin Adnan",
                 color = Color(0xFF38BDF8).copy(alpha = 0.8f),
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Normal,
                 letterSpacing = 0.4.sp,
                 modifier = Modifier
-                    .offset(y = textOffsetY)
+                    .offset(y = (8f * (1f - textAlpha)).dp)
                     .alpha(textAlpha)
             )
         }
     }
 }
+
+// ───────────────────────── Update dialog ─────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -400,13 +389,13 @@ fun GlobalUpdateDialog(
             else -> {}
         }
     }
-    
+
     when (updateState) {
         is UpdateState.NewVersionAvailable -> {
             AlertDialog(
                 onDismissRequest = onDismiss,
                 title = { Text("Update Available (${updateState.release.tag_name})") },
-                text = { 
+                text = {
                     Column(
                         modifier = Modifier.verticalScroll(rememberScrollState())
                     ) {
