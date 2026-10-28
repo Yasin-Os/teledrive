@@ -1,3 +1,4 @@
+// File: app/src/main/java/com/awd/teledrive/data/service/TransferService.kt
 package com.awd.teledrive.data.service
 
 import android.app.NotificationChannel
@@ -52,7 +53,7 @@ class TransferService : Service() {
                     .forEach { transferRepository.cancelTransfer(it.remoteUniqueId) }
             }
         }
-        return super.onStartCommand(intent, flags, startId)
+        return START_STICKY
     }
 
     override fun onCreate() {
@@ -67,40 +68,45 @@ class TransferService : Service() {
         }
         
         serviceScope.launch {
-            // Give some time for initial transfers to be added if service just started
-            delay(1000)
+            delay(800)
             transferRepository.transfers.collectLatest { transfers ->
                 val transferring = transfers.values.filter { 
                     it.status != TransferRepository.Status.COMPLETED && 
                     it.status != TransferRepository.Status.CANCELLED && 
                     !it.status.startsWith(TransferRepository.Status.FAILED)
                 }
-                val completed = transfers.values.filter { it.status == TransferRepository.Status.COMPLETED }
                 
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 
                 if (transferring.isEmpty()) {
-                    if (completed.isNotEmpty()) {
-                        val text = getString(R.string.all_transfers_completed)
-                        val notification = createNotification(text, 1f, false)
-                        notificationManager.notify(NOTIFICATION_ID, notification)
-                        // Clear the database or just let it be? For now just stop.
+                    // পরবর্তী ফাইল কিউ থেকে আসার জন্য ৩ সেকেন্ড অপেক্ষা করবে, যাতে বারবার সার্ভিস বন্ধ-চালু না হয়
+                    delay(3000)
+                    val stillEmpty = transferRepository.transfers.value.values.none {
+                        it.status != TransferRepository.Status.COMPLETED &&
+                        it.status != TransferRepository.Status.CANCELLED &&
+                        !it.status.startsWith(TransferRepository.Status.FAILED)
                     }
-                    android.util.Log.d("TransferService", "No active transfers, stopping service.")
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    if (stillEmpty) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 } else {
                     val totalBytes = transferring.sumOf { it.totalSize }
                     val downloadedBytes = transferring.sumOf { it.downloadedSize }
-                    val progress = if (totalBytes > 0) downloadedBytes.toFloat() / totalBytes.toFloat() else 0f
+                    val avgProgress = transferring.map { it.progress }.average().toFloat()
+                    val progress = if (totalBytes > 0 && downloadedBytes > 0) {
+                        (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        avgProgress.coerceIn(0f, 1f)
+                    }
                     
                     val percentage = (progress * 100).toInt()
                     
                     val notification = if (transferring.size == 1) {
                         val transfer = transferring.first()
                         val text = when {
-                            transfer.status.startsWith("Memecah") -> getString(R.string.splitting_file, transfer.fileName)
-                            transfer.status.startsWith("Menggabungkan") -> getString(R.string.merging_file, transfer.fileName)
+                            transfer.status.startsWith("Splitting") || transfer.status.startsWith("Memecah") -> getString(R.string.splitting_file, transfer.fileName)
+                            transfer.status.startsWith("Merging") || transfer.status.startsWith("Menggabungkan") -> getString(R.string.merging_file, transfer.fileName)
                             transfer.isDownload -> getString(R.string.downloading_file, transfer.fileName)
                             else -> getString(R.string.uploading_file, transfer.fileName)
                         }
@@ -129,9 +135,9 @@ class TransferService : Service() {
 
     private fun createNotification(content: String, progress: Float, ongoing: Boolean, uniqueId: String? = null, isMulti: Boolean = false): android.app.Notification {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("TeleDrive")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText(content)
-            .setSmallIcon(if (ongoing) android.R.drawable.stat_sys_download else R.mipmap.ic_launcher)
+            .setSmallIcon(if (ongoing) android.R.drawable.stat_sys_download else R.drawable.ic_mycloud_logo)
             .setProgress(100, (progress * 100).toInt(), false)
             .setOngoing(ongoing)
             .setAutoCancel(!ongoing)
