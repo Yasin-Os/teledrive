@@ -1,4 +1,3 @@
-// File: app/src/main/java/com/awd/teledrive/data/worker/MediaBackupWorker.kt
 package com.awd.teledrive.data.worker
 
 import android.app.NotificationChannel
@@ -13,7 +12,6 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.awd.teledrive.R
 import com.awd.teledrive.data.repository.DriveRepository
-import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -37,7 +35,6 @@ class MediaBackupWorker(
     @InstallIn(SingletonComponent::class)
     interface MediaBackupWorkerEntryPoint {
         fun driveRepository(): DriveRepository
-        fun transferRepository(): TransferRepository
         fun secureSettings(): SecureSettings
     }
 
@@ -50,23 +47,21 @@ class MediaBackupWorker(
                 MediaBackupWorkerEntryPoint::class.java
             )
             val driveRepository = entryPoint.driveRepository()
-            val transferRepository = entryPoint.transferRepository()
             val secureSettings = entryPoint.secureSettings()
             
             val backupFolders = secureSettings.getStringList("backup_folders")
             if (backupFolders.isEmpty()) return@withContext Result.success()
 
-            // Saved Messages চ্যাট রুম প্রস্তুত না হওয়া পর্যন্ত অপেক্ষা করবে
             val chatId = driveRepository.awaitSavedMessagesChatId()
             if (chatId == 0L) return@withContext Result.retry()
 
             val customPrefs = applicationContext.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
             val deleteAfterBackup = customPrefs.getBoolean("delete_after_backup", false)
 
-            // Tri-Engine স্ক্যানার দিয়ে টার্গেট ফোল্ডারের সব ফাইল বের করা হচ্ছে
             val filesToBackup = driveRepository.collectTargetBackupFiles(backupFolders)
             if (filesToBackup.isEmpty()) return@withContext Result.success()
 
+            // ১টি ১টি করে (1-by-1) ফাইল আপলোড করবে এবং শেষ হওয়া পর্যন্ত অপেক্ষা করবে
             filesToBackup.forEachIndexed { index, file ->
                 if (!file.exists() || !file.isFile) return@forEachIndexed
 
@@ -84,31 +79,13 @@ class MediaBackupWorker(
                 
                 setForeground(createForegroundInfo(currentCount, totalCount))
 
-                driveRepository.uploadFile(
+                driveRepository.uploadFileAndWait(
                     filePath = originalPath,
                     originalFileName = file.name,
                     forceDeleteSource = deleteAfterBackup,
                     backupTrackingKey = fileKey
                 )
-
-                // ফাইলটি ক্লাউডে সম্পূর্ণ আপলোড হওয়া পর্যন্ত অপেক্ষা করবে
-                var waitedMs = 0L
-                val maxWaitMs = 20 * 60 * 1000L
-                delay(800)
-                while (waitedMs < maxWaitMs) {
-                    val activeForFile = transferRepository.transfers.value.values.find {
-                        !it.isDownload && (it.localPath == originalPath || it.fileName == file.name)
-                    }
-                    if (activeForFile == null || activeForFile.status == TransferRepository.Status.COMPLETED) {
-                        break
-                    }
-                    if (activeForFile.status == TransferRepository.Status.CANCELLED ||
-                        activeForFile.status.startsWith(TransferRepository.Status.FAILED)) {
-                        break
-                    }
-                    delay(600)
-                    waitedMs += 600
-                }
+                delay(300)
             }
             
             secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
@@ -153,3 +130,4 @@ class MediaBackupWorker(
         }
     }
 }
+```
