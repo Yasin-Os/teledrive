@@ -1,4 +1,3 @@
-// File: app/src/main/java/com/awd/teledrive/data/repository/TransferRepository.kt
 package com.awd.teledrive.data.repository
 
 import android.content.ContentValues
@@ -56,8 +55,9 @@ class TransferRepository @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val uploadSemaphore = Semaphore(4)
-    private val downloadSemaphore = Semaphore(4)
+    // ল্যাগ পুরোপুরি বন্ধ করতে Strict 1-by-1 Queue: ১টি ফাইল শেষ না হওয়া পর্যন্ত পরের ফাইলটি অপেক্ষা করবে
+    private val uploadSemaphore = Semaphore(1)
+    private val downloadSemaphore = Semaphore(2)
 
     private val activeMap = ConcurrentHashMap<String, TransferInfo>()
     private val fileIdToKey = ConcurrentHashMap<Int, String>()
@@ -90,7 +90,6 @@ class TransferRepository @Inject constructor(
                     ?: (if (uniqueId.isNotEmpty()) idMigrationMap.entries.find { it.value == uniqueId }?.key else null)
 
                 if (key == null) {
-                    // ব্যাকগ্রাউন্ড বা প্রিভিউ ডাউনলোড শেষ হলে লোকাল ডাটাবেসে অফলাইন পাথ সেভ করে রাখবে
                     if (file.local.isDownloadingCompleted && localPath.isNotEmpty()) {
                         driveDao.updateLocalPath(fileId, localPath)
                         if (uniqueId.isNotEmpty()) {
@@ -113,7 +112,7 @@ class TransferRepository @Inject constructor(
 
                 if (isEffectivelyCompleted) {
                     if (isDownload && localPath.isNotEmpty()) {
-                        // ডাউনলোড হওয়া ফাইল শুধুমাত্র অ্যাপের ভেতরে অফলাইনে চলার জন্য রেডি থাকবে (ফোন স্টোরেজে অটো সেভ হবে না)
+                        // ডাউনলোড করা ফাইল শুধুমাত্র অ্যাপের নিজস্ব অফলাইন স্টোরেজে সংরক্ষিত থাকবে
                         driveDao.updateLocalPath(fileId, localPath)
                         if (uniqueId.isNotEmpty()) {
                             driveDao.updateLocalPathByUniqueId(uniqueId, localPath)
@@ -125,7 +124,7 @@ class TransferRepository @Inject constructor(
 
                 val now = System.currentTimeMillis()
                 val last = lastEmitTime[key] ?: 0L
-                if (now - last >= 80L) {
+                if (now - last >= 120L) {
                     lastEmitTime[key] = now
                     val activeStatus = if (isDownload) Status.DOWNLOADING else Status.UPLOADING
                     val updatedInfo = currentInfo.copy(
@@ -180,14 +179,13 @@ class TransferRepository @Inject constructor(
         block: suspend () -> Unit
     ) {
         val key = remoteUniqueId.ifEmpty { "tr_${System.nanoTime()}_$fileId" }
-        val initialStatus = if (isDownload) Status.DOWNLOADING else Status.UPLOADING
         val info = TransferInfo(
             fileId = fileId,
             remoteUniqueId = key,
             fileName = fileName,
-            progress = 0.01f,
+            progress = 0.0f,
             isDownload = isDownload,
-            status = initialStatus,
+            status = Status.QUEUED,
             totalSize = totalSize,
             downloadedSize = 0L,
             localPath = localPath
@@ -202,6 +200,17 @@ class TransferRepository @Inject constructor(
         val semaphore = if (isDownload) downloadSemaphore else uploadSemaphore
         scope.launch {
             semaphore.withPermit {
+                if (!activeMap.containsKey(key) && idMigrationMap[key] == null) {
+                    return@withPermit
+                }
+                val currentKey = idMigrationMap[key] ?: key
+                activeMap[currentKey]?.let { current ->
+                    activeMap[currentKey] = current.copy(
+                        status = if (isDownload) Status.DOWNLOADING else Status.UPLOADING,
+                        progress = 0.01f
+                    )
+                    publishState()
+                }
                 try {
                     block()
                 } catch (e: Exception) {
@@ -252,7 +261,7 @@ class TransferRepository @Inject constructor(
             fileName = fileName,
             progress = 0f,
             isDownload = isDownload,
-            status = status ?: (if (isDownload) Status.DOWNLOADING else Status.UPLOADING),
+            status = status ?: Status.QUEUED,
             totalSize = totalSize,
             downloadedSize = 0L,
             localPath = localPath
@@ -371,7 +380,7 @@ class TransferRepository @Inject constructor(
         return result
     }
 
-    // শুধুমাত্র ইউজার যখন নিজে "Save to Phone Storage" বাটনে চাপ দেবে তখনই এই ফাংশনটি কল হবে
+    // শুধুমাত্র ইউজার যখন নিজে "Save to Phone Storage" চাপবে তখনই কেবল ফোন মেমোরিতে সেভ হবে
     fun saveToPublicDownloads(internalPath: String, fileName: String) {
         scope.launch(Dispatchers.IO) {
             try {
@@ -451,3 +460,4 @@ class TransferRepository @Inject constructor(
         } catch (e: Exception) {}
     }
 }
+```
