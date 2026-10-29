@@ -1,15 +1,19 @@
-// File: app/src/main/java/com/awd/teledrive/data/repository/DriveRepository.kt
 package com.awd.teledrive.data.repository
 
 import android.content.Context
 import android.content.Intent
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
@@ -33,6 +37,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -72,16 +77,31 @@ class DriveRepository @Inject constructor(
     private var savedMessagesChatId: Long = 0
     private val _savedMessagesChatIdFlow = MutableStateFlow(0L)
     private val isBackupRunning = AtomicBoolean(false)
+    private var watcherDebounceJob: Job? = null
 
     private val pendingUploadTempIds = ConcurrentHashMap<Long, String>()
     private val pendingAutoDeleteFiles = ConcurrentHashMap<Long, File>()
     private val pendingBackupKeys = ConcurrentHashMap<Long, String>()
+    private val inFlightBackupKeys = ConcurrentHashMap.newKeySet<String>()
 
     fun getSavedMessagesChatIdFlow(): Flow<Long> = _savedMessagesChatIdFlow.asStateFlow()
 
     init {
         scope.launch {
             transferRepository.clearCompleted()
+            registerRealTimeFolderWatcher()
+
+            // প্রতি ২৫ সেকেন্ড পরপর ব্যাকগ্রাউন্ডে চেক করবে টার্গেট ফোল্ডারে নতুন কিছু এসেছে কি না
+            launch {
+                delay(4000)
+                while (true) {
+                    val folders = secureSettings.getStringList("backup_folders")
+                    if (folders.isNotEmpty() && isNetworkConnected()) {
+                        runImmediateFolderBackup()
+                    }
+                    delay(25000)
+                }
+            }
 
             telegramClient.updates.collect { update ->
                 when (update) {
@@ -109,6 +129,7 @@ class DriveRepository @Inject constructor(
                         }
 
                         pendingBackupKeys.remove(oldId)?.let { bKey ->
+                            inFlightBackupKeys.remove(bKey)
                             markFileBackedUp(bKey)
                         }
 
@@ -127,13 +148,54 @@ class DriveRepository @Inject constructor(
                         val oldId = update.oldMessageId
                         val tempId = pendingUploadTempIds.remove(oldId)
                         pendingAutoDeleteFiles.remove(oldId)
-                        pendingBackupKeys.remove(oldId)
+                        pendingBackupKeys.remove(oldId)?.let { inFlightBackupKeys.remove(it) }
                         if (tempId != null) {
                             transferRepository.completeAndCleanupTransfer(tempId, success = false)
                         }
                     }
                 }
             }
+        }
+    }
+
+    // টার্গেট ফোল্ডারে নতুন কোনো ফাইল আসা মাত্রই অটো-সিঙ্ক চালু করার রিয়েল-টাইম ওয়াচার
+    private fun registerRealTimeFolderWatcher() {
+        try {
+            val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean, uri: Uri?) {
+                    super.onChange(selfChange, uri)
+                    watcherDebounceJob?.cancel()
+                    watcherDebounceJob = scope.launch {
+                        delay(2500)
+                        val folders = secureSettings.getStringList("backup_folders")
+                        if (folders.isNotEmpty() && isNetworkConnected()) {
+                            runImmediateFolderBackup()
+                        }
+                    }
+                }
+            }
+            val resolver = context.contentResolver
+            resolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, observer)
+            resolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, observer)
+            resolver.registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, observer)
+            resolver.registerContentObserver(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, true, observer)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                resolver.registerContentObserver(MediaStore.Downloads.EXTERNAL_CONTENT_URI, true, observer)
+            }
+        } catch (e: Exception) {
+            Log.e("DriveRepo", "Watcher registration error: ${e.message}")
+        }
+    }
+
+    // মোবাইলে এমবি (Mobile Data) অথবা ওয়াইফাই যেকোনো ইন্টারনেট থাকলেই সিঙ্ক কাজ করবে
+    private fun isNetworkConnected(): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (e: Exception) {
+            true
         }
     }
 
@@ -159,7 +221,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // অফলাইনে ফাইলটি আসলেই অ্যাপের ভেতরে ডাউনলোড করা আছে কি না তা চেক করবে
     private fun verifyOfflinePath(path: String?): String? {
         if (path.isNullOrEmpty()) return null
         val f = File(path)
@@ -245,7 +306,9 @@ class DriveRepository @Inject constructor(
                     scanDirFast(dir, backedUpSet, foundFiles)
                 } else if (dir.isFile && dir.length() > 0) {
                     val key = "${dir.absolutePath}_${dir.length()}"
-                    if (!backedUpSet.contains(key)) foundFiles[dir.absolutePath] = dir
+                    if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
+                        foundFiles[dir.absolutePath] = dir
+                    }
                 }
             }
         }
@@ -272,7 +335,7 @@ class DriveRepository @Inject constructor(
                                 val f = File(filePath)
                                 if (f.exists() && f.isFile && f.length() > 0 && !f.name.startsWith(".")) {
                                     val key = "${f.absolutePath}_${f.length()}"
-                                    if (!backedUpSet.contains(key)) {
+                                    if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
                                         foundFiles[f.absolutePath] = f
                                     }
                                 }
@@ -304,7 +367,7 @@ class DriveRepository @Inject constructor(
                 scanDirFast(child, backedUpSet, out)
             } else if (child.isFile && child.length() > 0) {
                 val key = "${child.absolutePath}_${child.length()}"
-                if (!backedUpSet.contains(key)) {
+                if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
                     out[child.absolutePath] = child
                 }
             }
@@ -319,7 +382,7 @@ class DriveRepository @Inject constructor(
                 scanDocumentTreeFallback(doc, backedUpSet, out)
             } else if (doc.isFile && doc.length() > 0) {
                 val key = "doc_${doc.uri}_${doc.length()}"
-                if (!backedUpSet.contains(key)) {
+                if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
                     val tempFile = File(context.cacheDir, name)
                     try {
                         context.contentResolver.openInputStream(doc.uri)?.use { input ->
@@ -336,10 +399,12 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    // ১টি ১টি করে (Strict 1-by-1) ফাইল সিঙ্ক করবে যাতে অ্যাপে বিন্দুমাত্র ল্যাগ না হয়
     fun runImmediateFolderBackup() {
         if (!isBackupRunning.compareAndSet(false, true)) return
         scope.launch {
             try {
+                if (!isNetworkConnected()) return@launch
                 val chatId = awaitSavedMessagesChatId()
                 if (chatId == 0L) return@launch
 
@@ -352,24 +417,56 @@ class DriveRepository @Inject constructor(
                 val filesToUpload = collectTargetBackupFiles(backupFolders)
                 if (filesToUpload.isEmpty()) return@launch
 
-                filesToUpload.forEach { file ->
-                    if (file.exists() && file.length() > 0) {
-                        val bKey = "${file.absolutePath}_${file.length()}"
-                        uploadFile(
-                            filePath = file.absolutePath,
-                            originalFileName = file.name,
-                            forceDeleteSource = deleteEnabled,
-                            backupTrackingKey = bKey
-                        )
-                        delay(80)
-                    }
+                for (file in filesToUpload) {
+                    if (!isNetworkConnected()) break
+                    if (!file.exists() || file.length() <= 0L) continue
+
+                    val bKey = "${file.absolutePath}_${file.length()}"
+                    val alreadyDone = customPrefs.getStringSet("backed_up_paths_v3", emptySet())?.contains(bKey) == true
+                    if (alreadyDone || !inFlightBackupKeys.add(bKey)) continue
+
+                    uploadFileAndWait(
+                        filePath = file.absolutePath,
+                        originalFileName = file.name,
+                        forceDeleteSource = deleteEnabled,
+                        backupTrackingKey = bKey
+                    )
+                    delay(400)
                 }
                 secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
             } catch (e: Exception) {
-                Log.e("DriveRepo", "Immediate backup error: ${e.message}")
+                Log.e("DriveRepo", "Sequential backup error: ${e.message}")
             } finally {
                 isBackupRunning.set(false)
             }
+        }
+    }
+
+    suspend fun uploadFileAndWait(
+        filePath: String,
+        originalFileName: String,
+        forceDeleteSource: Boolean = false,
+        backupTrackingKey: String? = null
+    ) {
+        uploadFile(
+            filePath = filePath,
+            originalFileName = originalFileName,
+            forceDeleteSource = forceDeleteSource,
+            backupTrackingKey = backupTrackingKey
+        )
+        delay(600)
+        var waited = 0L
+        val maxWait = 25 * 60 * 1000L
+        while (waited < maxWait) {
+            val stillActive = transferRepository.transfers.value.values.any {
+                !it.isDownload && (it.localPath == filePath || it.fileName == originalFileName) &&
+                it.status != TransferRepository.Status.COMPLETED &&
+                it.status != TransferRepository.Status.CANCELLED &&
+                !it.status.startsWith(TransferRepository.Status.FAILED)
+            }
+            if (!stillActive) break
+            delay(500)
+            waited += 500
         }
     }
 
@@ -888,7 +985,10 @@ class DriveRepository @Inject constructor(
 
             val vfTag = if (virtualFolderId != null && virtualFolderId != "0") "[VF:$virtualFolderId]" else ""
             val sourceFile = File(filePath)
-            if (!sourceFile.exists()) return@ensureSavedMessagesChat
+            if (!sourceFile.exists()) {
+                if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
+                return@ensureSavedMessagesChat
+            }
 
             if (sourceFile.length() > FileUtils.MAX_FILE_SIZE) {
                 if (!FileUtils.hasEnoughSpace(context, sourceFile.length())) return@ensureSavedMessagesChat
@@ -910,12 +1010,16 @@ class DriveRepository @Inject constructor(
                                 if (messageId != 0L) partMessageIds.add(messageId)
                                 if (index == parts.size - 1) {
                                     sendSplitMasterMetadata(groupId, cleanName, sourceFile.length(), FileUtils.getMimeType(cleanName), parts.size, virtualFolderId, isChatSecure(targetChatId), partMessageIds)
-                                    if (backupTrackingKey != null) markFileBackedUp(backupTrackingKey)
+                                    if (backupTrackingKey != null) {
+                                        inFlightBackupKeys.remove(backupTrackingKey)
+                                        markFileBackedUp(backupTrackingKey)
+                                    }
                                     if (autoDeleteEnabled) deletePhoneFileCompletely(sourceFile)
                                 }
                             }
                         }
                     } catch (e: Exception) {
+                        if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
                         transferRepository.updateTransferManual(placeholderId, 0f, TransferRepository.Status.FAILED)
                     }
                 }
@@ -986,6 +1090,7 @@ class DriveRepository @Inject constructor(
         val isSecure = isChatSecure(targetChatId) || (virtualFolderId != null && isVirtualFolderSecure(virtualFolderId))
         val password = secureSessionManager.decryptedPassword.value
         if (isSecure && password == null) {
+            if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
             scope.launch(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.unlock_to_upload), Toast.LENGTH_LONG).show() }
             return
         }
@@ -1035,6 +1140,7 @@ class DriveRepository @Inject constructor(
                     finalCaption = if (caption != null) "$caption [ENC]" else "$originalFileName [ENC]"
                     transferRepository.updateRemoteUniqueId(tempId, tempId, 0, finalPath)
                 } catch (e: Exception) {
+                    if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
                     transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
                     return@enqueueTransfer 
                 }
@@ -1068,6 +1174,7 @@ class DriveRepository @Inject constructor(
                             transferRepository.completeAndCleanupTransfer(file.remote.uniqueId, tempId, file.id, success = true)
                             if (backupTrackingKey != null) {
                                 pendingBackupKeys.remove(result.id)
+                                inFlightBackupKeys.remove(backupTrackingKey)
                                 markFileBackedUp(backupTrackingKey)
                             }
                             if (deleteSourceAfter && !isTempCacheFile) {
@@ -1079,9 +1186,11 @@ class DriveRepository @Inject constructor(
                             sendFileMetadata(result.id, originalFileName, virtualFolderId, isSecure)
                         }
                     } else {
+                        if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
                         transferRepository.completeAndCleanupTransfer(tempId, success = false)
                     }
                 } else {
+                    if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
                     transferRepository.completeAndCleanupTransfer(tempId, success = false)
                 }
             }
@@ -1096,6 +1205,9 @@ class DriveRepository @Inject constructor(
                     if (originalSourceFile.exists()) originalSourceFile.delete()
                 } else if (completedSuccess && deleteSourceAfter) {
                     deletePhoneFileCompletely(originalSourceFile)
+                }
+                if (!completedSuccess && backupTrackingKey != null) {
+                    inFlightBackupKeys.remove(backupTrackingKey)
                 }
             } catch (e: Exception) {}
         }
@@ -1135,7 +1247,7 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // ইন-অ্যাপ অফলাইন ডাউনলোড: এটি ফাইলকে অ্যাপের ভেতরে অফলাইনে চলার জন্য ডাউনলোড করবে (ফোন মেমোরিতে পাঠাবে না)
+    // ইন-অ্যাপ অফলাইন ডাউনলোড: এটি ফাইলকে অ্যাপের ভেতরে অফলাইনে চলার জন্য ডাউনলোড করবে
     fun downloadFile(messageId: Long, chatId: Long, fileName: String) {
         scope.launch {
             val cachedEntity = driveDao.getItemById(messageId, chatId)
@@ -1194,7 +1306,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // ইনস্ট্যান্ট প্রিভিউ ও স্ট্রিমিংয়ের জন্য (অফলাইনে থাকলে সাথে সাথে ওপেন হবে, না থাকলে ক্লাউড থেকে স্ট্রিম করবে)
     fun downloadForPreview(messageId: Long, chatId: Long, fileName: String) {
         scope.launch {
             val cachedEntity = driveDao.getItemById(messageId, chatId)
@@ -1219,7 +1330,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // ইউজার যখন নিজে "Save to Phone Storage" চাপবে তখনই কেবল ফোনের Downloads ফোল্ডারে সেভ হবে
     fun saveToPublicStorage(file: DriveItem.File) {
         val source = verifyOfflinePath(file.localPath)?.let { File(it) }
         if (source == null) {
@@ -1431,3 +1541,4 @@ class DriveRepository @Inject constructor(
 
     private data class SplitMetadata(val groupId: String, val partIndex: Int, val totalParts: Int, val originalName: String)
 }
+```
