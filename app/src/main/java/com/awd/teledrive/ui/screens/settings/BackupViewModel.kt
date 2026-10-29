@@ -1,4 +1,3 @@
-// File: app/src/main/java/com/awd/teledrive/ui/screens/settings/BackupViewModel.kt
 package com.awd.teledrive.ui.screens.settings
 
 import androidx.lifecycle.ViewModel
@@ -32,7 +31,7 @@ class BackupViewModel @Inject constructor(
 ) : ViewModel() {
 
     val isAutoBackupEnabled = settingsRepository.isAutoBackupEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
     private val _lastBackupTime = MutableStateFlow(secureSettings.getLong("last_backup_time", 0L))
     val lastBackupTime = _lastBackupTime.asStateFlow()
@@ -43,13 +42,26 @@ class BackupViewModel @Inject constructor(
     private val _feedback = MutableSharedFlow<BackupFeedback>()
     val feedback: SharedFlow<BackupFeedback> = _feedback.asSharedFlow()
 
+    // ডিফল্টভাবে Wi-Fi Only বন্ধ রাখা হলো যাতে মোবাইল ডাটা (এমবি) ও ওয়াইফাই উভয় ক্ষেত্রেই অটো-সিঙ্ক চলে
     val isBackupWifiOnly = settingsRepository.isBackupWifiOnlyEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val backupWorkInfo = workerManager.getBackupWorkInfo()
 
+    init {
+        if (_backupFolders.value.isNotEmpty()) {
+            settingsRepository.setAutoBackupEnabled(true)
+            settingsRepository.setBackupWifiOnlyEnabled(false)
+            workerManager.scheduleBackup(true)
+            driveRepository.runImmediateFolderBackup()
+        }
+    }
+
     fun setAutoBackupEnabled(enabled: Boolean) {
         settingsRepository.setAutoBackupEnabled(enabled)
+        if (enabled) {
+            settingsRepository.setBackupWifiOnlyEnabled(false)
+        }
         workerManager.scheduleBackup(enabled)
         if (enabled && _backupFolders.value.isNotEmpty()) {
             driveRepository.runImmediateFolderBackup()
@@ -77,7 +89,10 @@ class BackupViewModel @Inject constructor(
         _backupFolders.value = current
         secureSettings.saveStringList("backup_folders", current)
 
-        if (isAutoBackupEnabled.value && current.isNotEmpty()) {
+        if (current.isNotEmpty()) {
+            settingsRepository.setAutoBackupEnabled(true)
+            settingsRepository.setBackupWifiOnlyEnabled(false)
+            workerManager.scheduleBackup(true)
             driveRepository.runImmediateFolderBackup()
         }
     }
@@ -90,9 +105,11 @@ class BackupViewModel @Inject constructor(
             current.add(normalized)
             _backupFolders.value = current
             secureSettings.saveStringList("backup_folders", current)
-            if (isAutoBackupEnabled.value) {
-                driveRepository.runImmediateFolderBackup()
-            }
+
+            settingsRepository.setAutoBackupEnabled(true)
+            settingsRepository.setBackupWifiOnlyEnabled(false)
+            workerManager.scheduleBackup(true)
+            driveRepository.runImmediateFolderBackup()
         }
     }
 
@@ -106,7 +123,6 @@ class BackupViewModel @Inject constructor(
         viewModelScope.launch {
             _feedback.emit(BackupFeedback.Starting)
         }
-        // সাথে সাথে ইনস্ট্যান্ট ব্যাকআপ এবং ব্যাকগ্রাউন্ড ওয়ার্কার দুটিই একসাথে কাজ শুরু করবে
         driveRepository.runImmediateFolderBackup()
         workerManager.triggerOneTimeBackup()
         _lastBackupTime.value = System.currentTimeMillis()
