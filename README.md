@@ -30,7 +30,7 @@
 ## 🚀 ডাউনলোড ও ইনস্টল
 
 সর্বশেষ রিলিজ করা APK ফাইলটি নামাতে নিচের লিংকে ক্লিক করুন:
-👉 **[MyCloud Latest Release](https://github.com/Yasin-Os/teledrive/releases/latest)**
+👉 **[MyCloud Latest Release](https://github.com/Yasin-Os/teledrive/)**
 
 ---
 
