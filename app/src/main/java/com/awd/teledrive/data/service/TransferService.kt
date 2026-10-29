@@ -1,4 +1,3 @@
-// File: app/src/main/java/com/awd/teledrive/data/service/TransferService.kt
 package com.awd.teledrive.data.service
 
 import android.app.NotificationChannel
@@ -79,7 +78,6 @@ class TransferService : Service() {
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 
                 if (transferring.isEmpty()) {
-                    // পরবর্তী ফাইল কিউ থেকে আসার জন্য ৩ সেকেন্ড অপেক্ষা করবে, যাতে বারবার সার্ভিস বন্ধ-চালু না হয়
                     delay(3000)
                     val stillEmpty = transferRepository.transfers.value.values.none {
                         it.status != TransferRepository.Status.COMPLETED &&
@@ -91,41 +89,26 @@ class TransferService : Service() {
                         stopSelf()
                     }
                 } else {
-                    val totalBytes = transferring.sumOf { it.totalSize }
-                    val downloadedBytes = transferring.sumOf { it.downloadedSize }
-                    val avgProgress = transferring.map { it.progress }.average().toFloat()
-                    val progress = if (totalBytes > 0 && downloadedBytes > 0) {
-                        (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                    val activeItem = transferring.firstOrNull { 
+                        it.status == TransferRepository.Status.UPLOADING || it.status == TransferRepository.Status.DOWNLOADING 
+                    } ?: transferring.first()
+
+                    val queuedCount = transferring.size - 1
+                    val percentage = (activeItem.progress * 100).toInt()
+                    val baseText = if (activeItem.isDownload) {
+                        getString(R.string.downloading_file, activeItem.fileName)
                     } else {
-                        avgProgress.coerceIn(0f, 1f)
+                        getString(R.string.uploading_file, activeItem.fileName)
                     }
-                    
-                    val percentage = (progress * 100).toInt()
-                    
-                    val notification = if (transferring.size == 1) {
-                        val transfer = transferring.first()
-                        val text = when {
-                            transfer.status.startsWith("Splitting") || transfer.status.startsWith("Memecah") -> getString(R.string.splitting_file, transfer.fileName)
-                            transfer.status.startsWith("Merging") || transfer.status.startsWith("Menggabungkan") -> getString(R.string.merging_file, transfer.fileName)
-                            transfer.isDownload -> getString(R.string.downloading_file, transfer.fileName)
-                            else -> getString(R.string.uploading_file, transfer.fileName)
-                        }
-                        createNotification(
-                            "$text ($percentage%)",
-                            progress,
-                            true,
-                            transfer.remoteUniqueId
-                        )
-                    } else {
-                        val downloads = transferring.count { it.isDownload }
-                        val uploads = transferring.size - downloads
-                        val text = when {
-                            downloads > 0 && uploads > 0 -> getString(R.string.transferring_count, transferring.size)
-                            downloads > 0 -> getString(R.string.downloading_count, downloads)
-                            else -> getString(R.string.uploading_count, uploads)
-                        }
-                        createNotification("$text ($percentage%)", progress, true, null, true)
-                    }
+                    val suffix = if (queuedCount > 0) " (+$queuedCount in queue)" else ""
+
+                    val notification = createNotification(
+                        "$baseText ($percentage%)$suffix",
+                        activeItem.progress,
+                        true,
+                        activeItem.remoteUniqueId,
+                        queuedCount > 0
+                    )
                     
                     notificationManager.notify(NOTIFICATION_ID, notification)
                 }
@@ -150,7 +133,7 @@ class TransferService : Service() {
             )
 
         if (ongoing) {
-            if (uniqueId != null) {
+            if (uniqueId != null && !isMulti) {
                 val cancelIntent = Intent(this, TransferService::class.java).apply {
                     action = ACTION_CANCEL_TRANSFER
                     putExtra(EXTRA_UNIQUE_ID, uniqueId)
