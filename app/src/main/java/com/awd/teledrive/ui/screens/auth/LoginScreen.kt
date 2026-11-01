@@ -78,7 +78,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -129,12 +128,18 @@ fun LoginScreen(
     val context = LocalContext.current
     var selectedProvider by remember { mutableStateOf(CloudProvider.NONE) }
 
-    // Google Sign-In Launcher
+    // Google Sign-In Launcher with Error Details
     val googleSignInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             viewModel.handleGoogleSignInResult(result.data)
         } else {
-            Toast.makeText(context, "Google Sign-In Cancelled. Ensure your email is in 'Test Users' in Google Console.", Toast.LENGTH_LONG).show()
+            val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                Toast.makeText(context, "Sign In Cancelled", Toast.LENGTH_SHORT).show()
+            } catch (e: com.google.android.gms.common.api.ApiException) {
+                Toast.makeText(context, "Google Error: ${e.statusCode} - ${e.message}", Toast.LENGTH_LONG).show()
+            }
             selectedProvider = CloudProvider.NONE
         }
     }
@@ -316,7 +321,7 @@ fun LoginContent(
                 Image(
                     painter = painterResource(id = R.drawable.ic_mycloud_logo),
                     contentDescription = "MyCloud Logo",
-                    modifier = Modifier.size(90.dp).clip(RoundedCornerShape(22.dp))
+                    modifier = Modifier.size(100.dp).clip(RoundedCornerShape(26.dp))
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -356,23 +361,38 @@ fun LoginContent(
                 }
 
                 if (selectedProvider == CloudProvider.NONE) {
-                    // New Premium Stacked Provider Cards
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
-                        CloudProviderCard(
-                            title = "Telegram Cloud",
-                            subtitle = "Unlimited Free Storage",
-                            icon = Icons.Default.Send,
-                            iconTint = Color(0xFF00B4DB),
-                            onClick = { onProviderSelect(CloudProvider.TELEGRAM) }
-                        )
+                        Surface(
+                            onClick = { onProviderSelect(CloudProvider.TELEGRAM) },
+                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0088CC).copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, Color(0xFF0088CC).copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth().height(90.dp)
+                        ) {
+                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Send, contentDescription = null, tint = Color(0xFF0088CC), modifier = Modifier.size(36.dp))
+                                Spacer(modifier = Modifier.width(16.dp))
+                                Column {
+                                    Text("Telegram Cloud", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                    Text("Unlimited Free Storage", color = Color(0xFF0088CC), fontSize = 13.sp)
+                                }
+                            }
+                        }
 
-                        CloudProviderCard(
-                            title = "Google Drive",
-                            subtitle = "15 GB Personal Storage",
-                            icon = Icons.Default.Cloud,
-                            iconTint = Color(0xFF10B981),
-                            onClick = { onProviderSelect(CloudProvider.GOOGLE_DRIVE) }
-                        )
+                        Surface(
+                            onClick = { onProviderSelect(CloudProvider.GOOGLE_DRIVE) },
+                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0F9D58).copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, Color(0xFF0F9D58).copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth().height(90.dp)
+                        ) {
+                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFF0F9D58), modifier = Modifier.size(36.dp))
+                                Spacer(modifier = Modifier.width(16.dp))
+                                Column {
+                                    Text("Google Drive", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                    Text("15 GB Personal Storage", color = Color(0xFF0F9D58), fontSize = 13.sp)
+                                }
+                            }
+                        }
                     }
                 } else if (selectedProvider == CloudProvider.TELEGRAM) {
                     when (uiState) {
@@ -509,45 +529,6 @@ fun LoginContent(
                     Text("Connecting to Google Drive...", color = Color.White.copy(alpha = 0.7f))
                 }
             }
-        }
-    }
-}
-
-@Composable
-fun CloudProviderCard(
-    title: String,
-    subtitle: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    iconTint: Color,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(18.dp),
-        color = Color.White.copy(alpha = 0.04f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-        modifier = Modifier.fillMaxWidth().height(82.dp)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = iconTint.copy(alpha = 0.15f),
-                modifier = Modifier.size(46.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(24.dp))
-                }
-            }
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(subtitle, color = iconTint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            }
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color.White.copy(alpha = 0.3f))
         }
     }
 }
