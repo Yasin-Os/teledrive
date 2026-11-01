@@ -3,6 +3,7 @@ package com.awd.teledrive.data.repository
 import android.content.Context
 import android.os.Build
 import com.awd.teledrive.core.Config
+import com.awd.teledrive.data.remote.GoogleAuthManager
 import com.awd.teledrive.data.remote.TelegramClient
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -21,11 +22,14 @@ import javax.inject.Singleton
 @Singleton
 class AuthRepository @Inject constructor(
     private val telegramClient: TelegramClient,
+    val googleAuthManager: GoogleAuthManager,
     private val secureSettings: SecureSettings,
     private val settingsRepository: SettingsRepository,
     @param:ApplicationContext private val context: Context,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    
+    // Telegram State
     private val _authState = MutableStateFlow<TdApi.AuthorizationState?>(null)
     val authState = _authState.asStateFlow()
 
@@ -78,6 +82,10 @@ class AuthRepository @Inject constructor(
             }
             is TdApi.AuthorizationStateWaitRegistration -> {
                 telegramClient.send(TdApi.RegisterUser("User", "", false))
+            }
+            is TdApi.AuthorizationStateReady -> {
+                secureSettings.saveBoolean("active_provider_telegram", true)
+                secureSettings.saveBoolean("active_provider_google", false)
             }
         }
     }
@@ -133,6 +141,7 @@ class AuthRepository @Inject constructor(
         secureSettings.saveInt("api_id", 0)
         secureSettings.saveString("api_hash", "")
         secureSettings.saveBoolean("api_explicitly_cleared", true)
+        secureSettings.saveBoolean("active_provider_telegram", false)
         _authState.value = TdApi.AuthorizationStateWaitTdlibParameters()
         telegramClient.send(TdApi.LogOut())
     }
@@ -197,8 +206,16 @@ class AuthRepository @Inject constructor(
         _codeResentMessage.value = null
     }
 
-    fun logout() {
+    fun logoutAll() {
         _authError.value = null
+        
+        // Google Logout
+        if (googleAuthManager.isGoogleSignedIn.value) {
+            googleAuthManager.signOut {}
+        }
+        
+        // Telegram Logout
+        secureSettings.saveBoolean("active_provider_telegram", false)
         telegramClient.send(TdApi.LogOut()) { result ->
             if (result is TdApi.Error) {
                 _authError.value = result.message
