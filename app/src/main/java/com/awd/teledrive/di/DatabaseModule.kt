@@ -6,6 +6,8 @@ import androidx.room.Room
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.TeleDriveDatabase
 import com.awd.teledrive.data.local.TransferDao
+import com.awd.teledrive.data.remote.GoogleAuthManager
+import com.awd.teledrive.data.secure.SecureSettings
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -39,5 +41,15 @@ object DatabaseModule {
     @Provides
     fun provideTransferDao(database: TeleDriveDatabase): TransferDao {
         return database.transferDao()
+    }
+
+    // Google Auth Manager Provider
+    @Provides
+    @Singleton
+    fun provideGoogleAuthManager(
+        @ApplicationContext context: Context,
+        secureSettings: SecureSettings
+    ): GoogleAuthManager {
+        return GoogleAuthManager(context, secureSettings)
     }
 }
