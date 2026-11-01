@@ -19,7 +19,7 @@ class GoogleAuthManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val secureSettings: SecureSettings
 ) {
-    // আপনার দেওয়া Google Client ID
+    // আপনার তৈরি করা Google Client ID
     private val webClientId = "23160235847-23ue78ne5keckhjgj82p7mmm38ktqqt1.apps.googleusercontent.com"
 
     private val _isGoogleSignedIn = MutableStateFlow(
