@@ -1,7 +1,10 @@
 package com.awd.teledrive.ui.screens.auth
 
+import android.app.Activity
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -106,7 +109,6 @@ private val COUNTRY_LIST = listOf(
     CountryOption("Pakistan", "92", "🇵🇰"),
     CountryOption("United States", "1", "🇺🇸"),
     CountryOption("United Kingdom", "44", "🇬🇧")
-    // আপনি চাইলে আরও দেশ যুক্ত করতে পারেন
 )
 
 @Composable
@@ -119,10 +121,25 @@ fun LoginScreen(
     val isProcessing by viewModel.isProcessing.collectAsState()
     val submittedPhone by viewModel.submittedPhone.collectAsState()
     val codeResentMessage by viewModel.codeResentMessage.collectAsState()
-    val context = LocalContext.current
+    
+    val isGoogleSignedIn by viewModel.isGoogleSignedIn.collectAsState()
+    val googleAuthError by viewModel.googleAuthError.collectAsState()
 
-    LaunchedEffect(uiState) {
-        if (uiState is LoginUiState.Success) {
+    val context = LocalContext.current
+    var selectedProvider by remember { mutableStateOf(CloudProvider.NONE) }
+
+    // Google Sign-In Launcher
+    val googleSignInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            viewModel.handleGoogleSignInResult(result.data)
+        } else {
+            Toast.makeText(context, "Google Sign In Cancelled", Toast.LENGTH_SHORT).show()
+            selectedProvider = CloudProvider.NONE
+        }
+    }
+
+    LaunchedEffect(uiState, isGoogleSignedIn) {
+        if (uiState is LoginUiState.Success || isGoogleSignedIn) {
             onLoginSuccess()
         }
     }
@@ -134,11 +151,26 @@ fun LoginScreen(
         }
     }
 
+    LaunchedEffect(googleAuthError) {
+        googleAuthError?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            viewModel.clearGoogleAuthError()
+            selectedProvider = CloudProvider.NONE
+        }
+    }
+
     LoginContent(
         uiState = uiState,
         authError = authError,
         isProcessing = isProcessing,
         submittedPhone = submittedPhone,
+        selectedProvider = selectedProvider,
+        onProviderSelect = { provider ->
+            selectedProvider = provider
+            if (provider == CloudProvider.GOOGLE_DRIVE) {
+                googleSignInLauncher.launch(viewModel.getGoogleSignInClient().signInIntent)
+            }
+        },
         onLoginSubmit = viewModel::onLoginSubmit,
         onCodeSubmit = viewModel::onCodeSubmit,
         onPasswordSubmit = viewModel::onPasswordSubmit,
@@ -154,6 +186,8 @@ fun LoginContent(
     authError: String?,
     isProcessing: Boolean,
     submittedPhone: String = "",
+    selectedProvider: CloudProvider,
+    onProviderSelect: (CloudProvider) -> Unit,
     onLoginSubmit: (String, String, String) -> Unit,
     onCodeSubmit: (String) -> Unit,
     onPasswordSubmit: (String) -> Unit,
@@ -162,8 +196,6 @@ fun LoginContent(
 ) {
     val defaultApiId = "94575"
     val defaultApiHash = "a3406de8d171bb422bb6ddf3bbd800e2"
-
-    var selectedProvider by remember { mutableStateOf(CloudProvider.NONE) }
 
     var selectedCountry by remember { mutableStateOf(COUNTRY_LIST.first()) }
     var countryCode by remember { mutableStateOf("880") }
@@ -176,7 +208,7 @@ fun LoginContent(
     var resendTimer by remember { mutableIntStateOf(60) }
     val scrollState = rememberScrollState()
 
-    val canGoBackToPhone = uiState is LoginUiState.EnteringCode || uiState is LoginUiState.EnteringPassword
+    val canGoBackToPhone = selectedProvider == CloudProvider.TELEGRAM && (uiState is LoginUiState.EnteringCode || uiState is LoginUiState.EnteringPassword)
 
     BackHandler(enabled = canGoBackToPhone || selectedProvider != CloudProvider.NONE) {
         if (canGoBackToPhone) {
@@ -184,7 +216,7 @@ fun LoginContent(
             password = ""
             onBackToPhoneInput()
         } else {
-            selectedProvider = CloudProvider.NONE
+            onProviderSelect(CloudProvider.NONE)
         }
     }
 
@@ -267,7 +299,7 @@ fun LoginContent(
                 IconButton(
                     onClick = {
                         if (canGoBackToPhone) { code = ""; password = ""; onBackToPhoneInput() }
-                        else selectedProvider = CloudProvider.NONE
+                        else onProviderSelect(CloudProvider.NONE)
                     },
                     modifier = Modifier.statusBarsPadding().padding(12.dp).align(Alignment.TopStart)
                 ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
@@ -323,24 +355,14 @@ fun LoginContent(
                 }
 
                 if (selectedProvider == CloudProvider.NONE) {
-                    // সুন্দর ও প্রফেশনাল Side-by-Side ক্লাউড সিলেকশন বাটন
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        // Telegram Button
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         Surface(
-                            onClick = { selectedProvider = CloudProvider.TELEGRAM },
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color(0xFF0088CC).copy(alpha = 0.15f),
+                            onClick = { onProviderSelect(CloudProvider.TELEGRAM) },
+                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0088CC).copy(alpha = 0.15f),
                             border = BorderStroke(1.dp, Color(0xFF0088CC).copy(alpha = 0.5f)),
                             modifier = Modifier.weight(1f).height(120.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.fillMaxSize(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
+                            Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                 Icon(Icons.Default.Send, contentDescription = null, tint = Color(0xFF0088CC), modifier = Modifier.size(36.dp))
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text("Telegram", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -348,19 +370,13 @@ fun LoginContent(
                             }
                         }
 
-                        // Google Drive Button
                         Surface(
-                            onClick = { selectedProvider = CloudProvider.GOOGLE_DRIVE },
-                            shape = RoundedCornerShape(20.dp),
-                            color = Color(0xFF0F9D58).copy(alpha = 0.15f),
+                            onClick = { onProviderSelect(CloudProvider.GOOGLE_DRIVE) },
+                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0F9D58).copy(alpha = 0.15f),
                             border = BorderStroke(1.dp, Color(0xFF0F9D58).copy(alpha = 0.5f)),
                             modifier = Modifier.weight(1f).height(120.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.fillMaxSize(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
+                            Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                 Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFF0F9D58), modifier = Modifier.size(36.dp))
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text("Google Drive", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -497,7 +513,6 @@ fun LoginContent(
                         }
                     }
                 } else if (selectedProvider == CloudProvider.GOOGLE_DRIVE) {
-                    // Google Drive Login Placeholder
                     Spacer(modifier = Modifier.height(16.dp))
                     CircularProgressIndicator(color = Color(0xFF0F9D58))
                     Spacer(modifier = Modifier.height(16.dp))
