@@ -1,10 +1,12 @@
 package com.awd.teledrive.ui.screens.auth
 
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.R
 import com.awd.teledrive.data.repository.AuthRepository
+import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +40,10 @@ class LoginViewModel @Inject constructor(
     val submittedPhone = _submittedPhone.asStateFlow()
 
     val codeResentMessage: StateFlow<String?> = authRepository.codeResentMessage
+    
+    // Google Sign-In States
+    val isGoogleSignedIn: StateFlow<Boolean> = authRepository.googleAuthManager.isGoogleSignedIn
+    val googleAuthError: StateFlow<String?> = authRepository.googleAuthManager.googleAuthError
 
     val authError: StateFlow<String?> = authRepository.authError
         .map { error ->
@@ -101,6 +107,7 @@ class LoginViewModel @Inject constructor(
         }
     }
 
+    // Telegram Login Functions
     fun onLoginSubmit(apiId: String, apiHash: String, phoneNumber: String) {
         if (apiId.isBlank() || apiHash.isBlank() || phoneNumber.isBlank()) {
             authRepository.setLocalError(context.getString(R.string.err_all_fields_required))
@@ -145,12 +152,6 @@ class LoginViewModel @Inject constructor(
         authRepository.clearResentMessage()
     }
 
-    fun onResetApi() {
-        pendingPhoneNumber = null
-        _isProcessing.value = false
-        authRepository.clearApiCredentials()
-    }
-
     fun onCodeSubmit(code: String) {
         if (code.isBlank()) return
         _isProcessing.value = true
@@ -161,5 +162,20 @@ class LoginViewModel @Inject constructor(
         if (password.isBlank()) return
         _isProcessing.value = true
         authRepository.checkPassword(password)
+    }
+
+    // Google Login Functions
+    fun getGoogleSignInClient(): GoogleSignInClient {
+        return authRepository.googleAuthManager.getSignInClient()
+    }
+
+    fun handleGoogleSignInResult(intent: Intent?) {
+        _isProcessing.value = true
+        authRepository.googleAuthManager.handleSignInResult(intent)
+        _isProcessing.value = false
+    }
+
+    fun clearGoogleAuthError() {
+        authRepository.googleAuthManager.clearError()
     }
 }
