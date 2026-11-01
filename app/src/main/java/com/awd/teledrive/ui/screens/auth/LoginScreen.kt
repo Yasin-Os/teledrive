@@ -78,6 +78,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -133,7 +134,7 @@ fun LoginScreen(
         if (result.resultCode == Activity.RESULT_OK) {
             viewModel.handleGoogleSignInResult(result.data)
         } else {
-            Toast.makeText(context, "Google Sign In Cancelled", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Google Sign-In Cancelled. Ensure your email is in 'Test Users' in Google Console.", Toast.LENGTH_LONG).show()
             selectedProvider = CloudProvider.NONE
         }
     }
@@ -315,7 +316,7 @@ fun LoginContent(
                 Image(
                     painter = painterResource(id = R.drawable.ic_mycloud_logo),
                     contentDescription = "MyCloud Logo",
-                    modifier = Modifier.size(100.dp).clip(RoundedCornerShape(26.dp))
+                    modifier = Modifier.size(90.dp).clip(RoundedCornerShape(22.dp))
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -334,8 +335,8 @@ fun LoginContent(
                 Text(
                     text = when (selectedProvider) {
                         CloudProvider.NONE -> "Select your preferred cloud storage"
-                        CloudProvider.TELEGRAM -> if (uiState is LoginUiState.EnteringCode) "We've sent a code to your Telegram app." else if (uiState is LoginUiState.EnteringPassword) "Enter your Telegram 2FA password." else "Login with your Telegram account (Unlimited Space)"
-                        CloudProvider.GOOGLE_DRIVE -> "Login securely with your Google account (15 GB Free)"
+                        CloudProvider.TELEGRAM -> if (uiState is LoginUiState.EnteringCode) "We've sent a code to your Telegram app." else if (uiState is LoginUiState.EnteringPassword) "Enter your Telegram 2FA password." else "Login with your Telegram account"
+                        CloudProvider.GOOGLE_DRIVE -> "Connecting to your Google Drive..."
                     },
                     color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp, textAlign = TextAlign.Center,
                     modifier = Modifier.padding(bottom = 32.dp)
@@ -355,34 +356,23 @@ fun LoginContent(
                 }
 
                 if (selectedProvider == CloudProvider.NONE) {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Surface(
-                            onClick = { onProviderSelect(CloudProvider.TELEGRAM) },
-                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0088CC).copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, Color(0xFF0088CC).copy(alpha = 0.5f)),
-                            modifier = Modifier.weight(1f).height(120.dp)
-                        ) {
-                            Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                                Icon(Icons.Default.Send, contentDescription = null, tint = Color(0xFF0088CC), modifier = Modifier.size(36.dp))
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text("Telegram", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text("Unlimited", color = Color(0xFF0088CC), fontSize = 12.sp)
-                            }
-                        }
+                    // New Premium Stacked Provider Cards
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+                        CloudProviderCard(
+                            title = "Telegram Cloud",
+                            subtitle = "Unlimited Free Storage",
+                            icon = Icons.Default.Send,
+                            iconTint = Color(0xFF00B4DB),
+                            onClick = { onProviderSelect(CloudProvider.TELEGRAM) }
+                        )
 
-                        Surface(
-                            onClick = { onProviderSelect(CloudProvider.GOOGLE_DRIVE) },
-                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0F9D58).copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, Color(0xFF0F9D58).copy(alpha = 0.5f)),
-                            modifier = Modifier.weight(1f).height(120.dp)
-                        ) {
-                            Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                                Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFF0F9D58), modifier = Modifier.size(36.dp))
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text("Google Drive", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text("15 GB", color = Color(0xFF0F9D58), fontSize = 12.sp)
-                            }
-                        }
+                        CloudProviderCard(
+                            title = "Google Drive",
+                            subtitle = "15 GB Personal Storage",
+                            icon = Icons.Default.Cloud,
+                            iconTint = Color(0xFF10B981),
+                            onClick = { onProviderSelect(CloudProvider.GOOGLE_DRIVE) }
+                        )
                     }
                 } else if (selectedProvider == CloudProvider.TELEGRAM) {
                     when (uiState) {
@@ -483,7 +473,7 @@ fun LoginContent(
                                 TextButton(onClick = { onResendCode(); resendTimer = 60 }, enabled = resendTimer == 0 && !isProcessing) {
                                     Icon(Icons.Default.Refresh, null, tint = if (resendTimer == 0) Color(0xFF00E5FF) else Color.Gray, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (resendTimer > 0) "Resend Code (${resendTimer}s)" else "Resend Code", color = if (resendTimer == 0) Color(0xFF00E5FF) else Color.Gray, fontSize = 14.sp)
+                                    Text(if (resendTimer > 0) "Resend (${resendTimer}s)" else "Resend Code", color = if (resendTimer == 0) Color(0xFF00E5FF) else Color.Gray, fontSize = 14.sp)
                                 }
                             }
                         }
@@ -519,6 +509,45 @@ fun LoginContent(
                     Text("Connecting to Google Drive...", color = Color.White.copy(alpha = 0.7f))
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun CloudProviderCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White.copy(alpha = 0.04f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+        modifier = Modifier.fillMaxWidth().height(82.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = iconTint.copy(alpha = 0.15f),
+                modifier = Modifier.size(46.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(24.dp))
+                }
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(subtitle, color = iconTint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            }
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color.White.copy(alpha = 0.3f))
         }
     }
 }
