@@ -11,15 +11,6 @@ android {
     compileSdk = 37
 
     signingConfigs {
-        getByName("debug") {
-            val fixedKeystore = rootProject.file("fixed-debug.keystore")
-            if (fixedKeystore.exists()) {
-                storeFile = fixedKeystore
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
-            }
-        }
         create("release") {
             val keystorePath = System.getenv("KEYSTORE_PATH")
             if (keystorePath != null && file(keystorePath).exists()) {
@@ -27,14 +18,6 @@ android {
                 storePassword = System.getenv("KEY_STORE_PASSWORD")
                 keyAlias = System.getenv("ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
-            } else {
-                val fixedKeystore = rootProject.file("fixed-debug.keystore")
-                if (fixedKeystore.exists()) {
-                    storeFile = fixedKeystore
-                    storePassword = "android"
-                    keyAlias = "androiddebugkey"
-                    keyPassword = "android"
-                }
             }
         }
     }
@@ -43,8 +26,8 @@ android {
         applicationId = "com.awd.teledrive"
         minSdk = 24
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.4.1"
+        versionCode = 8
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -63,9 +46,6 @@ android {
     }
 
     buildTypes {
-        debug {
-            signingConfig = signingConfigs.getByName("debug")
-        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -136,27 +116,40 @@ dependencies {
     kapt(libs.hilt.compiler)
     implementation(libs.androidx.hilt.navigation.compose)
 
+    // Telegram and Security
     implementation(libs.tdlibx)
     implementation(libs.lazysodium.android)
     implementation(libs.jna)
 
+    // Media & Image
     implementation(libs.coilCompose)
     implementation(libs.coilVideo)
     implementation(libs.media3Exoplayer)
     implementation(libs.media3Ui)
 
+    // Room & SQLite
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     kapt(libs.androidx.room.compiler)
     implementation(libs.sqlcipher)
 
+    // Security & Crypto
     implementation(libs.androidx.security.crypto)
     implementation(libs.argon2kt)
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.documentfile)
 
+    // WorkManager
     implementation(libs.androidx.work.runtime.ktx)
+
+    // Kotlin Serialization
     implementation(libs.kotlinx.serialization.json)
+
+    // Google Drive & Play Services Auth (নতুন যুক্ত করা হলো)
+    implementation("com.google.android.gms:play-services-auth:21.0.0")
+    implementation("com.google.api-client:google-api-client-android:1.33.0")
+    implementation("com.google.apis:google-api-services-drive:v3-rev20220815-2.0.0")
+    implementation("com.google.auth:google-auth-library-oauth2-http:1.16.0")
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
