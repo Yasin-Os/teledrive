@@ -80,7 +80,6 @@ class SettingsViewModel @Inject constructor(
 
     init {
         checkCacheLimit()
-        
         viewModelScope.launch {
             settingsRepository.cacheLimitEvent.collect {
                 checkCacheLimit()
@@ -127,14 +126,13 @@ class SettingsViewModel @Inject constructor(
     fun setLanguage(languageCode: String) {
         val appLocale: LocaleListCompat = LocaleListCompat.forLanguageTags(languageCode)
         AppCompatDelegate.setApplicationLocales(appLocale)
-        
         secureSettings.saveString("app_language", languageCode)
-
         _currentLanguage.value = languageCode
     }
 
     fun logout() {
-        authRepository.logout()
+        // এখানে গুগল এবং টেলিগ্রাম একসাথে লগআউটের জন্য ফিক্স করা হলো
+        authRepository.logoutAll()
     }
 
     fun saveApiCredentials(apiId: Int, apiHash: String) {
@@ -145,7 +143,6 @@ class SettingsViewModel @Inject constructor(
         settingsRepository.clearCacheAggrersively {
             driveRepository.clearDatabaseLocalPaths()
             _showCacheWarning.value = false
-            // After clearing, we might want to refresh UI or drive info
             driveRepository.fetchFiles()
         }
     }
@@ -160,7 +157,6 @@ class SettingsViewModel @Inject constructor(
 
     fun setThumbnailAutoDownloadEnabled(enabled: Boolean) {
         settingsRepository.setThumbnailAutoDownloadEnabled(enabled)
-        // Refresh items to trigger/stop downloads if in a folder
         driveRepository.fetchFiles()
     }
 
