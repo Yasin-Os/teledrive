@@ -55,9 +55,9 @@ class TransferRepository @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // ল্যাগ পুরোপুরি বন্ধ করতে Strict 1-by-1 Queue: ১টি ফাইল শেষ না হওয়া পর্যন্ত পরের ফাইলটি অপেক্ষা করবে
+    // আপলোড ল্যাগ-মুক্ত ১টি করে এবং ডাউনলোড সুপার ফাস্ট করতে ৪টি প্যারালাল স্ট্রিম দেওয়া হয়েছে
     private val uploadSemaphore = Semaphore(1)
-    private val downloadSemaphore = Semaphore(2)
+    private val downloadSemaphore = Semaphore(4)
 
     private val activeMap = ConcurrentHashMap<String, TransferInfo>()
     private val fileIdToKey = ConcurrentHashMap<Int, String>()
@@ -112,7 +112,6 @@ class TransferRepository @Inject constructor(
 
                 if (isEffectivelyCompleted) {
                     if (isDownload && localPath.isNotEmpty()) {
-                        // ডাউনলোড করা ফাইল শুধুমাত্র অ্যাপের নিজস্ব অফলাইন স্টোরেজে সংরক্ষিত থাকবে
                         driveDao.updateLocalPath(fileId, localPath)
                         if (uniqueId.isNotEmpty()) {
                             driveDao.updateLocalPathByUniqueId(uniqueId, localPath)
@@ -124,7 +123,7 @@ class TransferRepository @Inject constructor(
 
                 val now = System.currentTimeMillis()
                 val last = lastEmitTime[key] ?: 0L
-                if (now - last >= 120L) {
+                if (now - last >= 80L) {
                     lastEmitTime[key] = now
                     val activeStatus = if (isDownload) Status.DOWNLOADING else Status.UPLOADING
                     val updatedInfo = currentInfo.copy(
@@ -286,7 +285,7 @@ class TransferRepository @Inject constructor(
         if (throttled) {
             val now = System.currentTimeMillis()
             val last = lastEmitTime[targetId] ?: 0L
-            if (now - last < 150L) return
+            if (now - last < 100L) return
             lastEmitTime[targetId] = now
         }
 
@@ -357,7 +356,7 @@ class TransferRepository @Inject constructor(
 
     fun clearCompleted() {
         activeMap.entries.removeIf { (_, v) ->
-            v.status == Status.COMPLETED || v.status == Status.CANCELLED || v.status == Status.FAILED
+            v.status == TransferRepository.Status.COMPLETED || v.status == TransferRepository.Status.CANCELLED || v.status == TransferRepository.Status.FAILED
         }
         publishState()
         scope.launch {
@@ -380,7 +379,6 @@ class TransferRepository @Inject constructor(
         return result
     }
 
-    // শুধুমাত্র ইউজার যখন নিজে "Save to Phone Storage" চাপবে তখনই কেবল ফোন মেমোরিতে সেভ হবে
     fun saveToPublicDownloads(internalPath: String, fileName: String) {
         scope.launch(Dispatchers.IO) {
             try {
@@ -415,7 +413,7 @@ class TransferRepository @Inject constructor(
                     if (uri != null) {
                         resolver.openOutputStream(uri)?.use { output ->
                             FileInputStream(sourceFile).use { input ->
-                                input.copyTo(output, bufferSize = 256 * 1024)
+                                input.copyTo(output, bufferSize = 512 * 1024)
                             }
                         }
                     }
@@ -425,7 +423,7 @@ class TransferRepository @Inject constructor(
                     val destFile = File(downloadsDir, fileName)
                     FileOutputStream(destFile).use { output ->
                         FileInputStream(sourceFile).use { input ->
-                            input.copyTo(output, bufferSize = 256 * 1024)
+                            input.copyTo(output, bufferSize = 512 * 1024)
                         }
                     }
                     MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
@@ -453,7 +451,7 @@ class TransferRepository @Inject constructor(
             if (newFile != null) {
                 context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
                     FileInputStream(sourceFile).use { input ->
-                        input.copyTo(output, bufferSize = 256 * 1024)
+                        input.copyTo(output, bufferSize = 512 * 1024)
                     }
                 }
             }
