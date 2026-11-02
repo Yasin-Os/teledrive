@@ -131,7 +131,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun logout() {
-        // এখানে গুগল এবং টেলিগ্রাম একসাথে লগআউটের জন্য ফিক্স করা হলো
+        secureSettings.saveBoolean("active_provider_google", false)
         authRepository.logoutAll()
     }
 
