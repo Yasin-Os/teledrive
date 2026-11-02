@@ -2,7 +2,8 @@ package com.awd.teledrive.ui.screens.auth
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.awd.teledrive.data.remote.TelegramClient
+import com.awd.teledrive.data.repository.AuthRepository
+import com.awd.teledrive.data.repository.AuthState
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,11 +18,12 @@ sealed class LoginUiState {
     object EnteringCode : LoginUiState()
     object EnteringPassword : LoginUiState()
     object Success : LoginUiState()
+    object Loading : LoginUiState()
 }
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
-    private val telegramClient: TelegramClient,
+    private val authRepository: AuthRepository,
     private val secureSettings: SecureSettings
 ) : ViewModel() {
 
@@ -45,24 +47,28 @@ class LoginViewModel @Inject constructor(
         secureSettings.saveBoolean("active_provider_telegram", true)
 
         viewModelScope.launch {
-            telegramClient.authState.collect { state ->
+            authRepository.authState.collect { state ->
                 when (state) {
-                    is TdApi.AuthorizationStateWaitPhoneNumber -> {
+                    is AuthState.Unauthenticated -> {
                         if (_uiState.value !is LoginUiState.InitialSetup && _submittedPhone.value.isEmpty()) {
                             _uiState.value = LoginUiState.InitialSetup
                         }
                     }
-                    is TdApi.AuthorizationStateWaitCode -> {
+                    is AuthState.WaitingForCode -> {
                         _uiState.value = LoginUiState.EnteringCode
                         _isProcessing.value = false
                     }
-                    is TdApi.AuthorizationStateWaitPassword -> {
+                    is AuthState.WaitingForPassword -> {
                         _uiState.value = LoginUiState.EnteringPassword
                         _isProcessing.value = false
                     }
-                    is TdApi.AuthorizationStateReady -> {
+                    is AuthState.Authenticated -> {
                         secureSettings.saveBoolean("active_provider_telegram", true)
                         _uiState.value = LoginUiState.Success
+                        _isProcessing.value = false
+                    }
+                    is AuthState.Error -> {
+                        _authError.value = state.message
                         _isProcessing.value = false
                     }
                     else -> {}
@@ -82,12 +88,11 @@ class LoginViewModel @Inject constructor(
         _authError.value = null
         _submittedPhone.value = phoneNumber
 
-        secureSettings.saveApiCredentials(apiId, apiHash)
+        authRepository.saveApiCredentials(apiId, apiHash)
 
         viewModelScope.launch {
             try {
-                telegramClient.setApiCredentials(apiId, apiHash)
-                telegramClient.send(TdApi.SetAuthenticationPhoneNumber(phoneNumber, null)) { result ->
+                authRepository.submitPhoneNumber(phoneNumber) { result ->
                     if (result is TdApi.Error) {
                         _isProcessing.value = false
                         _authError.value = result.message
@@ -109,7 +114,7 @@ class LoginViewModel @Inject constructor(
         _authError.value = null
 
         viewModelScope.launch {
-            telegramClient.send(TdApi.CheckAuthenticationCode(code)) { result ->
+            authRepository.submitCode(code) { result ->
                 if (result is TdApi.Error) {
                     _isProcessing.value = false
                     _authError.value = result.message
@@ -127,7 +132,7 @@ class LoginViewModel @Inject constructor(
         _authError.value = null
 
         viewModelScope.launch {
-            telegramClient.send(TdApi.CheckAuthenticationPassword(password)) { result ->
+            authRepository.submitPassword(password) { result ->
                 if (result is TdApi.Error) {
                     _isProcessing.value = false
                     _authError.value = result.message
@@ -139,7 +144,7 @@ class LoginViewModel @Inject constructor(
     fun onResendCode() {
         _isProcessing.value = true
         viewModelScope.launch {
-            telegramClient.send(TdApi.ResendAuthenticationCode()) { result ->
+            authRepository.resendCode { result ->
                 _isProcessing.value = false
                 if (result is TdApi.Error) {
                     _codeResentMessage.value = "Failed to resend: ${result.message}"
