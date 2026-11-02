@@ -1,20 +1,15 @@
+// File: app/src/main/java/com/awd/teledrive/ui/screens/auth/LoginViewModel.kt
 package com.awd.teledrive.ui.screens.auth
 
-import android.content.Context
-import android.content.Intent
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.awd.teledrive.R
-import com.awd.teledrive.data.repository.AuthRepository
-import com.google.android.gms.auth.api.signin.GoogleSignInClient
+import com.awd.teledrive.data.remote.TelegramClient
+import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
 import javax.inject.Inject
@@ -23,159 +18,148 @@ sealed class LoginUiState {
     object InitialSetup : LoginUiState()
     object EnteringCode : LoginUiState()
     object EnteringPassword : LoginUiState()
-    object Loading : LoginUiState()
     object Success : LoginUiState()
 }
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
-    private val authRepository: AuthRepository,
-    @param:ApplicationContext private val context: Context
+    private val telegramClient: TelegramClient,
+    private val secureSettings: SecureSettings
 ) : ViewModel() {
 
+    private val _uiState = MutableStateFlow<LoginUiState>(LoginUiState.InitialSetup)
+    val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
+
+    private val _authError = MutableStateFlow<String?>(null)
+    val authError: StateFlow<String?> = _authError.asStateFlow()
+
     private val _isProcessing = MutableStateFlow(false)
-    val isProcessing = _isProcessing.asStateFlow()
+    val isProcessing: StateFlow<Bool> = _isProcessing.asStateFlow()
 
     private val _submittedPhone = MutableStateFlow("")
-    val submittedPhone = _submittedPhone.asStateFlow()
+    val submittedPhone: StateFlow<String> = _submittedPhone.asStateFlow()
 
-    val codeResentMessage: StateFlow<String?> = authRepository.codeResentMessage
-    
-    // Google Sign-In States
-    val isGoogleSignedIn: StateFlow<Boolean> = authRepository.googleAuthManager.isGoogleSignedIn
-    val googleAuthError: StateFlow<String?> = authRepository.googleAuthManager.googleAuthError
-
-    val authError: StateFlow<String?> = authRepository.authError
-        .map { error ->
-            if (error.isNullOrEmpty()) null else mapTechnicalError(error)
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-
-    private fun mapTechnicalError(error: String): String {
-        return when {
-            error.contains("PHONE_NUMBER_INVALID", ignoreCase = true) -> context.getString(R.string.err_phone_invalid)
-            error.contains("PHONE_CODE_INVALID", ignoreCase = true) -> context.getString(R.string.err_code_invalid)
-            error.contains("PHONE_CODE_EXPIRED", ignoreCase = true) -> context.getString(R.string.err_code_expired)
-            error.contains("PASSWORD_HASH_INVALID", ignoreCase = true) -> context.getString(R.string.err_password_invalid)
-            error.contains("FLOOD_WAIT", ignoreCase = true) -> context.getString(R.string.err_flood_wait)
-            error.contains("API_ID_INVALID", ignoreCase = true) || error.contains("API_HASH_INVALID", ignoreCase = true) -> context.getString(R.string.err_api_invalid)
-            error.contains("Connection error", ignoreCase = true) -> context.getString(R.string.err_connection)
-            else -> error
-        }
-    }
-
-    val uiState: StateFlow<LoginUiState> = authRepository.authState
-        .map { state ->
-            when (state) {
-                is TdApi.AuthorizationStateWaitTdlibParameters,
-                is TdApi.AuthorizationStateWaitPhoneNumber -> LoginUiState.InitialSetup
-                is TdApi.AuthorizationStateWaitCode -> LoginUiState.EnteringCode
-                is TdApi.AuthorizationStateWaitPassword -> LoginUiState.EnteringPassword
-                is TdApi.AuthorizationStateReady -> LoginUiState.Success
-                null -> {
-                    if (!authRepository.isApiConfigured()) LoginUiState.InitialSetup
-                    else LoginUiState.Loading
-                }
-                else -> LoginUiState.Loading 
-            }
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LoginUiState.Loading)
-
-    private var pendingPhoneNumber: String? = null
+    private val _codeResentMessage = MutableStateFlow<String?>(null)
+    val codeResentMessage: StateFlow<String?> = _codeResentMessage.asStateFlow()
 
     init {
         viewModelScope.launch {
-            authRepository.authState.collect { state ->
-                if (state is TdApi.AuthorizationStateWaitPhoneNumber && pendingPhoneNumber != null) {
-                    val phone = pendingPhoneNumber!!
-                    pendingPhoneNumber = null
-                    authRepository.setPhoneNumber(phone)
-                }
-                if (state is TdApi.AuthorizationStateWaitCode || state is TdApi.AuthorizationStateWaitPassword || state is TdApi.AuthorizationStateReady) {
-                    _isProcessing.value = false
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            authRepository.authError.collect { error ->
-                if (error != null) {
-                    _isProcessing.value = false
-                    pendingPhoneNumber = null
+            telegramClient.authState.collect { state ->
+                when (state) {
+                    is TdApi.AuthorizationStateWaitPhoneNumber -> {
+                        if (_uiState.value !is LoginUiState.InitialSetup && _submittedPhone.value.isEmpty()) {
+                            _uiState.value = LoginUiState.InitialSetup
+                        }
+                    }
+                    is TdApi.AuthorizationStateWaitCode -> {
+                        _uiState.value = LoginUiState.EnteringCode
+                        _isProcessing.value = false
+                    }
+                    is TdApi.AuthorizationStateWaitPassword -> {
+                        _uiState.value = LoginUiState.EnteringPassword
+                        _isProcessing.value = false
+                    }
+                    is TdApi.AuthorizationStateReady -> {
+                        _uiState.value = LoginUiState.Success
+                        _isProcessing.value = false
+                    }
+                    else -> {}
                 }
             }
         }
     }
 
-    // Telegram Login Functions
-    fun onLoginSubmit(apiId: String, apiHash: String, phoneNumber: String) {
-        if (apiId.isBlank() || apiHash.isBlank() || phoneNumber.isBlank()) {
-            authRepository.setLocalError(context.getString(R.string.err_all_fields_required))
-            return
-        }
-        
-        val id = apiId.trim().toIntOrNull()
-        if (id == null || id <= 0) {
-            authRepository.setLocalError(context.getString(R.string.err_api_invalid))
+    fun onLoginSubmit(apiIdStr: String, apiHash: String, phoneNumber: String) {
+        val apiId = apiIdStr.toIntOrNull() ?: 0
+        if (apiId == 0 || apiHash.isBlank() || phoneNumber.isBlank()) {
+            _authError.value = "Please enter a valid phone number"
             return
         }
 
         _isProcessing.value = true
-        val phone = phoneNumber.trim()
-        _submittedPhone.value = phone
-        pendingPhoneNumber = phone
-        
-        val currentState = authRepository.authState.value
-        if (currentState is TdApi.AuthorizationStateWaitPhoneNumber || currentState is TdApi.AuthorizationStateWaitCode) {
-            pendingPhoneNumber = null
-            authRepository.setPhoneNumber(phone)
-        } else {
-            authRepository.saveApiCredentials(id, apiHash.trim())
+        _authError.value = null
+        _submittedPhone.value = phoneNumber
+
+        secureSettings.saveApiCredentials(apiId, apiHash)
+
+        viewModelScope.launch {
+            try {
+                telegramClient.setApiCredentials(apiId, apiHash)
+                telegramClient.send(TdApi.SetAuthenticationPhoneNumber(phoneNumber, null)) { result ->
+                    if (result is TdApi.Error) {
+                        _isProcessing.value = false
+                        _authError.value = result.message
+                    }
+                }
+            } catch (e: Exception) {
+                _isProcessing.value = false
+                _authError.value = e.message
+            }
+        }
+    }
+
+    fun onCodeSubmit(code: String) {
+        if (code.length < 5) {
+            _authError.value = "Enter a valid 5-digit code"
+            return
+        }
+        _isProcessing.value = true
+        _authError.value = null
+
+        viewModelScope.launch {
+            telegramClient.send(TdApi.CheckAuthenticationCode(code)) { result ->
+                if (result is TdApi.Error) {
+                    _isProcessing.value = false
+                    _authError.value = result.message
+                }
+            }
+        }
+    }
+
+    fun onPasswordSubmit(password: String) {
+        if (password.isBlank()) {
+            _authError.value = "Enter your password"
+            return
+        }
+        _isProcessing.value = true
+        _authError.value = null
+
+        viewModelScope.launch {
+            telegramClient.send(TdApi.CheckAuthenticationPassword(password)) { result ->
+                if (result is TdApi.Error) {
+                    _isProcessing.value = false
+                    _authError.value = result.message
+                }
+            }
+        }
+    }
+
+    fun onResendCode() {
+        _isProcessing.value = true
+        viewModelScope.launch {
+            telegramClient.send(TdApi.ResendAuthenticationCode()) { result ->
+                _isProcessing.value = false
+                if (result is TdApi.Error) {
+                    _codeResentMessage.value = "Failed to resend: ${result.message}"
+                } else {
+                    _codeResentMessage.value = "Code resent successfully"
+                }
+            }
         }
     }
 
     fun onBackToPhoneInput() {
-        _isProcessing.value = false
-        pendingPhoneNumber = null
-        authRepository.returnToPhoneInput()
-    }
-
-    fun onResendCode() {
-        val phone = _submittedPhone.value
-        authRepository.resendAuthenticationCode()
-        if (phone.isNotEmpty() && authRepository.authError.value != null) {
-            authRepository.setPhoneNumber(phone)
+        _isProcessing.value = true
+        viewModelScope.launch {
+            telegramClient.send(TdApi.RequestQrCodeAuthentication(emptyLongArray())) { _ ->
+                _isProcessing.value = false
+                _uiState.value = LoginUiState.InitialSetup
+                _submittedPhone.value = ""
+            }
         }
     }
 
     fun clearResentMessage() {
-        authRepository.clearResentMessage()
-    }
-
-    fun onCodeSubmit(code: String) {
-        if (code.isBlank()) return
-        _isProcessing.value = true
-        authRepository.checkAuthenticationCode(code.trim())
-    }
-
-    fun onPasswordSubmit(password: String) {
-        if (password.isBlank()) return
-        _isProcessing.value = true
-        authRepository.checkPassword(password)
-    }
-
-    // Google Login Functions
-    fun getGoogleSignInClient(): GoogleSignInClient {
-        return authRepository.googleAuthManager.getSignInClient()
-    }
-
-    fun handleGoogleSignInResult(intent: Intent?) {
-        _isProcessing.value = true
-        authRepository.googleAuthManager.handleSignInResult(intent)
-        _isProcessing.value = false
-    }
-
-    fun clearGoogleAuthError() {
-        authRepository.googleAuthManager.clearError()
+        _codeResentMessage.value = null
     }
 }
