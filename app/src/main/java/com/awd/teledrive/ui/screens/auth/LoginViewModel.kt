@@ -1,7 +1,5 @@
-// File: app/src/main/java/com/awd/teledrive/ui/screens/auth/LoginViewModel.kt
 package com.awd.teledrive.ui.screens.auth
 
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.data.remote.TelegramClient
@@ -34,7 +32,7 @@ class LoginViewModel @Inject constructor(
     val authError: StateFlow<String?> = _authError.asStateFlow()
 
     private val _isProcessing = MutableStateFlow(false)
-    val isProcessing: StateFlow<Bool> = _isProcessing.asStateFlow()
+    val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
 
     private val _submittedPhone = MutableStateFlow("")
     val submittedPhone: StateFlow<String> = _submittedPhone.asStateFlow()
@@ -43,6 +41,9 @@ class LoginViewModel @Inject constructor(
     val codeResentMessage: StateFlow<String?> = _codeResentMessage.asStateFlow()
 
     init {
+        secureSettings.saveBoolean("active_provider_google", false)
+        secureSettings.saveBoolean("active_provider_telegram", true)
+
         viewModelScope.launch {
             telegramClient.authState.collect { state ->
                 when (state) {
@@ -60,6 +61,7 @@ class LoginViewModel @Inject constructor(
                         _isProcessing.value = false
                     }
                     is TdApi.AuthorizationStateReady -> {
+                        secureSettings.saveBoolean("active_provider_telegram", true)
                         _uiState.value = LoginUiState.Success
                         _isProcessing.value = false
                     }
@@ -70,8 +72,8 @@ class LoginViewModel @Inject constructor(
     }
 
     fun onLoginSubmit(apiIdStr: String, apiHash: String, phoneNumber: String) {
-        val apiId = apiIdStr.toIntOrNull() ?: 0
-        if (apiId == 0 || apiHash.isBlank() || phoneNumber.isBlank()) {
+        val apiId = apiIdStr.toIntOrNull() ?: 94575
+        if (apiHash.isBlank() || phoneNumber.isBlank()) {
             _authError.value = "Please enter a valid phone number"
             return
         }
@@ -118,7 +120,7 @@ class LoginViewModel @Inject constructor(
 
     fun onPasswordSubmit(password: String) {
         if (password.isBlank()) {
-            _authError.value = "Enter your password"
+            _authError.value = "Enter your 2FA password"
             return
         }
         _isProcessing.value = true
@@ -142,21 +144,17 @@ class LoginViewModel @Inject constructor(
                 if (result is TdApi.Error) {
                     _codeResentMessage.value = "Failed to resend: ${result.message}"
                 } else {
-                    _codeResentMessage.value = "Code resent successfully"
+                    _codeResentMessage.value = "Verification code resent"
                 }
             }
         }
     }
 
     fun onBackToPhoneInput() {
-        _isProcessing.value = true
-        viewModelScope.launch {
-            telegramClient.send(TdApi.RequestQrCodeAuthentication(emptyLongArray())) { _ ->
-                _isProcessing.value = false
-                _uiState.value = LoginUiState.InitialSetup
-                _submittedPhone.value = ""
-            }
-        }
+        _isProcessing.value = false
+        _authError.value = null
+        _uiState.value = LoginUiState.InitialSetup
+        _submittedPhone.value = ""
     }
 
     fun clearResentMessage() {
