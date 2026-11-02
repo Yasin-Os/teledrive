@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -46,23 +46,25 @@ class UpdateRepository @Inject constructor(
     val updateState = _updateState.asStateFlow()
 
     private var dismissedTag: String? = null
+    private var lastAutoCheckTime: Long = 0L
     private val GITHUB_REPO = "Yasin-Os/teledrive"
-
-    private val json = Json { 
-        ignoreUnknownKeys = true 
-        coerceInputValues = true
-    }
 
     suspend fun checkForUpdates(manual: Boolean = false) = withContext(Dispatchers.IO) {
         if (_updateState.value is UpdateState.Checking || _updateState.value is UpdateState.Downloading) return@withContext
-        
+
+        val now = System.currentTimeMillis()
+        if (!manual && (now - lastAutoCheckTime < 15_000L)) return@withContext
+        lastAutoCheckTime = now
+
         if (manual) {
             _updateState.value = UpdateState.Checking
         }
-        
+
         try {
-            // প্রথমেই GitHub API থেকে আসল APK asset URL সহ রিলিজ ইনফো আনা হবে, না পেলে Redirect ফলব্যাক কাজ করবে
-            val release = fetchLatestViaApi() ?: fetchLatestViaRedirect()
+            // ৩টি লেয়ারে চেক করবে: ১. Redirect (সবচেয়ে ফাস্ট ও Rate-Limit মুক্ত), ২. GitHub API, ৩. Atom XML Feed
+            val release = fetchLatestViaRedirect()
+                ?: fetchLatestViaApi()
+                ?: fetchLatestViaAtomFeed()
 
             if (release != null) {
                 val installedVersion = VersionUtils.getVersionName(context).removePrefix("v").trim()
@@ -104,71 +106,164 @@ class UpdateRepository @Inject constructor(
         return latest != installed
     }
 
-    private fun fetchLatestViaApi(): GitHubRelease? {
-        return try {
-            val url = URL("https://api.github.com/repos/$GITHUB_REPO/releases/latest")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("Accept", "application/vnd.github+json")
-            connection.setRequestProperty("User-Agent", "MyCloud-Android-Updater")
-
-            if (connection.responseCode == 200) {
-                val responseBody = connection.inputStream.bufferedReader().readText()
-                json.decodeFromString<GitHubRelease>(responseBody)
-            } else null
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     private fun fetchLatestViaRedirect(): GitHubRelease? {
         return try {
-            val url = URL("https://github.com/$GITHUB_REPO/releases/latest")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.instanceFollowRedirects = true
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android; Mobile)")
-            conn.connect()
+            var currentUrl = "https://github.com/$GITHUB_REPO/releases/latest"
+            var finalUrl = currentUrl
+            var redirects = 0
 
-            val finalUrl = conn.url.toString()
-            conn.disconnect()
+            while (redirects < 6) {
+                val url = URL(currentUrl)
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = false
+                    requestMethod = "GET"
+                    connectTimeout = 10000
+                    readTimeout = 10000
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
+                    setRequestProperty("Accept", "text/html,application/xhtml+xml")
+                }
+                val code = conn.responseCode
+                finalUrl = conn.url.toString()
+
+                if (code in 300..399) {
+                    val loc = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (loc.isNullOrEmpty()) break
+                    currentUrl = if (loc.startsWith("http")) loc else URL(url, loc).toString()
+                    finalUrl = currentUrl
+                    redirects++
+                } else {
+                    conn.disconnect()
+                    break
+                }
+            }
 
             if (finalUrl.contains("/releases/tag/")) {
                 val latestTag = finalUrl.substringAfterLast("/releases/tag/")
                     .substringBefore("?")
                     .substringBefore("#")
                     .trim()
-                val latestVer = latestTag.removePrefix("v").trim()
+                if (latestTag.isNotEmpty()) {
+                    buildReleaseFromTag(latestTag, finalUrl)
+                } else null
+            } else null
+        } catch (e: Exception) {
+            Log.e("UpdateRepository", "Redirect check error: ${e.message}")
+            null
+        }
+    }
 
-                val candidateNames = listOf(
-                    "awd-teledrive-v$latestVer-universal-debug.apk",
-                    "app-universal-debug.apk",
-                    "MyCloud-v$latestVer-universal-debug.apk",
-                    "app-debug.apk"
-                )
+    private fun fetchLatestViaApi(): GitHubRelease? {
+        return try {
+            val url = URL("https://api.github.com/repos/$GITHUB_REPO/releases/latest")
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10000
+                readTimeout = 10000
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("User-Agent", "MyCloud-Android-App")
+            }
 
-                val assets = candidateNames.map { name ->
-                    GitHubAsset(
-                        name = name,
-                        browser_download_url = "https://github.com/$GITHUB_REPO/releases/download/$latestTag/$name"
-                    )
+            if (connection.responseCode == 200) {
+                val responseBody = connection.inputStream.bufferedReader().use { it.readText() }
+                connection.disconnect()
+                val obj = JSONObject(responseBody)
+                val tagName = obj.optString("tag_name", "").trim()
+                if (tagName.isEmpty()) return null
+
+                val name = obj.optString("name", "MyCloud $tagName").ifEmpty { "MyCloud $tagName" }
+                val body = obj.optString("body", "").let {
+                    if (it.isBlank() || it == "null") "New update ($tagName) is ready to install!" else it
+                }
+                val htmlUrl = obj.optString("html_url", "https://github.com/$GITHUB_REPO/releases/tag/$tagName")
+
+                val assetsList = mutableListOf<GitHubAsset>()
+                val assetsArr = obj.optJSONArray("assets")
+                if (assetsArr != null) {
+                    for (i in 0 until assetsArr.length()) {
+                        val a = assetsArr.optJSONObject(i) ?: continue
+                        val aName = a.optString("name", "")
+                        val aUrl = a.optString("browser_download_url", "")
+                        val aSize = a.optLong("size", 0L)
+                        if (aName.isNotEmpty() && aUrl.isNotEmpty()) {
+                            assetsList.add(GitHubAsset(name = aName, browser_download_url = aUrl, size = aSize))
+                        }
+                    }
+                }
+
+                if (assetsList.isEmpty()) {
+                    return buildReleaseFromTag(tagName, htmlUrl, name, body)
                 }
 
                 GitHubRelease(
-                    tag_name = latestTag,
-                    name = "MyCloud $latestTag",
-                    body = "New update ($latestTag) is available! Tap 'Update Now' to download and install directly.",
-                    html_url = finalUrl,
-                    assets = assets
+                    tag_name = tagName,
+                    name = name,
+                    body = body,
+                    html_url = htmlUrl,
+                    assets = assetsList
                 )
-            } else null
+            } else {
+                connection.disconnect()
+                null
+            }
+        } catch (e: Exception) {
+            Log.e("UpdateRepository", "API check error: ${e.message}")
+            null
+        }
+    }
+
+    private fun fetchLatestViaAtomFeed(): GitHubRelease? {
+        return try {
+            val url = URL("https://github.com/$GITHUB_REPO/releases.atom")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10000
+                readTimeout = 10000
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
+            }
+            if (conn.responseCode == 200) {
+                val xml = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+                val match = Regex("/releases/tag/([^\"'<\\s?]+)").find(xml)
+                val tag = match?.groupValues?.getOrNull(1)?.trim()
+                if (!tag.isNullOrEmpty()) {
+                    buildReleaseFromTag(tag, "https://github.com/$GITHUB_REPO/releases/tag/$tag")
+                } else null
+            } else {
+                conn.disconnect()
+                null
+            }
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun buildReleaseFromTag(
+        tag: String,
+        htmlUrl: String,
+        title: String = "MyCloud $tag",
+        notes: String = "A new version ($tag) of MyCloud is available! Tap 'Update Now' to install directly."
+    ): GitHubRelease {
+        val ver = tag.removePrefix("v").trim()
+        val candidateNames = listOf(
+            "awd-teledrive-v$ver-universal-debug.apk",
+            "app-universal-debug.apk",
+            "MyCloud-v$ver-universal-debug.apk",
+            "app-debug.apk"
+        )
+        val assets = candidateNames.map { fileName ->
+            GitHubAsset(
+                name = fileName,
+                browser_download_url = "https://github.com/$GITHUB_REPO/releases/download/$tag/$fileName"
+            )
+        }
+        return GitHubRelease(
+            tag_name = tag,
+            name = title,
+            body = notes,
+            html_url = htmlUrl,
+            assets = assets
+        )
     }
 
     fun downloadAndInstall(release: GitHubRelease) {
@@ -178,9 +273,9 @@ class UpdateRepository @Inject constructor(
             try {
                 _updateState.value = UpdateState.Downloading(0.01f, "Connecting to server...")
 
-                // যেহেতু গিটহাবে বিভিন্ন নামে APK থাকতে পারে, তাই সম্ভাব্য সবগুলো ডিরেক্ট লিংক চেক করে যেটি সচল সেটি নামাবে
                 val ver = release.tag_name.removePrefix("v").trim()
                 val candidateUrls = mutableListOf<String>()
+
                 release.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
                     .sortedByDescending { it.name.contains("universal", ignoreCase = true) }
                     .forEach { asset ->
@@ -205,7 +300,7 @@ class UpdateRepository @Inject constructor(
                 }
 
                 if (activeConnection == null) {
-                    _updateState.value = UpdateState.Error("APK file not found in release ${release.tag_name}")
+                    _updateState.value = UpdateState.Error("APK file not ready yet. Please try again in 1 minute.")
                     return@launch
                 }
 
@@ -214,7 +309,7 @@ class UpdateRepository @Inject constructor(
                 if (updateFile.exists()) updateFile.delete()
 
                 val totalBytes = activeConnection.contentLengthLong.takeIf { it > 0 }
-                    ?: release.assets.firstOrNull()?.size
+                    ?: release.assets.firstOrNull { it.size > 0 }?.size
                     ?: 0L
                 var downloadedBytes = 0L
 
@@ -256,25 +351,20 @@ class UpdateRepository @Inject constructor(
         return try {
             var currentUrl = urlStr
             var redirects = 0
-            while (redirects < 8) {
+            while (redirects < 10) {
                 val url = URL(currentUrl)
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     instanceFollowRedirects = false
                     connectTimeout = 15000
                     readTimeout = 30000
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android; Mobile)")
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
                 }
-                conn.connect()
                 val code = conn.responseCode
                 if (code in 300..399) {
                     val location = conn.getHeaderField("Location")
                     conn.disconnect()
                     if (location.isNullOrEmpty()) return null
-                    currentUrl = if (location.startsWith("http")) {
-                        location
-                    } else {
-                        URL(url, location).toString()
-                    }
+                    currentUrl = if (location.startsWith("http")) location else URL(url, location).toString()
                     redirects++
                 } else {
                     return conn
@@ -294,7 +384,7 @@ class UpdateRepository @Inject constructor(
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-                Toast.makeText(context, "Please allow 'Install unknown apps' and tap Update again", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Allow 'Install unknown apps' to update MyCloud", Toast.LENGTH_LONG).show()
                 val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                     data = Uri.parse("package:${context.packageName}")
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
