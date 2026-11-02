@@ -201,8 +201,6 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
-// ───────────────────────── Splash helpers ─────────────────────────
-
 private fun svgPath(d: String): Path = PathParser().parsePathString(d).toPath()
 
 private fun grad(
@@ -212,7 +210,6 @@ private fun grad(
     *stops, start = Offset(sx, sy), end = Offset(ex, ey)
 )
 
-/** t এর [a, b] অংশকে 0..1 এ ম্যাপ করে, ইজিং সহ */
 private fun seg(t: Float, a: Float, b: Float): Float =
     FastOutSlowInEasing.transform(((t - a) / (b - a)).coerceIn(0f, 1f))
 
@@ -230,7 +227,6 @@ private fun DrawScope.drawTrimmed(
     )
 }
 
-/** আইকনের হুবহু pathData ও গ্রেডিয়েন্ট (viewport 108x108) */
 private class IconShapes {
     val lobeUR = svgPath("M54,39 C64,39 73,45 75,55 L50,58 Z")
     val aqua = svgPath("M48,75.5 L77.5,75.5 C84.8,75.5 90.5,69.8 90.5,62.5 C90.5,55.2 84.5,49.5 77.0,49.5 C70.5,49.5 65.0,53.8 63.2,59.8 L48,75.5 Z")
@@ -241,7 +237,6 @@ private class IconShapes {
     val arrow1 = svgPath("M16.0,63.0 C20.5,72.5 31.5,72.5 45.5,58.5 L42.5,55.5 L53.5,51.5 L51.0,62.5 L48.0,59.5 C32.5,75.0 19.5,75.5 16.0,63.0 Z")
     val arrow2 = svgPath("M24.0,78.0 C36.5,80.5 49.5,71.5 60.0,53.5 L55.5,50.5 L67.5,43.0 L69.5,56.5 L65.0,54.0 C53.5,73.5 38.5,82.0 24.0,78.0 Z")
 
-    // সিগনাল আর্ক — তীরের দিক (৬০°) বরাবর
     val arc1 = svgPath("M66.4,34.6 A9,9 0 0,1 75.4,39.8")
     val arc2 = svgPath("M65.8,27.5 A16.2,16.2 0 0,1 81.9,36.8")
     val arc3 = svgPath("M65.2,20.2 A23.5,23.5 0 0,1 88.5,33.7")
@@ -256,8 +251,6 @@ private class IconShapes {
     val bArc = grad(65f, 21f, 89f, 43f, 0f to Color(0xFF18B8FF), 1f to Color(0xFF0055D4))
     val bOutline = grad(15f, 75f, 90f, 28f, 0f to Color(0xFF0088FF), 1f to Color(0xFF38F9E8))
 }
-
-// ───────────────────────── Splash screen ─────────────────────────
 
 @Composable
 fun StartupSplashScreen(onFinished: () -> Unit) {
@@ -288,29 +281,24 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
                     .size(150.dp)
                     .graphicsLayer { scaleX = logoScale; scaleY = logoScale }
             ) {
-                // আইকনের কনটেন্ট প্রায় ৮৪ ইউনিট চওড়া — সেটাই ক্যানভাস জুড়ে বসানো হচ্ছে
                 val s = size.width / 84f
                 translate(
                     left = size.width / 2f - 52.5f * s,
                     top = size.height / 2f - 50.5f * s
                 ) {
                     scale(scale = s, pivot = Offset.Zero) {
-
-                        // ১. আউটলাইন স্কেচ (০ → ০.৩৫), ফিল আসার সাথে মিলিয়ে যায়
                         val sketch = seg(t, 0f, 0.35f)
                         val outlineAlpha = 1f - seg(t, 0.28f, 0.5f)
                         listOf(shapes.lobeUR, shapes.aqua, shapes.left, shapes.sphere).forEach {
                             drawTrimmed(it, pm, sketch, shapes.bOutline, 1.4f, outlineAlpha)
                         }
 
-                        // ২. গ্রেডিয়েন্ট ফিল, ক্রমানুসারে
                         drawPath(shapes.lobeUR, shapes.bUR, alpha = seg(t, 0.28f, 0.45f))
                         drawPath(shapes.aqua, shapes.bAqua, alpha = seg(t, 0.30f, 0.50f))
                         drawPath(shapes.gloss, Color.White, alpha = 0.4f * seg(t, 0.48f, 0.58f))
                         drawPath(shapes.left, shapes.bLeft, alpha = seg(t, 0.22f, 0.42f))
                         drawPath(shapes.sphere, shapes.bSphere, alpha = seg(t, 0.25f, 0.46f))
 
-                        // ৩. সাদা রিবন — বাম থেকে ডানে উন্মোচন
                         val ribbonP = seg(t, 0.42f, 0.65f)
                         if (ribbonP > 0f) {
                             clipRect(left = 0f, top = 0f, right = 14f + 80f * ribbonP, bottom = 108f) {
@@ -318,7 +306,6 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
                             }
                         }
 
-                        // ৪. তীর দুটি — একে একে বেরিয়ে আসে
                         val a1 = seg(t, 0.55f, 0.74f)
                         val a2 = seg(t, 0.62f, 0.80f)
                         if (a1 > 0f) clipRect(0f, 0f, 14f + 62f * a1, 108f) {
@@ -328,7 +315,6 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
                             drawPath(shapes.arrow2, shapes.bArrow2)
                         }
 
-                        // ৫. তিনটি সিগনাল আর্ক — ভেতর থেকে বাইরে আঁকা হয়
                         listOf(shapes.arc1, shapes.arc2, shapes.arc3).forEachIndexed { i, arc ->
                             val p = seg(t, 0.68f + i * 0.07f, 0.84f + i * 0.07f)
                             drawTrimmed(arc, pm, p, shapes.bArc, 4.5f)
@@ -364,8 +350,6 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
         }
     }
 }
-
-// ───────────────────────── Update dialog ─────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -417,7 +401,7 @@ fun GlobalUpdateDialog(
         is UpdateState.Downloading -> {
             AlertDialog(
                 onDismissRequest = {},
-                title = { Text("Updating App...") },
+                title = { Text("Updating MyCloud...") },
                 text = {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         LinearProgressIndicator(
