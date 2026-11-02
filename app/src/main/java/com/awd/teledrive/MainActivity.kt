@@ -150,6 +150,9 @@ class MainActivity : AppCompatActivity() {
                     if (lastPauseTime != 0L && (now - lastPauseTime > 15_000)) {
                         securityViewModel.setLocked(true)
                     }
+                    lifecycleScope.launch {
+                        updateRepository.checkForUpdates(manual = false)
+                    }
                 } else if (event == Lifecycle.Event.ON_PAUSE) {
                     lastPauseTime = System.currentTimeMillis()
                 }
