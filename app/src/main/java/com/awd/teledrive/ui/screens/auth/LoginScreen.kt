@@ -1,10 +1,8 @@
+// File: app/src/main/java/com/awd/teledrive/ui/screens/auth/LoginScreen.kt
 package com.awd.teledrive.ui.screens.auth
 
-import android.app.Activity
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -39,13 +37,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -93,10 +89,6 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
 import kotlinx.coroutines.delay
 
-enum class CloudProvider {
-    NONE, TELEGRAM, GOOGLE_DRIVE
-}
-
 data class CountryOption(
     val name: String,
     val dialCode: String,
@@ -121,31 +113,11 @@ fun LoginScreen(
     val isProcessing by viewModel.isProcessing.collectAsState()
     val submittedPhone by viewModel.submittedPhone.collectAsState()
     val codeResentMessage by viewModel.codeResentMessage.collectAsState()
-    
-    val isGoogleSignedIn by viewModel.isGoogleSignedIn.collectAsState()
-    val googleAuthError by viewModel.googleAuthError.collectAsState()
 
     val context = LocalContext.current
-    var selectedProvider by remember { mutableStateOf(CloudProvider.NONE) }
 
-    // Google Sign-In Launcher with Error Details
-    val googleSignInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            viewModel.handleGoogleSignInResult(result.data)
-        } else {
-            val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
-            try {
-                task.getResult(com.google.android.gms.common.api.ApiException::class.java)
-                Toast.makeText(context, "Sign In Cancelled", Toast.LENGTH_SHORT).show()
-            } catch (e: com.google.android.gms.common.api.ApiException) {
-                Toast.makeText(context, "Google Error: ${e.statusCode} - ${e.message}", Toast.LENGTH_LONG).show()
-            }
-            selectedProvider = CloudProvider.NONE
-        }
-    }
-
-    LaunchedEffect(uiState, isGoogleSignedIn) {
-        if (uiState is LoginUiState.Success || isGoogleSignedIn) {
+    LaunchedEffect(uiState) {
+        if (uiState is LoginUiState.Success) {
             onLoginSuccess()
         }
     }
@@ -157,26 +129,11 @@ fun LoginScreen(
         }
     }
 
-    LaunchedEffect(googleAuthError) {
-        googleAuthError?.let {
-            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
-            viewModel.clearGoogleAuthError()
-            selectedProvider = CloudProvider.NONE
-        }
-    }
-
     LoginContent(
         uiState = uiState,
         authError = authError,
         isProcessing = isProcessing,
         submittedPhone = submittedPhone,
-        selectedProvider = selectedProvider,
-        onProviderSelect = { provider ->
-            selectedProvider = provider
-            if (provider == CloudProvider.GOOGLE_DRIVE) {
-                googleSignInLauncher.launch(viewModel.getGoogleSignInClient().signInIntent)
-            }
-        },
         onLoginSubmit = viewModel::onLoginSubmit,
         onCodeSubmit = viewModel::onCodeSubmit,
         onPasswordSubmit = viewModel::onPasswordSubmit,
@@ -192,8 +149,6 @@ fun LoginContent(
     authError: String?,
     isProcessing: Boolean,
     submittedPhone: String = "",
-    selectedProvider: CloudProvider,
-    onProviderSelect: (CloudProvider) -> Unit,
     onLoginSubmit: (String, String, String) -> Unit,
     onCodeSubmit: (String) -> Unit,
     onPasswordSubmit: (String) -> Unit,
@@ -214,15 +169,13 @@ fun LoginContent(
     var resendTimer by remember { mutableIntStateOf(60) }
     val scrollState = rememberScrollState()
 
-    val canGoBackToPhone = selectedProvider == CloudProvider.TELEGRAM && (uiState is LoginUiState.EnteringCode || uiState is LoginUiState.EnteringPassword)
+    val canGoBackToPhone = uiState is LoginUiState.EnteringCode || uiState is LoginUiState.EnteringPassword
 
-    BackHandler(enabled = canGoBackToPhone || selectedProvider != CloudProvider.NONE) {
+    BackHandler(enabled = canGoBackToPhone) {
         if (canGoBackToPhone) {
             code = ""
             password = ""
             onBackToPhoneInput()
-        } else {
-            onProviderSelect(CloudProvider.NONE)
         }
     }
 
@@ -301,12 +254,9 @@ fun LoginContent(
         modifier = Modifier.background(Brush.verticalGradient(colors = listOf(Color(0xFF070B14), Color(0xFF0F2942))))
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (canGoBackToPhone || selectedProvider != CloudProvider.NONE) {
+            if (canGoBackToPhone) {
                 IconButton(
-                    onClick = {
-                        if (canGoBackToPhone) { code = ""; password = ""; onBackToPhoneInput() }
-                        else onProviderSelect(CloudProvider.NONE)
-                    },
+                    onClick = { code = ""; password = ""; onBackToPhoneInput() },
                     modifier = Modifier.statusBarsPadding().padding(12.dp).align(Alignment.TopStart)
                 ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White) }
             }
@@ -327,10 +277,10 @@ fun LoginContent(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Text(
-                    text = when (selectedProvider) {
-                        CloudProvider.NONE -> "Welcome to MyCloud"
-                        CloudProvider.TELEGRAM -> if (uiState is LoginUiState.EnteringCode) "Enter Code" else if (uiState is LoginUiState.EnteringPassword) "Two-Step Verification" else "Telegram Cloud"
-                        CloudProvider.GOOGLE_DRIVE -> "Google Drive"
+                    text = when (uiState) {
+                        is LoginUiState.EnteringCode -> "Enter Code"
+                        is LoginUiState.EnteringPassword -> "Two-Step Verification"
+                        else -> "Telegram Cloud"
                     },
                     color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center
                 )
@@ -338,10 +288,10 @@ fun LoginContent(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = when (selectedProvider) {
-                        CloudProvider.NONE -> "Select your preferred cloud storage"
-                        CloudProvider.TELEGRAM -> if (uiState is LoginUiState.EnteringCode) "We've sent a code to your Telegram app." else if (uiState is LoginUiState.EnteringPassword) "Enter your Telegram 2FA password." else "Login with your Telegram account"
-                        CloudProvider.GOOGLE_DRIVE -> "Connecting to your Google Drive..."
+                    text = when (uiState) {
+                        is LoginUiState.EnteringCode -> "We've sent a code to your Telegram app."
+                        is LoginUiState.EnteringPassword -> "Enter your Telegram 2FA password."
+                        else -> "Login with your Telegram account"
                     },
                     color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp, textAlign = TextAlign.Center,
                     modifier = Modifier.padding(bottom = 32.dp)
@@ -360,173 +310,132 @@ fun LoginContent(
                     }
                 }
 
-                if (selectedProvider == CloudProvider.NONE) {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+                when (uiState) {
+                    is LoginUiState.InitialSetup -> {
                         Surface(
-                            onClick = { onProviderSelect(CloudProvider.TELEGRAM) },
-                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0088CC).copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, Color(0xFF0088CC).copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth().height(90.dp)
+                            color = glassBg, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, glassBorder),
+                            modifier = Modifier.fillMaxWidth().clickable { showCountryDialog = true }
                         ) {
-                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Send, contentDescription = null, tint = Color(0xFF0088CC), modifier = Modifier.size(36.dp))
-                                Spacer(modifier = Modifier.width(16.dp))
-                                Column {
-                                    Text("Telegram Cloud", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                    Text("Unlimited Free Storage", color = Color(0xFF0088CC), fontSize = 13.sp)
-                                }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(text = "${selectedCountry.flag}   ${selectedCountry.name}", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                                Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White.copy(alpha = 0.5f))
                             }
                         }
-
-                        Surface(
-                            onClick = { onProviderSelect(CloudProvider.GOOGLE_DRIVE) },
-                            shape = RoundedCornerShape(20.dp), color = Color(0xFF0F9D58).copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, Color(0xFF0F9D58).copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth().height(90.dp)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = countryCode,
+                                onValueChange = { input ->
+                                    val digits = input.filter { it.isDigit() }.take(4)
+                                    countryCode = digits
+                                    COUNTRY_LIST.find { it.dialCode == digits }?.let { matched -> selectedCountry = matched }
+                                },
+                                prefix = { Text("+", color = Color.White) }, singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder,
+                                    focusedContainerColor = glassBg, unfocusedContainerColor = glassBg,
+                                    focusedTextColor = Color.White, unfocusedTextColor = Color.White
+                                ),
+                                modifier = Modifier.width(100.dp)
+                            )
+                            OutlinedTextField(
+                                value = localPhone,
+                                onValueChange = { input -> localPhone = input.filter { it.isDigit() } },
+                                placeholder = { Text("Phone Number", color = Color.White.copy(alpha = 0.3f)) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(onDone = { if (countryCode.isNotBlank() && localPhone.length >= 6) submitFormattedPhone() }),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder,
+                                    focusedContainerColor = glassBg, unfocusedContainerColor = glassBg,
+                                    focusedTextColor = Color.White, unfocusedTextColor = Color.White
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(36.dp))
+                        Button(
+                            onClick = submitFormattedPhone,
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            enabled = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0078D7), disabledContainerColor = Color(0xFF0078D7).copy(alpha = 0.5f))
                         ) {
-                            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFF0F9D58), modifier = Modifier.size(36.dp))
-                                Spacer(modifier = Modifier.width(16.dp))
-                                Column {
-                                    Text("Google Drive", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                    Text("15 GB Personal Storage", color = Color(0xFF0F9D58), fontSize = 13.sp)
-                                }
-                            }
+                            if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.5.dp)
+                            else { Text("Continue", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White); Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.White) }
                         }
                     }
-                } else if (selectedProvider == CloudProvider.TELEGRAM) {
-                    when (uiState) {
-                        is LoginUiState.InitialSetup -> {
+                    is LoginUiState.EnteringCode -> {
+                        if (submittedPhone.isNotEmpty()) {
                             Surface(
-                                color = glassBg, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, glassBorder),
-                                modifier = Modifier.fillMaxWidth().clickable { showCountryDialog = true }
+                                onClick = { code = ""; onBackToPhoneInput() },
+                                shape = CircleShape, color = glassBg, border = BorderStroke(1.dp, glassBorder),
+                                modifier = Modifier.padding(bottom = 20.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(text = "${selectedCountry.flag}   ${selectedCountry.name}", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                                    Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White.copy(alpha = 0.5f))
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedTextField(
-                                    value = countryCode,
-                                    onValueChange = { input ->
-                                        val digits = input.filter { it.isDigit() }.take(4)
-                                        countryCode = digits
-                                        COUNTRY_LIST.find { it.dialCode == digits }?.let { matched -> selectedCountry = matched }
-                                    },
-                                    prefix = { Text("+", color = Color.White) }, singleLine = true,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder,
-                                        focusedContainerColor = glassBg, unfocusedContainerColor = glassBg,
-                                        focusedTextColor = Color.White, unfocusedTextColor = Color.White
-                                    ),
-                                    modifier = Modifier.width(100.dp)
-                                )
-                                OutlinedTextField(
-                                    value = localPhone,
-                                    onValueChange = { input -> localPhone = input.filter { it.isDigit() } },
-                                    placeholder = { Text("Phone Number", color = Color.White.copy(alpha = 0.3f)) },
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
-                                    keyboardActions = KeyboardActions(onDone = { if (countryCode.isNotBlank() && localPhone.length >= 6) submitFormattedPhone() }),
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder,
-                                        focusedContainerColor = glassBg, unfocusedContainerColor = glassBg,
-                                        focusedTextColor = Color.White, unfocusedTextColor = Color.White
-                                    ),
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(36.dp))
-                            Button(
-                                onClick = submitFormattedPhone,
-                                modifier = Modifier.fillMaxWidth().height(56.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                enabled = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6,
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0078D7), disabledContainerColor = Color(0xFF0078D7).copy(alpha = 0.5f))
-                            ) {
-                                if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.5.dp)
-                                else { Text("Continue", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White); Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.White) }
-                            }
-                        }
-                        is LoginUiState.EnteringCode -> {
-                            if (submittedPhone.isNotEmpty()) {
-                                Surface(
-                                    onClick = { code = ""; onBackToPhoneInput() },
-                                    shape = CircleShape, color = glassBg, border = BorderStroke(1.dp, glassBorder),
-                                    modifier = Modifier.padding(bottom = 20.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
-                                        Text(text = submittedPhone, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Icon(Icons.Default.Edit, null, tint = Color(0xFF00E5FF), modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            }
-                            OutlinedTextField(
-                                value = code,
-                                onValueChange = { input -> val filtered = input.filter { it.isDigit() }.take(5); code = filtered; if (filtered.length == 5 && !isProcessing) onCodeSubmit(filtered) },
-                                placeholder = { Text("Code", color = Color.White.copy(alpha = 0.3f)) }, modifier = Modifier.fillMaxWidth(),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                                keyboardActions = KeyboardActions(onDone = { onCodeSubmit(code) }), leadingIcon = { Icon(Icons.Default.Lock, null, tint = Color.White.copy(alpha = 0.5f)) },
-                                singleLine = true, shape = RoundedCornerShape(16.dp),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder, focusedContainerColor = glassBg, unfocusedContainerColor = glassBg, focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                            )
-                            Spacer(modifier = Modifier.height(24.dp))
-                            Button(
-                                onClick = { onCodeSubmit(code) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp),
-                                enabled = code.length >= 5 && !isProcessing, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0078D7), disabledContainerColor = Color(0xFF0078D7).copy(alpha = 0.5f))
-                            ) {
-                                if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.5.dp)
-                                else Text("Verify", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            }
-                            Spacer(modifier = Modifier.height(20.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(onClick = { code = ""; onBackToPhoneInput() }) { Text("Wrong number?", color = Color.White.copy(alpha = 0.7f)) }
-                                TextButton(onClick = { onResendCode(); resendTimer = 60 }, enabled = resendTimer == 0 && !isProcessing) {
-                                    Icon(Icons.Default.Refresh, null, tint = if (resendTimer == 0) Color(0xFF00E5FF) else Color.Gray, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (resendTimer > 0) "Resend (${resendTimer}s)" else "Resend Code", color = if (resendTimer == 0) Color(0xFF00E5FF) else Color.Gray, fontSize = 14.sp)
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
+                                    Text(text = submittedPhone, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(Icons.Default.Edit, null, tint = Color(0xFF00E5FF), modifier = Modifier.size(16.dp))
                                 }
                             }
                         }
-                        is LoginUiState.EnteringPassword -> {
-                            OutlinedTextField(
-                                value = password, onValueChange = { password = it },
-                                placeholder = { Text("Password", color = Color.White.copy(alpha = 0.3f)) }, modifier = Modifier.fillMaxWidth(),
-                                visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                                keyboardActions = KeyboardActions(onDone = { onPasswordSubmit(password) }), leadingIcon = { Icon(Icons.Default.Lock, null, tint = Color.White.copy(alpha = 0.5f)) },
-                                singleLine = true, trailingIcon = { IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) { Icon(if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = Color.White.copy(alpha = 0.5f)) } },
-                                shape = RoundedCornerShape(16.dp),
-                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder, focusedContainerColor = glassBg, unfocusedContainerColor = glassBg, focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                            )
-                            Spacer(modifier = Modifier.height(24.dp))
-                            Button(
-                                onClick = { onPasswordSubmit(password) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp),
-                                enabled = password.isNotBlank() && !isProcessing, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0078D7), disabledContainerColor = Color(0xFF0078D7).copy(alpha = 0.5f))
-                            ) {
-                                if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.5.dp)
-                                else Text("Unlock", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            }
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { input -> val filtered = input.filter { it.isDigit() }.take(5); code = filtered; if (filtered.length == 5 && !isProcessing) onCodeSubmit(filtered) },
+                            placeholder = { Text("Code", color = Color.White.copy(alpha = 0.3f)) }, modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { onCodeSubmit(code) }), leadingIcon = { Icon(Icons.Default.Lock, null, tint = Color.White.copy(alpha = 0.5f)) },
+                            singleLine = true, shape = RoundedCornerShape(16.dp),
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder, focusedContainerColor = glassBg, unfocusedContainerColor = glassBg, focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = { onCodeSubmit(code) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp),
+                            enabled = code.length >= 5 && !isProcessing, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0078D7), disabledContainerColor = Color(0xFF0078D7).copy(alpha = 0.5f))
+                        ) {
+                            if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.5.dp)
+                            else Text("Verify", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
-                        else -> {
-                            Spacer(modifier = Modifier.height(32.dp))
-                            CircularProgressIndicator(color = Color(0xFF00E5FF))
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { code = ""; onBackToPhoneInput() }) { Text("Wrong number?", color = Color.White.copy(alpha = 0.7f)) }
+                            TextButton(onClick = { onResendCode(); resendTimer = 60 }, enabled = resendTimer == 0 && !isProcessing) {
+                                Icon(Icons.Default.Refresh, null, tint = if (resendTimer == 0) Color(0xFF00E5FF) else Color.Gray, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(if (resendTimer > 0) "Resend (${resendTimer}s)" else "Resend Code", color = if (resendTimer == 0) Color(0xFF00E5FF) else Color.Gray, fontSize = 14.sp)
+                            }
                         }
                     }
-                } else if (selectedProvider == CloudProvider.GOOGLE_DRIVE) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    CircularProgressIndicator(color = Color(0xFF0F9D58))
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Connecting to Google Drive...", color = Color.White.copy(alpha = 0.7f))
+                    is LoginUiState.EnteringPassword -> {
+                        OutlinedTextField(
+                            value = password, onValueChange = { password = it },
+                            placeholder = { Text("Password", color = Color.White.copy(alpha = 0.3f)) }, modifier = Modifier.fillMaxWidth(),
+                            visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { onPasswordSubmit(password) }), leadingIcon = { Icon(Icons.Default.Lock, null, tint = Color.White.copy(alpha = 0.5f)) },
+                            singleLine = true, trailingIcon = { IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) { Icon(if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = Color.White.copy(alpha = 0.5f)) } },
+                            shape = RoundedCornerShape(16.dp),
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF00E5FF), unfocusedBorderColor = glassBorder, focusedContainerColor = glassBg, unfocusedContainerColor = glassBg, focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = { onPasswordSubmit(password) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp),
+                            enabled = password.isNotBlank() && !isProcessing, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0078D7), disabledContainerColor = Color(0xFF0078D7).copy(alpha = 0.5f))
+                        ) {
+                            if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.5.dp)
+                            else Text("Unlock", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                    else -> {
+                        Spacer(modifier = Modifier.height(32.dp))
+                        CircularProgressIndicator(color = Color(0xFF00E5FF))
+                    }
                 }
             }
         }
