@@ -239,7 +239,6 @@ class DriveRepository @Inject constructor(
     private var currentManifest = TeleDriveManifest()
     private var manifestMessageId: Long = 0
 
-    // Saved Messages নষ্ট না করে আলাদা Dedicated Private Channel ("MyCloud Storage") তৈরি ও আর্কাইভে রাখা
     private fun ensureSavedMessagesChat(onReady: (Long) -> Unit) {
         if (savedMessagesChatId != 0L) {
             onReady(savedMessagesChatId)
@@ -275,7 +274,6 @@ class DriveRepository @Inject constructor(
                 }
             }
 
-            // প্রথমে চেক করবে আগে থেকেই "MyCloud Storage" নামের চ্যানেল আছে কি না
             telegramClient.send(TdApi.SearchChatsOnServer(DEDICATED_CHANNEL_TITLE, 20)) { searchRes ->
                 if (searchRes is TdApi.Chats && searchRes.chatIds.isNotEmpty()) {
                     verifyCandidateChats(searchRes.chatIds.toList(), 0, onReady)
@@ -297,7 +295,6 @@ class DriveRepository @Inject constructor(
                 savedMessagesChatId = chatRes.id
                 _savedMessagesChatIdFlow.value = chatRes.id
                 secureSettings.saveLong(PREF_STORAGE_CHAT_ID, chatRes.id)
-                // চ্যানেলটিকে মেইন চ্যাট লিস্টের বদলে আর্কাইভে লুকিয়ে রাখা হবে
                 telegramClient.send(TdApi.AddChatToList(chatRes.id, TdApi.ChatListArchive())) {}
                 onReady(chatRes.id)
             } else {
@@ -610,7 +607,6 @@ class DriveRepository @Inject constructor(
         syncVirtualFoldersToDb()
     }
 
-    // ম্যানিফেস্ট JSON যাতে টেলিগ্রামের ৪০৯৬ ক্যারেক্টার লিমিট অতিক্রম না করে সেজন্য অপ্রয়োজনীয় রুট ("0") এন্ট্রি পরিষ্কার রাখে
     private fun compactManifest(manifest: TeleDriveManifest): TeleDriveManifest {
         val compactMappings = manifest.fileMappings.filterValues { it != "0" && it.isNotEmpty() }
         return manifest.copy(
@@ -1115,7 +1111,6 @@ class DriveRepository @Inject constructor(
                     }
                 }
             } else {
-                // ক্যাপশনের ভেতরেই ফোল্ডার ট্যাগ যুক্ত থাকবে, তাই বাড়তি #TELEDRIVE_FILE_DATA মেসেজ পাঠানোর কোনো দরকার নেই!
                 uploadSinglePart(
                     filePath = filePath,
                     originalFileName = cleanName,
@@ -1143,7 +1138,7 @@ class DriveRepository @Inject constructor(
                 mime.startsWith("video/") -> {
                     val retriever = MediaMetadataRetriever()
                     retriever.setDataSource(sourceFile.absolutePath)
-                    val frame = retriever.getFrameAtTime(500_000L, MediaMetadataRetriever.OPTION_MINI_KIND) ?: retriever.frameAtTime
+                    val frame = retriever.getFrameAtTime(500_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: retriever.frameAtTime
                     retriever.release()
                     frame
                 }
@@ -1243,7 +1238,6 @@ class DriveRepository @Inject constructor(
                 }
             }
 
-            // হাই-প্রায়োরিটি স্ট্রিমিং আপলোড প্রি-স্টার্ট
             telegramClient.send(
                 TdApi.SendMessage(
                     targetChatId, null, null, null, null,
@@ -1336,7 +1330,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // সুপার ফাস্ট ডাউনলোড: মিডিয়া ক্যাশ থাকলে সরাসরি চালু করবে, না থাকলে সর্বোচ্চ প্রায়োরিটি ৩২-এ নামাবে
     fun downloadFile(messageId: Long, chatId: Long, fileName: String) {
         scope.launch {
             val cachedEntity = driveDao.getItemById(messageId, chatId)
