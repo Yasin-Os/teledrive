@@ -1,7 +1,6 @@
 package com.awd.teledrive.di
 
 import android.content.Context
-import android.util.Log
 import androidx.room.Room
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.TeleDriveDatabase
@@ -20,8 +19,6 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): TeleDriveDatabase {
-        Log.d("DatabaseModule", "Initializing database WITHOUT encryption for troubleshooting...")
-        
         return Room.databaseBuilder(
             context,
             TeleDriveDatabase::class.java,
