@@ -90,7 +90,6 @@ class DriveRepository @Inject constructor(
     private var watcherDebounceJob: Job? = null
     private var manifestSaveDebounceJob: Job? = null
 
-    // ডাবল চ্যানেল তৈরি হওয়া চিরতরে বন্ধ করার জন্য সিঙ্ক্রোনাইজড লক ও কলব্যাক কিউ
     private val channelInitLock = Any()
     private var isDiscoveringChannel = false
     private val pendingChatCallbacks = mutableListOf<(Long) -> Unit>()
@@ -307,7 +306,6 @@ class DriveRepository @Inject constructor(
                 }
             }
 
-            // প্রথমে মেইন ও আর্কাইভ চ্যাট লিস্ট লোড করে লোকালি ও সার্ভারে খুঁজবে যেন কখনোই ডাবল চ্যানেল না খোলে
             telegramClient.send(TdApi.LoadChats(TdApi.ChatListArchive(), 50)) {
                 telegramClient.send(TdApi.SearchChats(DEDICATED_CHANNEL_TITLE, 30)) { localRes ->
                     val localIds = (localRes as? TdApi.Chats)?.chatIds?.toList() ?: emptyList()
@@ -366,10 +364,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    /**
-     * চ্যানেল তৈরি হওয়ার পর স্বয়ংক্রিয়ভাবে অ্যাপের আইকনটিকে প্রোফাইল পিকচার হিসেবে বসিয়ে দেবে
-     * এবং কোনো হেল্পার বট কনফিগার করা থাকলে সেটিকে অ্যাডমিন হিসেবে যুক্ত করবে।
-     */
     private fun ensureChannelBrandPhotoAndBot(chatId: Long) {
         if (chatId == 0L || chatId == legacySavedMessagesId) return
 
@@ -399,7 +393,6 @@ class DriveRepository @Inject constructor(
                 val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
 
-                // ডার্ক প্রিমিয়াম ব্যাকগ্রাউন্ড গ্রেডিয়েন্ট
                 val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     shader = LinearGradient(
                         0f, 0f, size.toFloat(), size.toFloat(),
@@ -410,7 +403,6 @@ class DriveRepository @Inject constructor(
                 }
                 canvas.drawRect(0f, 0f, size.toFloat(), size.toFloat(), bgPaint)
 
-                // অ্যাপের ভেক্টর আইকন (ic_mycloud_logo / ic_launcher_foreground) মাঝখানে রেন্ডার করা
                 val drawable = ContextCompat.getDrawable(context, R.drawable.ic_mycloud_logo)
                     ?: ContextCompat.getDrawable(context, R.mipmap.ic_launcher)
 
@@ -439,9 +431,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    /**
-     * অ্যাপের এক্সপেরিয়েন্স বাড়াতে যেকোনো টেলিগ্রাম বটকে স্টোরেজ চ্যানেলে স্বয়ংক্রিয়ভাবে অ্যাডমিন হিসেবে যুক্ত করার মেথড।
-     */
     fun attachBotToStorageChannel(botUsername: String, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
         val cleanUsername = botUsername.removePrefix("@").trim()
         if (cleanUsername.isEmpty()) {
@@ -454,23 +443,23 @@ class DriveRepository @Inject constructor(
             telegramClient.send(TdApi.SearchPublicChat(cleanUsername)) { searchRes ->
                 if (searchRes is TdApi.Chat && searchRes.type is TdApi.ChatTypePrivate) {
                     val botUserId = (searchRes.type as TdApi.ChatTypePrivate).userId
-                    val adminRights = TdApi.ChatAdministratorRights(
-                        true,  // canManageChat
-                        true,  // canChangeInfo
-                        true,  // canPostMessages
-                        true,  // canEditMessages
-                        true,  // canDeleteMessages
-                        false, // canInviteUsers
-                        false, // canRestrictMembers
-                        false, // canPinMessages
-                        false, // canManageTopics
-                        false, // canPromoteMembers
-                        false, // canManageVideoChats
-                        true,  // canPostStories
-                        true,  // canEditStories
-                        true,  // canDeleteStories
-                        false  // isAnonymous
-                    )
+                    val adminRights = TdApi.ChatAdministratorRights().apply {
+                        canManageChat = true
+                        canChangeInfo = true
+                        canPostMessages = true
+                        canEditMessages = true
+                        canDeleteMessages = true
+                        canInviteUsers = false
+                        canRestrictMembers = false
+                        canPinMessages = false
+                        canManageTopics = false
+                        canPromoteMembers = false
+                        canManageVideoChats = false
+                        canPostStories = true
+                        canEditStories = true
+                        canDeleteStories = true
+                        isAnonymous = false
+                    }
                     val status = TdApi.ChatMemberStatusAdministrator("MyCloud Bot", true, adminRights)
                     telegramClient.send(TdApi.SetChatMemberStatus(chatId, TdApi.MessageSenderUser(botUserId), status)) { promRes ->
                         if (promRes is TdApi.Ok) {
