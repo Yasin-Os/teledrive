@@ -20,9 +20,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -109,6 +113,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -132,6 +137,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.pow
 
@@ -149,26 +155,14 @@ fun PreviewScreen(
     val decryptedPaths by viewModel.decryptedPaths.collectAsState()
     val isDecrypting by viewModel.isDecrypting.collectAsState()
     val isOpening by viewModel.isOpening.collectAsState()
-    
+
     if (items.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(color = Color.White)
         }
     } else {
-        val initialPage = remember { viewModel.getInitialIndex() }
+        val initialPage = remember { viewModel.getInitialIndex().coerceIn(0, (items.size - 1).coerceAtLeast(0)) }
         val pagerState = rememberPagerState(initialPage = initialPage) { items.size }
-
-        LaunchedEffect(items) {
-            if (items.isNotEmpty()) {
-                val currentFileId = items.getOrNull(pagerState.currentPage)?.id
-                if (currentFileId != null) {
-                    val newIndex = items.indexOfFirst { it.id == currentFileId }
-                    if (newIndex != -1 && newIndex != pagerState.currentPage) {
-                        pagerState.scrollToPage(newIndex)
-                    }
-                }
-            }
-        }
 
         PreviewPager(
             items = items,
@@ -217,16 +211,22 @@ fun PreviewPager(
     val currentFile = items[pagerState.currentPage]
 
     var showGalleryBars by remember { mutableStateOf(true) }
-    var isZoomedIn by remember { mutableStateOf(false) }
+    var isCurrentPageZoomed by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var editingImagePath by remember { mutableStateOf<String?>(null) }
     var editedOverridePath by remember(currentFile.id) { mutableStateOf<String?>(null) }
 
+    // পেজ পরিবর্তন হলে জুম রিসেট ও পাশের ছবি প্রি-লোড করা হবে যাতে সোয়াইপ সুপার ফাস্ট হয়
     LaunchedEffect(pagerState.currentPage, items.size) {
+        isCurrentPageZoomed = false
         if (items.isNotEmpty() && pagerState.currentPage < items.size) {
-            if (!pagerState.isScrollInProgress) {
-                onAutoDownload(items[pagerState.currentPage])
+            onAutoDownload(items[pagerState.currentPage])
+            items.getOrNull(pagerState.currentPage + 1)?.let { next ->
+                if (next.mimeType.startsWith("image/")) onAutoDownload(next)
+            }
+            items.getOrNull(pagerState.currentPage - 1)?.let { prev ->
+                if (prev.mimeType.startsWith("image/")) onAutoDownload(prev)
             }
         }
     }
@@ -285,14 +285,14 @@ fun PreviewPager(
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
-            userScrollEnabled = !isZoomedIn,
+            userScrollEnabled = !isCurrentPageZoomed,
             beyondViewportPageCount = 1
         ) { pageIndex ->
             val file = items[pageIndex]
             val transfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId == file.telegramFileId }
             val pageLocal = if (file.id == currentFile.id && editedOverridePath != null) editedOverridePath else file.localPath?.takeIf { File(it).exists() }
             val displayPath = if (file.isEncrypted) (if (file.id == currentFile.id && editedOverridePath != null) editedOverridePath else decryptedPaths[file.id]) else pageLocal
-            
+
             val decrypting = isDecrypting[file.id] ?: false
             val opening = isOpening[file.id] ?: false
 
@@ -305,11 +305,16 @@ fun PreviewPager(
                     transfer = transfer,
                     isDecrypting = decrypting,
                     isOpening = opening,
+                    isCurrentPage = pageIndex == pagerState.currentPage,
                     onOpenPlayer = onOpenPlayer,
                     onOpenPdf = onOpenPdf,
                     onOpenText = onOpenText,
                     onToggleBars = { showGalleryBars = !showGalleryBars },
-                    onZoomChanged = { zoomed -> isZoomedIn = zoomed },
+                    onZoomChanged = { zoomed ->
+                        if (pageIndex == pagerState.currentPage) {
+                            isCurrentPageZoomed = zoomed
+                        }
+                    },
                     onLoadFile = { onLoadFile(file) }
                 )
             }
@@ -880,6 +885,7 @@ fun PreviewContent(
     transfer: TransferInfo?,
     isDecrypting: Boolean,
     isOpening: Boolean,
+    isCurrentPage: Boolean,
     onOpenPlayer: (String) -> Unit,
     onOpenPdf: (String) -> Unit,
     onOpenText: (String) -> Unit,
@@ -895,9 +901,19 @@ fun PreviewContent(
     val isWaitingForDecryption = file.isEncrypted && file.localPath != null && displayPath == null
     val isTransferring = transfer != null && (transfer.status == TransferRepository.Status.DOWNLOADING || transfer.status == TransferRepository.Status.UPLOADING)
     val isLoading = isTransferring || isDecrypting || isOpening || isMediaRendering || isWaitingForDecryption
-    
+
     var scale by remember(file.id) { mutableFloatStateOf(1f) }
     var offset by remember(file.id) { mutableStateOf(Offset.Zero) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // অন্য পেজে সোয়াইপ হয়ে গেলে জুম রিসেট করে দেবে
+    LaunchedEffect(isCurrentPage) {
+        if (!isCurrentPage && scale != 1f) {
+            scale = 1f
+            offset = Offset.Zero
+            onZoomChanged(false)
+        }
+    }
 
     val triggerStreamOrPlay = {
         if (displayPath != null && File(displayPath).exists()) {
@@ -913,17 +929,27 @@ fun PreviewContent(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .onSizeChanged { containerSize = it }
             .pointerInput(file.id) {
                 detectTapGestures(
                     onTap = { onToggleBars() },
-                    onDoubleTap = {
+                    onDoubleTap = { tapOffset ->
                         if (isImage) {
                             if (scale > 1.05f) {
                                 scale = 1f
                                 offset = Offset.Zero
                                 onZoomChanged(false)
                             } else {
-                                scale = 2.5f
+                                val targetScale = 2.5f
+                                val centerX = containerSize.width / 2f
+                                val centerY = containerSize.height / 2f
+                                val maxX = (containerSize.width * (targetScale - 1f)) / 2f
+                                val maxY = (containerSize.height * (targetScale - 1f)) / 2f
+                                offset = Offset(
+                                    x = ((centerX - tapOffset.x) * (targetScale - 1f)).coerceIn(-maxX, maxX),
+                                    y = ((centerY - tapOffset.y) * (targetScale - 1f)).coerceIn(-maxY, maxY)
+                                )
+                                scale = targetScale
                                 onZoomChanged(true)
                             }
                         }
@@ -931,18 +957,64 @@ fun PreviewContent(
                 )
             }
             .pointerInput(file.id) {
-                if (isImage) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        val newScale = (scale * zoom).coerceIn(1f, 5f)
-                        scale = newScale
-                        if (newScale > 1.05f) {
-                            offset += pan
-                            onZoomChanged(true)
-                        } else {
-                            offset = Offset.Zero
+                if (!isImage) return@pointerInput
+                // স্মার্ট জেসচার ডিটেক্টর: জুম না থাকলে ১-আঙুলের সোয়াইপ HorizontalPager-কে ছেড়ে দেয়!
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val pointerCount = event.changes.count { it.pressed }
+
+                        if (pointerCount >= 2) {
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                            val maxX = (size.width * (newScale - 1f)) / 2f
+                            val maxY = (size.height * (newScale - 1f)) / 2f
+
+                            scale = newScale
+                            if (newScale > 1.04f) {
+                                offset = Offset(
+                                    x = (offset.x + panChange.x).coerceIn(-maxX, maxX),
+                                    y = (offset.y + panChange.y).coerceIn(-maxY, maxY)
+                                )
+                                onZoomChanged(true)
+                            } else {
+                                scale = 1f
+                                offset = Offset.Zero
+                                onZoomChanged(false)
+                            }
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        } else if (pointerCount == 1 && scale > 1.04f) {
+                            val panChange = event.calculatePan()
+                            val maxX = (size.width * (scale - 1f)) / 2f
+                            val maxY = (size.height * (scale - 1f)) / 2f
+                            val nextX = offset.x + panChange.x
+                            val nextY = offset.y + panChange.y
+
+                            // জুম অবস্থায় ছবির একদম কিনারায় পৌঁছে গেলে পেজারকে সোয়াইপ করতে দেবে
+                            val hittingHorizontalEdge = (nextX > maxX + 12f && panChange.x > 0) ||
+                                    (nextX < -maxX - 12f && panChange.x < 0)
+
+                            if (hittingHorizontalEdge && abs(panChange.x) > abs(panChange.y)) {
+                                onZoomChanged(false)
+                            } else {
+                                offset = Offset(
+                                    x = nextX.coerceIn(-maxX, maxX),
+                                    y = nextY.coerceIn(-maxY, maxY)
+                                )
+                                onZoomChanged(true)
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
+                        } else if (scale <= 1.04f) {
+                            // ১x অবস্থায় কোনো ইভেন্ট কনজিউম করা হবে না যাতে ডানে-বামে সোয়াইপ ১০০% স্মুথ কাজ করে
+                            if (scale != 1f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            }
                             onZoomChanged(false)
                         }
-                    }
+                    } while (event.changes.any { it.pressed })
                 }
             },
         contentAlignment = Alignment.Center
