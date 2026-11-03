@@ -5,6 +5,10 @@ import android.content.Intent
 import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.ConnectivityManager
@@ -17,6 +21,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import com.awd.teledrive.R
 import com.awd.teledrive.core.utils.FileUtils
@@ -73,6 +78,8 @@ class DriveRepository @Inject constructor(
         const val SAFE_SPACE_VIRTUAL_ID = "vf_safe_space"
         private const val DEDICATED_CHANNEL_TITLE = "MyCloud Storage"
         private const val PREF_STORAGE_CHAT_ID = "dedicated_storage_chat_id"
+        private const val PREF_CHANNEL_PHOTO_SET = "dedicated_channel_photo_set_"
+        private const val PREF_HELPER_BOT_USERNAME = "helper_bot_username"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -82,6 +89,11 @@ class DriveRepository @Inject constructor(
     private val isBackupRunning = AtomicBoolean(false)
     private var watcherDebounceJob: Job? = null
     private var manifestSaveDebounceJob: Job? = null
+
+    // ডাবল চ্যানেল তৈরি হওয়া চিরতরে বন্ধ করার জন্য সিঙ্ক্রোনাইজড লক ও কলব্যাক কিউ
+    private val channelInitLock = Any()
+    private var isDiscoveringChannel = false
+    private val pendingChatCallbacks = mutableListOf<(Long) -> Unit>()
 
     private val pendingUploadTempIds = ConcurrentHashMap<Long, String>()
     private val pendingAutoDeleteFiles = ConcurrentHashMap<Long, File>()
@@ -239,31 +251,52 @@ class DriveRepository @Inject constructor(
     private var currentManifest = TeleDriveManifest()
     private var manifestMessageId: Long = 0
 
+    private fun finishChannelDiscovery(chatId: Long) {
+        val callbacks: List<(Long) -> Unit>
+        synchronized(channelInitLock) {
+            if (chatId != 0L) {
+                savedMessagesChatId = chatId
+                _savedMessagesChatIdFlow.value = chatId
+                secureSettings.saveLong(PREF_STORAGE_CHAT_ID, chatId)
+            }
+            isDiscoveringChannel = false
+            callbacks = pendingChatCallbacks.toList()
+            pendingChatCallbacks.clear()
+        }
+        if (chatId != 0L) {
+            ensureChannelBrandPhotoAndBot(chatId)
+            callbacks.forEach { it(chatId) }
+        }
+    }
+
     private fun ensureSavedMessagesChat(onReady: (Long) -> Unit) {
-        if (savedMessagesChatId != 0L) {
-            onReady(savedMessagesChatId)
-            return
+        synchronized(channelInitLock) {
+            if (savedMessagesChatId != 0L) {
+                onReady(savedMessagesChatId)
+                return
+            }
+            pendingChatCallbacks.add(onReady)
+            if (isDiscoveringChannel) return
+            isDiscoveringChannel = true
         }
 
         val cachedChannelId = secureSettings.getLong(PREF_STORAGE_CHAT_ID, 0L)
         if (cachedChannelId != 0L) {
             telegramClient.send(TdApi.GetChat(cachedChannelId)) { res ->
                 if (res is TdApi.Chat) {
-                    savedMessagesChatId = res.id
-                    _savedMessagesChatIdFlow.value = res.id
-                    onReady(res.id)
+                    finishChannelDiscovery(res.id)
                 } else {
                     secureSettings.saveLong(PREF_STORAGE_CHAT_ID, 0L)
-                    discoverOrCreateDedicatedChannel(onReady)
+                    discoverOrCreateDedicatedChannel()
                 }
             }
             return
         }
 
-        discoverOrCreateDedicatedChannel(onReady)
+        discoverOrCreateDedicatedChannel()
     }
 
-    private fun discoverOrCreateDedicatedChannel(onReady: (Long) -> Unit) {
+    private fun discoverOrCreateDedicatedChannel() {
         telegramClient.send(TdApi.GetMe()) { meResult ->
             if (meResult is TdApi.User) {
                 val myUserId = meResult.id
@@ -274,56 +307,181 @@ class DriveRepository @Inject constructor(
                 }
             }
 
-            telegramClient.send(TdApi.SearchChatsOnServer(DEDICATED_CHANNEL_TITLE, 20)) { searchRes ->
-                if (searchRes is TdApi.Chats && searchRes.chatIds.isNotEmpty()) {
-                    verifyCandidateChats(searchRes.chatIds.toList(), 0, onReady)
-                } else {
-                    createAndArchiveStorageChannel(onReady)
+            // প্রথমে মেইন ও আর্কাইভ চ্যাট লিস্ট লোড করে লোকালি ও সার্ভারে খুঁজবে যেন কখনোই ডাবল চ্যানেল না খোলে
+            telegramClient.send(TdApi.LoadChats(TdApi.ChatListArchive(), 50)) {
+                telegramClient.send(TdApi.SearchChats(DEDICATED_CHANNEL_TITLE, 30)) { localRes ->
+                    val localIds = (localRes as? TdApi.Chats)?.chatIds?.toList() ?: emptyList()
+                    telegramClient.send(TdApi.SearchChatsOnServer(DEDICATED_CHANNEL_TITLE, 30)) { serverRes ->
+                        val serverIds = (serverRes as? TdApi.Chats)?.chatIds?.toList() ?: emptyList()
+                        val combinedIds = (localIds + serverIds).distinct()
+                        if (combinedIds.isNotEmpty()) {
+                            verifyCandidateChats(combinedIds, 0)
+                        } else {
+                            createAndArchiveStorageChannel()
+                        }
+                    }
                 }
             }
         }
     }
 
-    private fun verifyCandidateChats(chatIds: List<Long>, index: Int, onReady: (Long) -> Unit) {
+    private fun verifyCandidateChats(chatIds: List<Long>, index: Int) {
         if (index >= chatIds.size) {
-            createAndArchiveStorageChannel(onReady)
+            createAndArchiveStorageChannel()
             return
         }
         val candidateId = chatIds[index]
         telegramClient.send(TdApi.GetChat(candidateId)) { chatRes ->
-            if (chatRes is TdApi.Chat && chatRes.title.equals(DEDICATED_CHANNEL_TITLE, ignoreCase = true) && chatRes.type is TdApi.ChatTypeSupergroup) {
-                savedMessagesChatId = chatRes.id
-                _savedMessagesChatIdFlow.value = chatRes.id
-                secureSettings.saveLong(PREF_STORAGE_CHAT_ID, chatRes.id)
+            if (chatRes is TdApi.Chat &&
+                chatRes.title.equals(DEDICATED_CHANNEL_TITLE, ignoreCase = true) &&
+                chatRes.type is TdApi.ChatTypeSupergroup
+            ) {
                 telegramClient.send(TdApi.AddChatToList(chatRes.id, TdApi.ChatListArchive())) {}
-                onReady(chatRes.id)
+                finishChannelDiscovery(chatRes.id)
             } else {
-                verifyCandidateChats(chatIds, index + 1, onReady)
+                verifyCandidateChats(chatIds, index + 1)
             }
         }
     }
 
-    private fun createAndArchiveStorageChannel(onReady: (Long) -> Unit) {
+    private fun createAndArchiveStorageChannel() {
         val createReq = TdApi.CreateNewSupergroupChat(
             DEDICATED_CHANNEL_TITLE,
             false,
             true,
-            "MyCloud Personal Unlimited Encrypted Drive",
+            "MyCloud Personal Unlimited Encrypted Drive • Developed by Yasin Adnan",
             null,
             0,
             false
         )
         telegramClient.send(createReq) { result ->
             if (result is TdApi.Chat) {
-                savedMessagesChatId = result.id
-                _savedMessagesChatIdFlow.value = result.id
-                secureSettings.saveLong(PREF_STORAGE_CHAT_ID, result.id)
                 telegramClient.send(TdApi.AddChatToList(result.id, TdApi.ChatListArchive())) {}
-                onReady(result.id)
+                finishChannelDiscovery(result.id)
             } else if (legacySavedMessagesId != 0L) {
-                savedMessagesChatId = legacySavedMessagesId
-                _savedMessagesChatIdFlow.value = legacySavedMessagesId
-                onReady(legacySavedMessagesId)
+                finishChannelDiscovery(legacySavedMessagesId)
+            } else {
+                finishChannelDiscovery(0L)
+            }
+        }
+    }
+
+    /**
+     * চ্যানেল তৈরি হওয়ার পর স্বয়ংক্রিয়ভাবে অ্যাপের আইকনটিকে প্রোফাইল পিকচার হিসেবে বসিয়ে দেবে
+     * এবং কোনো হেল্পার বট কনফিগার করা থাকলে সেটিকে অ্যাডমিন হিসেবে যুক্ত করবে।
+     */
+    private fun ensureChannelBrandPhotoAndBot(chatId: Long) {
+        if (chatId == 0L || chatId == legacySavedMessagesId) return
+
+        val photoKey = "$PREF_CHANNEL_PHOTO_SET$chatId"
+        if (!secureSettings.getBoolean(photoKey, false)) {
+            telegramClient.send(TdApi.GetChat(chatId)) { res ->
+                if (res is TdApi.Chat) {
+                    if (res.photo == null) {
+                        setChannelBrandPhoto(chatId, photoKey)
+                    } else {
+                        secureSettings.saveBoolean(photoKey, true)
+                    }
+                }
+            }
+        }
+
+        val botUsername = secureSettings.getString(PREF_HELPER_BOT_USERNAME, "")?.trim() ?: ""
+        if (botUsername.isNotEmpty()) {
+            attachBotToStorageChannel(botUsername)
+        }
+    }
+
+    private fun setChannelBrandPhoto(chatId: Long, photoPrefKey: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val size = 512
+                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+
+                // ডার্ক প্রিমিয়াম ব্যাকগ্রাউন্ড গ্রেডিয়েন্ট
+                val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    shader = LinearGradient(
+                        0f, 0f, size.toFloat(), size.toFloat(),
+                        intArrayOf(0xFF070B14.toInt(), 0xFF0F253E.toInt()),
+                        null,
+                        Shader.TileMode.CLAMP
+                    )
+                }
+                canvas.drawRect(0f, 0f, size.toFloat(), size.toFloat(), bgPaint)
+
+                // অ্যাপের ভেক্টর আইকন (ic_mycloud_logo / ic_launcher_foreground) মাঝখানে রেন্ডার করা
+                val drawable = ContextCompat.getDrawable(context, R.drawable.ic_mycloud_logo)
+                    ?: ContextCompat.getDrawable(context, R.mipmap.ic_launcher)
+
+                if (drawable != null) {
+                    val pad = (size * 0.08f).toInt()
+                    drawable.setBounds(pad, pad, size - pad, size - pad)
+                    drawable.draw(canvas)
+                }
+
+                val photoFile = File(context.cacheDir, "mycloud_channel_avatar.jpg")
+                FileOutputStream(photoFile).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+                }
+
+                if (photoFile.exists() && photoFile.length() > 0) {
+                    val chatPhoto = TdApi.InputChatPhotoStatic(TdApi.InputFileLocal(photoFile.absolutePath))
+                    telegramClient.send(TdApi.SetChatPhoto(chatId, chatPhoto)) { result ->
+                        if (result is TdApi.Ok) {
+                            secureSettings.saveBoolean(photoPrefKey, true)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DriveRepo", "Failed to set channel brand photo: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * অ্যাপের এক্সপেরিয়েন্স বাড়াতে যেকোনো টেলিগ্রাম বটকে স্টোরেজ চ্যানেলে স্বয়ংক্রিয়ভাবে অ্যাডমিন হিসেবে যুক্ত করার মেথড।
+     */
+    fun attachBotToStorageChannel(botUsername: String, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        val cleanUsername = botUsername.removePrefix("@").trim()
+        if (cleanUsername.isEmpty()) {
+            onResult(false, "Invalid bot username")
+            return
+        }
+        secureSettings.saveString(PREF_HELPER_BOT_USERNAME, cleanUsername)
+
+        ensureSavedMessagesChat { chatId ->
+            telegramClient.send(TdApi.SearchPublicChat(cleanUsername)) { searchRes ->
+                if (searchRes is TdApi.Chat && searchRes.type is TdApi.ChatTypePrivate) {
+                    val botUserId = (searchRes.type as TdApi.ChatTypePrivate).userId
+                    val adminRights = TdApi.ChatAdministratorRights(
+                        true,  // canManageChat
+                        true,  // canChangeInfo
+                        true,  // canPostMessages
+                        true,  // canEditMessages
+                        true,  // canDeleteMessages
+                        false, // canInviteUsers
+                        false, // canRestrictMembers
+                        false, // canPinMessages
+                        false, // canManageTopics
+                        false, // canPromoteMembers
+                        false, // canManageVideoChats
+                        true,  // canPostStories
+                        true,  // canEditStories
+                        true,  // canDeleteStories
+                        false  // isAnonymous
+                    )
+                    val status = TdApi.ChatMemberStatusAdministrator("MyCloud Bot", true, adminRights)
+                    telegramClient.send(TdApi.SetChatMemberStatus(chatId, TdApi.MessageSenderUser(botUserId), status)) { promRes ->
+                        if (promRes is TdApi.Ok) {
+                            onResult(true, "Bot @$cleanUsername connected to MyCloud Storage!")
+                        } else if (promRes is TdApi.Error) {
+                            onResult(false, promRes.message)
+                        }
+                    }
+                } else {
+                    onResult(false, "Could not find bot @$cleanUsername")
+                }
             }
         }
     }
