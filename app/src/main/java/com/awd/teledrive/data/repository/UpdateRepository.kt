@@ -1,5 +1,8 @@
 package com.awd.teledrive.data.repository
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -7,24 +10,35 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
+import com.awd.teledrive.MainActivity
+import com.awd.teledrive.R
 import com.awd.teledrive.core.utils.VersionUtils
 import com.awd.teledrive.data.model.GitHubAsset
 import com.awd.teledrive.data.model.GitHubRelease
+import com.awd.teledrive.data.service.TransferService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,7 +46,13 @@ sealed class UpdateState {
     object Idle : UpdateState()
     object Checking : UpdateState()
     data class NewVersionAvailable(val release: GitHubRelease) : UpdateState()
-    data class Downloading(val progress: Float, val progressText: String) : UpdateState()
+    data class Downloading(
+        val progress: Float,
+        val progressText: String,
+        val speedText: String = "",
+        val release: GitHubRelease? = null
+    ) : UpdateState()
+    data class ReadyToInstall(val apkFile: File, val release: GitHubRelease) : UpdateState()
     object UpToDate : UpdateState()
     data class Error(val message: String) : UpdateState()
 }
@@ -41,59 +61,140 @@ sealed class UpdateState {
 class UpdateRepository @Inject constructor(
     @param:ApplicationContext private val context: Context
 ) {
+    companion object {
+        private const val GITHUB_REPO = "Yasin-Os/teledrive"
+        private const val UPDATE_CHANNEL_ID = "mycloud_app_update_channel"
+        private const val UPDATE_NOTIFICATION_ID = 2026
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val updateState = _updateState.asStateFlow()
 
+    // সেটিংস স্ক্রিনে সবসময় ব্যাজ বা ইন্ডিকেটর দেখানোর জন্য পারসিস্টেন্ট রিলিজ স্টেট
+    private val _availableRelease = MutableStateFlow<GitHubRelease?>(null)
+    val availableRelease = _availableRelease.asStateFlow()
+
+    // ইউজার চাইলে ডাউনলোড ব্যাকগ্রাউন্ডে পাঠিয়ে অ্যাপ ব্যবহার করতে পারবে
+    private val _isDownloadMinimized = MutableStateFlow(false)
+    val isDownloadMinimized = _isDownloadMinimized.asStateFlow()
+
     private var dismissedTag: String? = null
     private var lastAutoCheckTime: Long = 0L
-    private val GITHUB_REPO = "Yasin-Os/teledrive"
+    private var activeDownloadJob: Job? = null
+    private val isChecking = AtomicBoolean(false)
+
+    private val notificationManager by lazy {
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    }
+
+    init {
+        createUpdateNotificationChannel()
+    }
+
+    fun setDownloadMinimized(minimized: Boolean) {
+        _isDownloadMinimized.value = minimized
+    }
 
     suspend fun checkForUpdates(manual: Boolean = false) = withContext(Dispatchers.IO) {
-        if (_updateState.value is UpdateState.Checking || _updateState.value is UpdateState.Downloading) return@withContext
-
-        val now = System.currentTimeMillis()
-        if (!manual && (now - lastAutoCheckTime < 15_000L)) return@withContext
-        lastAutoCheckTime = now
-
-        if (manual) {
-            _updateState.value = UpdateState.Checking
+        val currentState = _updateState.value
+        if (currentState is UpdateState.Downloading) {
+            if (manual) _isDownloadMinimized.value = false
+            return@withContext
+        }
+        if (currentState is UpdateState.ReadyToInstall && manual) {
+            withContext(Dispatchers.Main) { installApk(currentState.apkFile) }
+            return@withContext
         }
 
+        if (!isChecking.compareAndSet(false, true)) return@withContext
+
         try {
-            // ৩টি লেয়ারে চেক করবে: ১. Redirect (সবচেয়ে ফাস্ট ও Rate-Limit মুক্ত), ২. GitHub API, ৩. Atom XML Feed
-            val release = fetchLatestViaRedirect()
-                ?: fetchLatestViaApi()
-                ?: fetchLatestViaAtomFeed()
+            val now = System.currentTimeMillis()
+            if (!manual && (now - lastAutoCheckTime < 8_000L)) return@withContext
+            lastAutoCheckTime = now
 
-            if (release != null) {
+            if (manual) {
+                _updateState.value = UpdateState.Checking
+            }
+
+            // ৩টি সোর্স একসাথে প্যারালালে চেক করা হবে (সর্বোচ্চ গতির জন্য) এবং সবচেয়ে নতুন ভার্সনটি নেওয়া হবে
+            val latestRelease = fetchLatestParallel()
+
+            if (latestRelease != null) {
                 val installedVersion = VersionUtils.getVersionName(context).removePrefix("v").trim()
-                val latestVersion = release.tag_name.removePrefix("v").trim()
-
-                if (!manual && dismissedTag == latestVersion) {
-                    _updateState.value = UpdateState.Idle
-                    return@withContext
-                }
+                val latestVersion = latestRelease.tag_name.removePrefix("v").trim()
 
                 if (isNewerVersion(installedVersion, latestVersion)) {
-                    _updateState.value = UpdateState.NewVersionAvailable(release)
-                } else if (manual) {
-                    _updateState.value = UpdateState.UpToDate
+                    _availableRelease.value = latestRelease
+
+                    // আগে থেকেই যদি এই নতুন ভার্সনের APK সম্পূর্ণ ডাউনলোড করা থাকে, তবে সরাসরি ReadyToInstall দেখাবে
+                    val cachedApk = getUpdateApkFile(latestVersion)
+                    if (cachedApk.exists() && cachedApk.length() > 5 * 1024 * 1024L) {
+                        _updateState.value = UpdateState.ReadyToInstall(cachedApk, latestRelease)
+                        return@withContext
+                    }
+
+                    if (!manual && dismissedTag == latestVersion) {
+                        return@withContext
+                    }
+
+                    _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
+                    showUpdateAvailableNotification(latestRelease)
                 } else {
-                    _updateState.value = UpdateState.Idle
+                    _availableRelease.value = null
+                    cleanupOldUpdateApks()
+                    if (manual) {
+                        _updateState.value = UpdateState.UpToDate
+                    } else if (_updateState.value !is UpdateState.Downloading) {
+                        _updateState.value = UpdateState.Idle
+                    }
                 }
             } else {
-                _updateState.value = if (manual) UpdateState.Error("Could not reach update server") else UpdateState.Idle
+                if (manual) {
+                    _updateState.value = UpdateState.Error("সার্ভারের সাথে সংযোগ করা যায়নি, ইন্টারনেট চেক করুন")
+                }
             }
         } catch (e: Exception) {
-            Log.e("UpdateRepository", "Failed to check for updates", e)
-            _updateState.value = if (manual) UpdateState.Error(e.message ?: "Unknown error") else UpdateState.Idle
+            Log.e("UpdateRepository", "Update check failed", e)
+            if (manual) {
+                _updateState.value = UpdateState.Error(e.message ?: "Unknown error")
+            }
+        } finally {
+            isChecking.set(false)
+        }
+    }
+
+    private suspend fun fetchLatestParallel(): GitHubRelease? = coroutineScope {
+        val cb = System.currentTimeMillis()
+        val apiDeferred = async { fetchLatestViaApi(cb) }
+        val redirectDeferred = async { fetchLatestViaRedirect(cb) }
+        val atomDeferred = async { fetchLatestViaAtomFeed(cb) }
+
+        val candidates = listOfNotNull(
+            apiDeferred.await(),
+            redirectDeferred.await(),
+            atomDeferred.await()
+        )
+
+        if (candidates.isEmpty()) return@coroutineScope null
+
+        // যদি একাধিক সোর্স থেকে রিলিজ পাওয়া যায়, তবে সবচেয়ে নতুন ট্যাগ এবং যাতে আসল APK লিংক আছে সেটি বেছে নেওয়া হবে
+        candidates.maxWithOrNull { a, b ->
+            val vA = a.tag_name.removePrefix("v").trim()
+            val vB = b.tag_name.removePrefix("v").trim()
+            when {
+                isNewerVersion(vA, vB) -> -1
+                isNewerVersion(vB, vA) -> 1
+                a.assets.any { it.size > 0 } && b.assets.none { it.size > 0 } -> 1
+                else -> 0
+            }
         }
     }
 
     private fun isNewerVersion(installed: String, latest: String): Boolean {
-        if (latest.isEmpty()) return false
-        if (installed == latest) return false
+        if (latest.isEmpty() || installed == latest) return false
         val installedParts = installed.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
         val latestParts = latest.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
         val maxLen = maxOf(installedParts.size, latestParts.size)
@@ -103,12 +204,87 @@ class UpdateRepository @Inject constructor(
             if (lat > inst) return true
             if (lat < inst) return false
         }
-        return latest != installed
+        return false
     }
 
-    private fun fetchLatestViaRedirect(): GitHubRelease? {
+    private fun fetchLatestViaApi(cacheBuster: Long): GitHubRelease? {
         return try {
-            var currentUrl = "https://github.com/$GITHUB_REPO/releases/latest"
+            // প্রথমে /releases/latest এবং দরকার হলে /releases?per_page=1 চেক করবে
+            val urls = listOf(
+                "https://api.github.com/repos/$GITHUB_REPO/releases/latest?cb=$cacheBuster",
+                "https://api.github.com/repos/$GITHUB_REPO/releases?per_page=1&cb=$cacheBuster"
+            )
+            for (endpoint in urls) {
+                val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 7000
+                    readTimeout = 7000
+                    useCaches = false
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                    setRequestProperty("Pragma", "no-cache")
+                    setRequestProperty("User-Agent", "MyCloud-Updater/${System.currentTimeMillis()}")
+                }
+                if (connection.responseCode == 200) {
+                    val bodyStr = connection.inputStream.bufferedReader().use { it.readText() }
+                    connection.disconnect()
+                    val obj = if (bodyStr.trimStart().startsWith("[")) {
+                        val arr = JSONArray(bodyStr)
+                        if (arr.length() > 0) arr.getJSONObject(0) else null
+                    } else {
+                        JSONObject(bodyStr)
+                    }
+                    if (obj != null) {
+                        parseReleaseJson(obj)?.let { return it }
+                    }
+                } else {
+                    connection.disconnect()
+                }
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun parseReleaseJson(obj: JSONObject): GitHubRelease? {
+        val tagName = obj.optString("tag_name", "").trim()
+        if (tagName.isEmpty()) return null
+
+        val name = obj.optString("name", "MyCloud $tagName").ifEmpty { "MyCloud $tagName" }
+        val body = obj.optString("body", "").let {
+            if (it.isBlank() || it == "null") "নতুন আপডেট ($tagName) প্রস্তুত! দ্রুত ও স্মুথ পারফরম্যান্সের জন্য এখনই আপডেট করুন।" else it
+        }
+        val htmlUrl = obj.optString("html_url", "https://github.com/$GITHUB_REPO/releases/tag/$tagName")
+
+        val assetsList = mutableListOf<GitHubAsset>()
+        val assetsArr = obj.optJSONArray("assets")
+        if (assetsArr != null) {
+            for (i in 0 until assetsArr.length()) {
+                val a = assetsArr.optJSONObject(i) ?: continue
+                val aName = a.optString("name", "")
+                val aUrl = a.optString("browser_download_url", "")
+                val aSize = a.optLong("size", 0L)
+                if (aName.isNotEmpty() && aUrl.isNotEmpty()) {
+                    assetsList.add(GitHubAsset(name = aName, browser_download_url = aUrl, size = aSize))
+                }
+            }
+        }
+        if (assetsList.isEmpty()) {
+            return buildReleaseFromTag(tagName, htmlUrl, name, body)
+        }
+        return GitHubRelease(
+            tag_name = tagName,
+            name = name,
+            body = body,
+            html_url = htmlUrl,
+            assets = assetsList
+        )
+    }
+
+    private fun fetchLatestViaRedirect(cacheBuster: Long): GitHubRelease? {
+        return try {
+            var currentUrl = "https://github.com/$GITHUB_REPO/releases/latest?cb=$cacheBuster"
             var finalUrl = currentUrl
             var redirects = 0
 
@@ -117,10 +293,11 @@ class UpdateRepository @Inject constructor(
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     instanceFollowRedirects = false
                     requestMethod = "GET"
-                    connectTimeout = 10000
-                    readTimeout = 10000
+                    connectTimeout = 7000
+                    readTimeout = 7000
+                    useCaches = false
+                    setRequestProperty("Cache-Control", "no-cache")
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
-                    setRequestProperty("Accept", "text/html,application/xhtml+xml")
                 }
                 val code = conn.responseCode
                 finalUrl = conn.url.toString()
@@ -148,77 +325,19 @@ class UpdateRepository @Inject constructor(
                 } else null
             } else null
         } catch (e: Exception) {
-            Log.e("UpdateRepository", "Redirect check error: ${e.message}")
             null
         }
     }
 
-    private fun fetchLatestViaApi(): GitHubRelease? {
+    private fun fetchLatestViaAtomFeed(cacheBuster: Long): GitHubRelease? {
         return try {
-            val url = URL("https://api.github.com/repos/$GITHUB_REPO/releases/latest")
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 10000
-                readTimeout = 10000
-                setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("User-Agent", "MyCloud-Android-App")
-            }
-
-            if (connection.responseCode == 200) {
-                val responseBody = connection.inputStream.bufferedReader().use { it.readText() }
-                connection.disconnect()
-                val obj = JSONObject(responseBody)
-                val tagName = obj.optString("tag_name", "").trim()
-                if (tagName.isEmpty()) return null
-
-                val name = obj.optString("name", "MyCloud $tagName").ifEmpty { "MyCloud $tagName" }
-                val body = obj.optString("body", "").let {
-                    if (it.isBlank() || it == "null") "New update ($tagName) is ready to install!" else it
-                }
-                val htmlUrl = obj.optString("html_url", "https://github.com/$GITHUB_REPO/releases/tag/$tagName")
-
-                val assetsList = mutableListOf<GitHubAsset>()
-                val assetsArr = obj.optJSONArray("assets")
-                if (assetsArr != null) {
-                    for (i in 0 until assetsArr.length()) {
-                        val a = assetsArr.optJSONObject(i) ?: continue
-                        val aName = a.optString("name", "")
-                        val aUrl = a.optString("browser_download_url", "")
-                        val aSize = a.optLong("size", 0L)
-                        if (aName.isNotEmpty() && aUrl.isNotEmpty()) {
-                            assetsList.add(GitHubAsset(name = aName, browser_download_url = aUrl, size = aSize))
-                        }
-                    }
-                }
-
-                if (assetsList.isEmpty()) {
-                    return buildReleaseFromTag(tagName, htmlUrl, name, body)
-                }
-
-                GitHubRelease(
-                    tag_name = tagName,
-                    name = name,
-                    body = body,
-                    html_url = htmlUrl,
-                    assets = assetsList
-                )
-            } else {
-                connection.disconnect()
-                null
-            }
-        } catch (e: Exception) {
-            Log.e("UpdateRepository", "API check error: ${e.message}")
-            null
-        }
-    }
-
-    private fun fetchLatestViaAtomFeed(): GitHubRelease? {
-        return try {
-            val url = URL("https://github.com/$GITHUB_REPO/releases.atom")
+            val url = URL("https://github.com/$GITHUB_REPO/releases.atom?cb=$cacheBuster")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 10000
-                readTimeout = 10000
+                connectTimeout = 7000
+                readTimeout = 7000
+                useCaches = false
+                setRequestProperty("Cache-Control", "no-cache")
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
             }
             if (conn.responseCode == 200) {
@@ -242,7 +361,7 @@ class UpdateRepository @Inject constructor(
         tag: String,
         htmlUrl: String,
         title: String = "MyCloud $tag",
-        notes: String = "A new version ($tag) of MyCloud is available! Tap 'Update Now' to install directly."
+        notes: String = "নতুন আপডেট ($tag) পাওয়া গেছে! উন্নত পারফরম্যান্স ও নতুন ফিচারের জন্য এখনই ইনস্টল করুন।"
     ): GitHubRelease {
         val ver = tag.removePrefix("v").trim()
         val candidateNames = listOf(
@@ -266,88 +385,236 @@ class UpdateRepository @Inject constructor(
         )
     }
 
-    fun downloadAndInstall(release: GitHubRelease) {
-        if (_updateState.value is UpdateState.Downloading) return
+    private fun getUpdateDir(): File {
+        val base = context.externalCacheDir ?: context.cacheDir
+        return File(base, "mycloud_updates").apply { if (!exists()) mkdirs() }
+    }
 
-        scope.launch {
+    private fun getUpdateApkFile(version: String): File {
+        val cleanVer = version.removePrefix("v").trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        return File(getUpdateDir(), "MyCloud_v${cleanVer}.apk")
+    }
+
+    private fun cleanupOldUpdateApks() {
+        try {
+            getUpdateDir().listFiles()?.forEach { it.delete() }
+        } catch (e: Exception) {}
+    }
+
+    fun downloadAndInstall(release: GitHubRelease, runInBackground: Boolean = false) {
+        val currentState = _updateState.value
+        if (currentState is UpdateState.Downloading) {
+            _isDownloadMinimized.value = runInBackground
+            return
+        }
+
+        val ver = release.tag_name.removePrefix("v").trim()
+        val finalApkFile = getUpdateApkFile(ver)
+        if (finalApkFile.exists() && finalApkFile.length() > 5 * 1024 * 1024L) {
+            _updateState.value = UpdateState.ReadyToInstall(finalApkFile, release)
+            installApk(finalApkFile)
+            return
+        }
+
+        _isDownloadMinimized.value = runInBackground
+        startKeepAliveService()
+
+        activeDownloadJob = scope.launch {
+            val partFile = File(getUpdateDir(), "MyCloud_v${ver}.apk.part")
             try {
-                _updateState.value = UpdateState.Downloading(0.01f, "Connecting to server...")
+                _updateState.value = UpdateState.Downloading(0.01f, "সার্ভারের সাথে সংযোগ হচ্ছে...", "", release)
+                updateProgressNotification(release.tag_name, 1, "Connecting to server...", "")
 
-                val ver = release.tag_name.removePrefix("v").trim()
-                val candidateUrls = mutableListOf<String>()
+                val candidateUrls = buildCandidateUrls(release)
+                var downloadedComplete = false
+                var lastError = "APK ডাউনলোড লিংক পাওয়া যায়নি"
 
-                release.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
-                    .sortedByDescending { it.name.contains("universal", ignoreCase = true) }
-                    .forEach { asset ->
-                        if (asset.browser_download_url.isNotEmpty()) {
-                            candidateUrls.add(asset.browser_download_url)
+                // ৩ বার অটো-রিজিউম রিট্রাই সাপোর্ট (যাতে নেটওয়ার্ক ফ্ল্যাকচুয়েট করলেও বা অ্যাপ ব্যাকগ্রাউন্ডে গেলেও ক্র্যাশ না করে)
+                for (attempt in 1..3) {
+                    val existingBytes = if (partFile.exists()) partFile.length() else 0L
+                    var activeConn: HttpURLConnection? = null
+
+                    for (candidate in candidateUrls) {
+                        val conn = openFollowingRedirects(candidate, existingBytes)
+                        if (conn != null && (conn.responseCode in 200..299)) {
+                            activeConn = conn
+                            break
+                        } else {
+                            conn?.disconnect()
                         }
                     }
 
-                candidateUrls.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/awd-teledrive-v$ver-universal-debug.apk")
-                candidateUrls.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-universal-debug.apk")
-                candidateUrls.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-debug.apk")
-
-                var activeConnection: HttpURLConnection? = null
-                for (candidate in candidateUrls.distinct()) {
-                    val conn = openFollowingRedirects(candidate)
-                    if (conn != null && conn.responseCode in 200..299) {
-                        activeConnection = conn
-                        break
-                    } else {
-                        conn?.disconnect()
+                    if (activeConn == null) {
+                        if (attempt < 3) {
+                            delay(1200L * attempt)
+                            continue
+                        } else {
+                            break
+                        }
                     }
-                }
 
-                if (activeConnection == null) {
-                    _updateState.value = UpdateState.Error("APK file not ready yet. Please try again in 1 minute.")
-                    return@launch
-                }
+                    try {
+                        val responseCode = activeConn.responseCode
+                        val isResuming = responseCode == HttpURLConnection.HTTP_PARTIAL && existingBytes > 0L
+                        val contentLength = activeConn.contentLengthLong
+                        val totalBytes = when {
+                            isResuming && contentLength > 0 -> existingBytes + contentLength
+                            contentLength > 0 -> contentLength
+                            else -> release.assets.firstOrNull { it.size > 0 }?.size ?: 0L
+                        }
 
-                val updateDir = File(context.cacheDir, "updates").apply { if (!exists()) mkdirs() }
-                val updateFile = File(updateDir, "MyCloud_Update.apk")
-                if (updateFile.exists()) updateFile.delete()
+                        var downloadedBytes = if (isResuming) existingBytes else 0L
+                        if (!isResuming && partFile.exists()) {
+                            partFile.delete()
+                        }
 
-                val totalBytes = activeConnection.contentLengthLong.takeIf { it > 0 }
-                    ?: release.assets.firstOrNull { it.size > 0 }?.size
-                    ?: 0L
-                var downloadedBytes = 0L
+                        var lastUiUpdateTime = 0L
+                        var speedWindowStart = System.currentTimeMillis()
+                        var speedWindowBytes = downloadedBytes
+                        var currentSpeedText = ""
 
-                activeConnection.inputStream.use { input ->
-                    FileOutputStream(updateFile).use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                            downloadedBytes += bytesRead
-                            if (totalBytes > 0) {
-                                val progress = (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0.01f, 1f)
-                                val dlMb = String.format(Locale.US, "%.1f", downloadedBytes / (1024.0 * 1024.0))
-                                val totalMb = String.format(Locale.US, "%.1f", totalBytes / (1024.0 * 1024.0))
-                                _updateState.value = UpdateState.Downloading(progress, "$dlMb MB / $totalMb MB")
-                            } else {
-                                val dlMb = String.format(Locale.US, "%.1f", downloadedBytes / (1024.0 * 1024.0))
-                                _updateState.value = UpdateState.Downloading(0.5f, "$dlMb MB downloaded")
+                        BufferedInputStream(activeConn.inputStream, 128 * 1024).use { input ->
+                            FileOutputStream(partFile, isResuming).use { output ->
+                                val buffer = ByteArray(128 * 1024)
+                                var bytesRead: Int
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    output.write(buffer, 0, bytesRead)
+                                    downloadedBytes += bytesRead
+
+                                    val now = System.currentTimeMillis()
+                                    val elapsedSpeed = now - speedWindowStart
+                                    if (elapsedSpeed >= 600L) {
+                                        val deltaBytes = downloadedBytes - speedWindowBytes
+                                        val bytesPerSec = (deltaBytes * 1000L) / elapsedSpeed.coerceAtLeast(1L)
+                                        currentSpeedText = formatSpeed(bytesPerSec)
+                                        speedWindowStart = now
+                                        speedWindowBytes = downloadedBytes
+                                    }
+
+                                    if (now - lastUiUpdateTime >= 100L || (totalBytes > 0 && downloadedBytes >= totalBytes)) {
+                                        lastUiUpdateTime = now
+                                        val progress = if (totalBytes > 0) {
+                                            (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0.01f, 0.99f)
+                                        } else 0.5f
+
+                                        val dlMb = String.format(Locale.US, "%.1f", downloadedBytes / (1024.0 * 1024.0))
+                                        val progressText = if (totalBytes > 0) {
+                                            val totalMb = String.format(Locale.US, "%.1f", totalBytes / (1024.0 * 1024.0))
+                                            "$dlMb MB / $totalMb MB"
+                                        } else {
+                                            "$dlMb MB"
+                                        }
+
+                                        _updateState.value = UpdateState.Downloading(
+                                            progress = progress,
+                                            progressText = progressText,
+                                            speedText = currentSpeedText,
+                                            release = release
+                                        )
+                                        updateProgressNotification(
+                                            tagName = release.tag_name,
+                                            percent = (progress * 100).toInt(),
+                                            progressText = progressText,
+                                            speedText = currentSpeedText
+                                        )
+                                    }
+                                }
+                                output.flush()
                             }
                         }
-                        output.flush()
+                        activeConn.disconnect()
+
+                        if (partFile.exists() && partFile.length() > 1024 * 1024L &&
+                            (totalBytes <= 0L || partFile.length() >= totalBytes)
+                        ) {
+                            if (finalApkFile.exists()) finalApkFile.delete()
+                            val renamed = partFile.renameTo(finalApkFile)
+                            if (!renamed) {
+                                partFile.copyTo(finalApkFile, overwrite = true)
+                                partFile.delete()
+                            }
+                            downloadedComplete = true
+                            break
+                        }
+                    } catch (streamEx: Exception) {
+                        lastError = streamEx.message ?: "Connection interrupted"
+                        Log.w("UpdateRepository", "Attempt $attempt interrupted, resuming...", streamEx)
+                        activeConn.disconnect()
+                        if (attempt < 3) delay(1000L * attempt)
                     }
                 }
-                activeConnection.disconnect()
 
-                _updateState.value = UpdateState.Idle
+                if (downloadedComplete && finalApkFile.exists()) {
+                    _isDownloadMinimized.value = false
+                    _updateState.value = UpdateState.ReadyToInstall(finalApkFile, release)
+                    showReadyToInstallNotification(finalApkFile, release.tag_name)
 
-                withContext(Dispatchers.Main) {
-                    installApk(updateFile)
+                    withContext(Dispatchers.Main) {
+                        installApk(finalApkFile)
+                    }
+                } else {
+                    cancelNotification()
+                    _isDownloadMinimized.value = false
+                    _updateState.value = UpdateState.Error("ডাউনলোড অসম্পূর্ণ হয়েছে ($lastError)। আবার চেষ্টা করুন।")
                 }
             } catch (e: Exception) {
                 Log.e("UpdateRepository", "Error downloading APK", e)
+                cancelNotification()
+                _isDownloadMinimized.value = false
                 _updateState.value = UpdateState.Error(e.message ?: "Download failed")
             }
         }
     }
 
-    private fun openFollowingRedirects(urlStr: String): HttpURLConnection? {
+    fun cancelUpdateDownload() {
+        activeDownloadJob?.cancel()
+        activeDownloadJob = null
+        cancelNotification()
+        _isDownloadMinimized.value = false
+        val rel = _availableRelease.value
+        _updateState.value = if (rel != null) UpdateState.NewVersionAvailable(rel) else UpdateState.Idle
+    }
+
+    private suspend fun buildCandidateUrls(release: GitHubRelease): List<String> {
+        val ver = release.tag_name.removePrefix("v").trim()
+        val list = mutableListOf<String>()
+
+        val supportedAbis = Build.SUPPORTED_ABIS
+        val preferredAbi = supportedAbis.firstOrNull() ?: ""
+
+        // ১. যদি রিলিজে আসল গিটহাব অ্যাসেট থাকে
+        release.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+            .sortedWith(
+                compareByDescending<GitHubAsset> {
+                    preferredAbi.isNotEmpty() && it.name.contains(preferredAbi, ignoreCase = true)
+                }.thenByDescending {
+                    it.name.contains("universal", ignoreCase = true)
+                }
+            )
+            .forEach { asset ->
+                if (asset.browser_download_url.isNotEmpty()) {
+                    list.add(asset.browser_download_url)
+                }
+            }
+
+        // ২. যদি Redirect/Atom থেকে আসার কারণে আসল অ্যাসেট নাম না জানা থাকে, তবে একবার API কল করে আসল নাম নিয়ে আসা
+        if (release.assets.all { it.size == 0L }) {
+            fetchLatestViaApi(System.currentTimeMillis())?.assets?.forEach { asset ->
+                if (asset.name.endsWith(".apk", ignoreCase = true) && asset.browser_download_url.isNotEmpty()) {
+                    list.add(0, asset.browser_download_url)
+                }
+            }
+        }
+
+        // ৩. স্ট্যান্ডার্ড ফলোব্যাক লিংকসমূহ
+        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/awd-teledrive-v$ver-universal-debug.apk")
+        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-universal-debug.apk")
+        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-debug.apk")
+
+        return list.distinct()
+    }
+
+    private fun openFollowingRedirects(urlStr: String, resumeFromBytes: Long = 0L): HttpURLConnection? {
         return try {
             var currentUrl = urlStr
             var redirects = 0
@@ -357,7 +624,12 @@ class UpdateRepository @Inject constructor(
                     instanceFollowRedirects = false
                     connectTimeout = 15000
                     readTimeout = 30000
+                    useCaches = false
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
+                    setRequestProperty("Accept-Encoding", "identity")
+                    if (resumeFromBytes > 0L) {
+                        setRequestProperty("Range", "bytes=$resumeFromBytes-")
+                    }
                 }
                 val code = conn.responseCode
                 if (code in 300..399) {
@@ -376,15 +648,16 @@ class UpdateRepository @Inject constructor(
         }
     }
 
-    private fun installApk(apkFile: File) {
+    fun installApk(apkFile: File) {
         try {
             if (!apkFile.exists() || apkFile.length() == 0L) {
-                Toast.makeText(context, "Downloaded APK is invalid", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "APK ফাইলটি পাওয়া যায়নি, আবার ডাউনলোড করুন", Toast.LENGTH_SHORT).show()
+                _updateState.value = _availableRelease.value?.let { UpdateState.NewVersionAvailable(it) } ?: UpdateState.Idle
                 return
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-                Toast.makeText(context, "Allow 'Install unknown apps' to update MyCloud", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "অ্যাপ আপডেট করতে 'Install unknown apps' পারমিশন অন করুন", Toast.LENGTH_LONG).show()
                 val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                     data = Uri.parse("package:${context.packageName}")
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -411,11 +684,120 @@ class UpdateRepository @Inject constructor(
         }
     }
 
+    private fun startKeepAliveService() {
+        try {
+            val intent = Intent(context, TransferService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun createUpdateNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                UPDATE_CHANNEL_ID,
+                "App Updates",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shows background app update download progress"
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun showUpdateAvailableNotification(release: GitHubRelease) {
+        try {
+            val openAppIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context, 200, openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("নতুন আপডেট এসেছে (${release.tag_name})")
+                .setContentText("MyCloud ${release.tag_name} ডাউনলোড ও ইনস্টল করতে ট্যাপ করুন")
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+            notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {}
+    }
+
+    private fun updateProgressNotification(tagName: String, percent: Int, progressText: String, speedText: String) {
+        try {
+            val openAppIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context, 201, openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val speedSuffix = if (speedText.isNotEmpty()) " • $speedText" else ""
+            val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle("Updating MyCloud ($tagName)")
+                .setContentText("$percent% • $progressText$speedSuffix")
+                .setProgress(100, percent.coerceIn(0, 100), false)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(pendingIntent)
+                .build()
+            notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {}
+    }
+
+    private fun showReadyToInstallNotification(apkFile: File, tagName: String) {
+        try {
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", apkFile)
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context, 202, installIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("MyCloud $tagName ডাউনলোড সম্পন্ন!")
+                .setContentText("এখনই ইনস্টল করতে এখানে ট্যাপ করুন")
+                .setOngoing(false)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+            notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {}
+    }
+
+    private fun cancelNotification() {
+        try {
+            notificationManager.cancel(UPDATE_NOTIFICATION_ID)
+        } catch (e: Exception) {}
+    }
+
+    private fun formatSpeed(bytesPerSec: Long): String {
+        if (bytesPerSec <= 0L) return ""
+        val mb = bytesPerSec / (1024.0 * 1024.0)
+        return if (mb >= 1.0) {
+            String.format(Locale.US, "%.1f MB/s", mb)
+        } else {
+            val kb = (bytesPerSec / 1024.0).coerceAtLeast(1.0)
+            String.format(Locale.US, "%.0f KB/s", kb)
+        }
+    }
+
     fun resetState() {
         val currentState = _updateState.value
         if (currentState is UpdateState.NewVersionAvailable) {
             dismissedTag = currentState.release.tag_name.removePrefix("v").trim()
         }
-        _updateState.value = UpdateState.Idle
+        if (currentState !is UpdateState.Downloading && currentState !is UpdateState.ReadyToInstall) {
+            _updateState.value = UpdateState.Idle
+        }
     }
 }
