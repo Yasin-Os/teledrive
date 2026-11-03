@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
@@ -47,7 +48,7 @@ class SettingsViewModel @Inject constructor(
     fun restoreCloudBackup(messageId: Long, onResult: (Boolean) -> Unit) {
         driveRepository.restoreManifestFromMessage(messageId, onResult)
     }
-    
+
     val internalCacheSize: StateFlow<Long> = driveRepository.getInternalCacheSize()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
@@ -75,11 +76,38 @@ class SettingsViewModel @Inject constructor(
     val updateState = updateRepository.updateState
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UpdateState.Idle)
 
+    val availableRelease = updateRepository.availableRelease
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    private val rawVersionName = VersionUtils.getVersionName(context)
+
+    // সেটিংসের ভেতরে ঢুকলেই ইউজার যেন সাথে সাথে দেখতে পায় নতুন ভার্সন এসেছে কি না
+    val versionNameFlow: StateFlow<String> = combine(
+        updateRepository.availableRelease,
+        updateRepository.updateState
+    ) { avail, state ->
+        when {
+            state is UpdateState.Downloading -> "${ (state.progress * 100).toInt() }% Downloading..."
+            state is UpdateState.ReadyToInstall -> "Install ${state.release.tag_name} ✨"
+            avail != null -> "Update ${avail.tag_name} 🔴"
+            else -> rawVersionName
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), rawVersionName)
+
+    val versionName: String
+        get() = availableRelease.value?.let { "v$rawVersionName → ${it.tag_name} 🔴" } ?: rawVersionName
+
+    val versionCode = VersionUtils.getVersionCode(context)
+
     private val _showCacheWarning = MutableStateFlow(false)
     val showCacheWarning = _showCacheWarning.asStateFlow()
 
     init {
         checkCacheLimit()
+        // সেটিংস স্ক্রিনে ঢোকার সাথে সাথে সাইলেন্টলি চেক করবে নতুন কোনো আপডেট আছে কি না
+        viewModelScope.launch {
+            updateRepository.checkForUpdates(manual = false)
+        }
         viewModelScope.launch {
             settingsRepository.cacheLimitEvent.collect {
                 checkCacheLimit()
@@ -95,12 +123,9 @@ class SettingsViewModel @Inject constructor(
         _showCacheWarning.value = false
     }
 
-    val versionName = VersionUtils.getVersionName(context)
-    val versionCode = VersionUtils.getVersionCode(context)
-
     private val _currentLanguage = MutableStateFlow(
-        secureSettings.getString("app_language") ?: 
-        AppCompatDelegate.getApplicationLocales().get(0)?.language ?: 
+        secureSettings.getString("app_language") ?:
+        AppCompatDelegate.getApplicationLocales().get(0)?.language ?:
         Locale.getDefault().language
     )
     val currentLanguage = _currentLanguage.asStateFlow()
@@ -163,11 +188,11 @@ class SettingsViewModel @Inject constructor(
     fun clearCacheByType(fileType: TdApi.FileType?) {
         val isThumbnail = fileType is TdApi.FileTypeThumbnail
         val isAll = fileType == null
-        
+
         settingsRepository.clearCacheByType(fileType, isMediaAndFiles = false) { stats ->
             if (isThumbnail) driveRepository.clearDatabaseLocalPaths(onlyThumbnails = true)
             else if (isAll) driveRepository.clearDatabaseLocalPaths()
-            
+
             _cacheStatistics.value = stats
             driveRepository.fetchFiles()
         }
@@ -182,6 +207,20 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun checkForUpdates() {
+        val avail = availableRelease.value
+        val state = updateState.value
+        if (state is UpdateState.ReadyToInstall) {
+            updateRepository.installApk(state.apkFile)
+            return
+        }
+        if (state is UpdateState.Downloading) {
+            updateRepository.setDownloadMinimized(false)
+            return
+        }
+        if (avail != null) {
+            updateRepository.downloadAndInstall(avail, runInBackground = false)
+            return
+        }
         viewModelScope.launch {
             updateRepository.checkForUpdates(manual = true)
         }
