@@ -5,7 +5,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -35,7 +34,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -97,6 +95,16 @@ class UpdateRepository @Inject constructor(
         _isDownloadMinimized.value = minimized
     }
 
+    fun dismissBanner() {
+        _isDownloadMinimized.value = true
+        val currentState = _updateState.value
+        if (currentState is UpdateState.NewVersionAvailable) {
+            dismissedTag = currentState.release.tag_name.removePrefix("v").trim()
+        } else if (currentState is UpdateState.ReadyToInstall) {
+            dismissedTag = currentState.release.tag_name.removePrefix("v").trim()
+        }
+    }
+
     suspend fun checkForUpdates(manual: Boolean = false) = withContext(Dispatchers.IO) {
         val currentState = _updateState.value
         if (currentState is UpdateState.Downloading) {
@@ -134,7 +142,9 @@ class UpdateRepository @Inject constructor(
 
                     val cachedApk = getUpdateApkFile(latestVersion)
                     if (isValidApkFile(cachedApk)) {
-                        _isDownloadMinimized.value = false
+                        if (manual || dismissedTag != latestVersion) {
+                            _isDownloadMinimized.value = false
+                        }
                         _updateState.value = UpdateState.ReadyToInstall(cachedApk, latestRelease)
                         if (manual) {
                             withContext(Dispatchers.Main) { installApk(cachedApk) }
@@ -146,9 +156,9 @@ class UpdateRepository @Inject constructor(
                         return@withContext
                     }
 
-                    // কোনো পপআপ ডায়ালগ না দেখিয়ে সরাসরি ব্যাকগ্রাউন্ডে অটো-ডাউনলোড শুরু করবে
+                    // ইউজারকে না জানিয়ে কখনোই নিজে থেকে ডাউনলোড শুরু করবে না; শুধু অনুমতি চাইবে
                     _isDownloadMinimized.value = false
-                    downloadAndInstall(latestRelease, runInBackground = true)
+                    _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
                 } else {
                     _availableRelease.value = null
                     cleanupOldUpdateApks()
@@ -569,12 +579,12 @@ class UpdateRepository @Inject constructor(
                     showReadyToInstallNotification(finalApkFile, release.tag_name)
                 } else {
                     cancelNotification()
-                    _updateState.value = UpdateState.Idle
+                    _updateState.value = UpdateState.Error("Download interrupted. Tap App Update in Settings to retry.")
                 }
             } catch (e: Exception) {
                 Log.e("UpdateRepository", "Error downloading APK", e)
                 cancelNotification()
-                _updateState.value = UpdateState.Idle
+                _updateState.value = UpdateState.Error(e.message ?: "Download failed")
             }
         }
     }
