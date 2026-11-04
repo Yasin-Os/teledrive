@@ -22,7 +22,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,7 +38,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -58,13 +57,13 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -79,11 +78,13 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -106,6 +107,8 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -232,8 +235,8 @@ class MainActivity : AppCompatActivity() {
                                 onInstallReadyApk = { file ->
                                     updateRepository.installApk(file)
                                 },
-                                onHideBanner = {
-                                    updateRepository.setDownloadMinimized(true)
+                                onDismissBanner = {
+                                    updateRepository.dismissBanner()
                                 },
                                 onResetState = {
                                     updateRepository.resetState()
@@ -398,8 +401,9 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 }
 
 /**
- * কোনো মাঝখানের পপআপ ডায়ালগ ছাড়া শুধুমাত্র স্ক্রিনের উপরে একটি সরু (Slim) বার।
- * ব্যাকগ্রাউন্ডে অটো ডাউনলোড হবে এবং ডাউনলোড শেষে ওই বারের ভেতরেই "Install Now" দেখাবে।
+ * স্ক্রিনের উপরে চিকন (Slim) আপডেট বার:
+ * ১. ইউজারকে না জানিয়ে কখনোই অটোমেটিক ডাউনলোড শুরু করবে না—আগে "Update" বাটন দেখাবে।
+ * ২. প্রতিটি ধাপে (Update Available, Downloading, Ready to Install) ডানপাশে "✕" বাটন এবং ডানে-বামে সোয়াইপ করে বারটি সরিয়ে দেওয়ার অপশন থাকবে।
  */
 @Composable
 fun SlimTopUpdateBar(
@@ -407,7 +411,7 @@ fun SlimTopUpdateBar(
     isHidden: Boolean,
     onStartDownload: (GitHubRelease) -> Unit,
     onInstallReadyApk: (File) -> Unit,
-    onHideBanner: () -> Unit,
+    onDismissBanner: () -> Unit,
     onResetState: () -> Unit
 ) {
     val context = LocalContext.current
@@ -432,6 +436,8 @@ fun SlimTopUpdateBar(
         updateState is UpdateState.ReadyToInstall
     )
 
+    var swipeOffsetX by remember(updateState, isHidden) { mutableFloatStateOf(0f) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedVisibility(
             visible = visible,
@@ -441,11 +447,25 @@ fun SlimTopUpdateBar(
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(horizontal = 14.dp, vertical = 6.dp)
+                .offset { IntOffset(swipeOffsetX.roundToInt(), 0) }
+                .pointerInput(updateState) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (abs(swipeOffsetX) > 160f) {
+                                onDismissBanner()
+                            }
+                            swipeOffsetX = 0f
+                        },
+                        onDragCancel = { swipeOffsetX = 0f },
+                        onHorizontalDrag = { _, dragAmount ->
+                            swipeOffsetX += dragAmount
+                        }
+                    )
+                }
         ) {
             when (updateState) {
                 is UpdateState.NewVersionAvailable -> {
                     Surface(
-                        onClick = { onStartDownload(updateState.release) },
                         shape = RoundedCornerShape(50),
                         color = Color(0xFF141824).copy(alpha = 0.96f),
                         border = BorderStroke(1.dp, Color(0xFF2CE0FF).copy(alpha = 0.5f)),
@@ -457,7 +477,7 @@ fun SlimTopUpdateBar(
                         Row(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 14.dp),
+                                .padding(start = 14.dp, end = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -481,19 +501,33 @@ fun SlimTopUpdateBar(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            Button(
-                                onClick = { onStartDownload(updateState.release) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2CE0FF)),
-                                shape = RoundedCornerShape(50),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                modifier = Modifier.height(28.dp)
-                            ) {
-                                Text(
-                                    text = "Download",
-                                    color = Color(0xFF070B14),
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Button(
+                                    onClick = { onStartDownload(updateState.release) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2CE0FF)),
+                                    shape = RoundedCornerShape(50),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Text(
+                                        text = "Update",
+                                        color = Color(0xFF070B14),
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = onDismissBanner,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Dismiss",
+                                        tint = Color.White.copy(alpha = 0.65f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -520,7 +554,7 @@ fun SlimTopUpdateBar(
                             Row(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(horizontal = 14.dp),
+                                    .padding(start = 14.dp, end = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -547,14 +581,14 @@ fun SlimTopUpdateBar(
                                     )
                                 }
                                 IconButton(
-                                    onClick = onHideBanner,
-                                    modifier = Modifier.size(24.dp)
+                                    onClick = onDismissBanner,
+                                    modifier = Modifier.size(28.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Close,
                                         contentDescription = "Hide",
-                                        tint = Color.White.copy(alpha = 0.6f),
-                                        modifier = Modifier.size(15.dp)
+                                        tint = Color.White.copy(alpha = 0.65f),
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 }
                             }
@@ -564,7 +598,6 @@ fun SlimTopUpdateBar(
 
                 is UpdateState.ReadyToInstall -> {
                     Surface(
-                        onClick = { onInstallReadyApk(updateState.apkFile) },
                         shape = RoundedCornerShape(50),
                         color = Color(0xFF0E2920).copy(alpha = 0.97f),
                         border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.7f)),
@@ -576,7 +609,7 @@ fun SlimTopUpdateBar(
                         Row(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 14.dp),
+                                .padding(start = 14.dp, end = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -600,19 +633,33 @@ fun SlimTopUpdateBar(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            Button(
-                                onClick = { onInstallReadyApk(updateState.apkFile) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                shape = RoundedCornerShape(50),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
-                                modifier = Modifier.height(28.dp)
-                            ) {
-                                Text(
-                                    text = "Install Now",
-                                    color = Color.White,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Button(
+                                    onClick = { onInstallReadyApk(updateState.apkFile) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    shape = RoundedCornerShape(50),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Text(
+                                        text = "Install Now",
+                                        color = Color.White,
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = onDismissBanner,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Dismiss",
+                                        tint = Color.White.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
                             }
                         }
                     }
