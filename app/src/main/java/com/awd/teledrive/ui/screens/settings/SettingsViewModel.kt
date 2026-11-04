@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
@@ -79,24 +78,7 @@ class SettingsViewModel @Inject constructor(
     val availableRelease = updateRepository.availableRelease
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    private val rawVersionName = VersionUtils.getVersionName(context)
-
-    // সেটিংসের ভেতরে ঢুকলেই ইউজার যেন সাথে সাথে দেখতে পায় নতুন ভার্সন এসেছে কি না
-    val versionNameFlow: StateFlow<String> = combine(
-        updateRepository.availableRelease,
-        updateRepository.updateState
-    ) { avail, state ->
-        when {
-            state is UpdateState.Downloading -> "${ (state.progress * 100).toInt() }% Downloading..."
-            state is UpdateState.ReadyToInstall -> "Install ${state.release.tag_name} ✨"
-            avail != null -> "Update ${avail.tag_name} 🔴"
-            else -> rawVersionName
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), rawVersionName)
-
-    val versionName: String
-        get() = availableRelease.value?.let { "v$rawVersionName → ${it.tag_name} 🔴" } ?: rawVersionName
-
+    val versionName: String = VersionUtils.getVersionName(context).removePrefix("v").trim()
     val versionCode = VersionUtils.getVersionCode(context)
 
     private val _showCacheWarning = MutableStateFlow(false)
@@ -104,7 +86,6 @@ class SettingsViewModel @Inject constructor(
 
     init {
         checkCacheLimit()
-        // সেটিংস স্ক্রিনে ঢোকার সাথে সাথে সাইলেন্টলি চেক করবে নতুন কোনো আপডেট আছে কি না
         viewModelScope.launch {
             updateRepository.checkForUpdates(manual = false)
         }
@@ -207,22 +188,25 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun checkForUpdates() {
-        val avail = availableRelease.value
         val state = updateState.value
-        if (state is UpdateState.ReadyToInstall) {
-            updateRepository.installApk(state.apkFile)
-            return
-        }
-        if (state is UpdateState.Downloading) {
-            updateRepository.setDownloadMinimized(false)
-            return
-        }
-        if (avail != null) {
-            updateRepository.downloadAndInstall(avail, runInBackground = false)
-            return
-        }
-        viewModelScope.launch {
-            updateRepository.checkForUpdates(manual = true)
+        val avail = availableRelease.value
+        updateRepository.setDownloadMinimized(false)
+
+        when {
+            state is UpdateState.ReadyToInstall -> {
+                updateRepository.installApk(state.apkFile)
+            }
+            state is UpdateState.Downloading -> {
+                // ইতিমধ্যে ডাউনলোড হচ্ছে, তাই উপরের স্লিম বারটি আবার দৃশ্যমান হবে
+            }
+            avail != null -> {
+                updateRepository.downloadAndInstall(avail, runInBackground = false)
+            }
+            else -> {
+                viewModelScope.launch {
+                    updateRepository.checkForUpdates(manual = true)
+                }
+            }
         }
     }
 
