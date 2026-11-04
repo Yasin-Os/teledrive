@@ -88,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
+import com.awd.teledrive.data.model.GitHubRelease
 import com.awd.teledrive.data.repository.SettingsRepository
 import com.awd.teledrive.data.repository.UpdateState
 import com.awd.teledrive.ui.screens.home.HomeViewModel
@@ -127,6 +128,7 @@ fun SettingsScreen(
     val lastBackupTime by backupViewModel.lastBackupTime.collectAsState()
     val downloadUri by viewModel.downloadUri.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
+    val availableRelease by viewModel.availableRelease.collectAsState()
     val isThumbnailAutoDownloadEnabled by viewModel.isThumbnailAutoDownloadEnabled.collectAsState()
 
     val context = LocalContext.current
@@ -158,6 +160,7 @@ fun SettingsScreen(
         downloadUri = downloadUri,
         versionName = viewModel.versionName,
         updateState = updateState,
+        availableRelease = availableRelease,
         isThumbnailAutoDownloadEnabled = isThumbnailAutoDownloadEnabled,
         isBackupWifiOnly = isBackupWifiOnly,
         deleteAfterBackup = deleteAfterBackup,
@@ -209,6 +212,7 @@ fun SettingsContent(
     downloadUri: String?,
     versionName: String,
     updateState: UpdateState,
+    availableRelease: GitHubRelease?,
     isThumbnailAutoDownloadEnabled: Boolean,
     isBackupWifiOnly: Boolean,
     deleteAfterBackup: Boolean,
@@ -608,12 +612,41 @@ fun SettingsContent(
                 )
             }
 
-            // 5. System Update & Account Bar Section (Rose/Primary Accent)
-            SettingsSectionBar(title = "System", accentColor = Color(0xFFEC4899), glowAlpha = glowAlpha) {
+            // 5. System Update & Account Bar Section (Dynamic Update Highlight)
+            val hasUpdateOrReady = availableRelease != null ||
+                    updateState is UpdateState.Downloading ||
+                    updateState is UpdateState.ReadyToInstall
+
+            val updateAccent = when (updateState) {
+                is UpdateState.ReadyToInstall -> Color(0xFF10B981)
+                is UpdateState.Downloading -> Color(0xFF2CE0FF)
+                else -> if (availableRelease != null) Color(0xFF10B981) else Color(0xFFEC4899)
+            }
+
+            val updateTitle = when (updateState) {
+                is UpdateState.ReadyToInstall -> "Update Ready (${updateState.release.tag_name})"
+                is UpdateState.Downloading -> "Updating MyCloud..."
+                else -> if (availableRelease != null) "New Update (${availableRelease.tag_name})" else "App Update"
+            }
+
+            val updateBadge = when (updateState) {
+                is UpdateState.Checking -> "Checking..."
+                is UpdateState.Downloading -> "${(updateState.progress * 100).toInt()}%"
+                is UpdateState.ReadyToInstall -> "Install Now"
+                else -> if (availableRelease != null) "Update Now" else "v${versionName.removePrefix("v")}"
+            }
+
+            SettingsSectionBar(
+                title = "System",
+                accentColor = if (hasUpdateOrReady) updateAccent else Color(0xFFEC4899),
+                glowAlpha = glowAlpha
+            ) {
                 ModernActionBarItem(
-                    icon = Icons.Default.SystemUpdate, title = "App Update",
-                    accentColor = Color(0xFFEC4899),
-                    badgeText = if (updateState is UpdateState.Checking) "Checking..." else "v$versionName",
+                    icon = Icons.Default.SystemUpdate,
+                    title = updateTitle,
+                    accentColor = updateAccent,
+                    titleColor = if (hasUpdateOrReady) updateAccent else MaterialTheme.colorScheme.onSurface,
+                    badgeText = updateBadge,
                     onClick = onCheckForUpdates
                 )
                 ModernActionBarItem(
