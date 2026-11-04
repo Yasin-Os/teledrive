@@ -1,62 +1,72 @@
 name: Build and Release APK
-
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Setup Persistent Debug Keystore (যাতে আজীবন একই সিগনেচার থাকে)
-        run: |
-          mkdir -p ~/.android
-          if [ ! -f "fixed-debug.keystore" ]; then
-            keytool -genkeypair -v -keystore fixed-debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git pull --rebase origin main
-            git add fixed-debug.keystore
-            git commit -m "chore: add persistent debug keystore [skip ci]"
-            git push origin HEAD:main
-          fi
-          cp -f fixed-debug.keystore ~/.android/debug.keystore
-
-      - name: Auto Increment Version Code & Name
-        run: |
-          sed -i "s/versionCode = [0-9]*/versionCode = ${{ github.run_number }}/g" app/build.gradle.kts
-          sed -i 's/versionName = "[^"]*"/versionName = "2.0.${{ github.run_number }}"/g' app/build.gradle.kts
-
-      - name: Create local.properties
-        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Print SHA-1 Fingerprint
-        run: keytool -list -v -keystore fixed-debug.keystore -alias androiddebugkey -storepass android -keypass android
-        
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
-
-      - name: Publish to Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v2.0.${{ github.run_number }}
-          name: MyCloud v2.0.${{ github.run_number }}
-          files: app/build/outputs/apk/debug/*universal*.apk
+​on:
+push:
+branches: [ "main" ]
+workflow_dispatch:
+​permissions:
+contents: write
+​jobs:
+build:
+runs-on: ubuntu-latest
+steps:
+- name: Checkout Code
+uses: actions/checkout@v4
+with:
+fetch-depth: 0
+​- name: Set up JDK 17
+uses: actions/setup-java@v4
+with:
+java-version: '17'
+distribution: 'temurin'
+​- name: Lock Persistent Keystore Into Gradle & Android Home
+run: |
+mkdir -p ~/.android
+mkdir -p /home/runner/.android
+if [ ! -f "fixed-debug.keystore" ]; then
+keytool -genkeypair -v -keystore fixed-debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+git config user.name "github-actions[bot]"
+git config user.email "github-actions[bot]@users.noreply.github.com"
+git pull --rebase origin main
+git add fixed-debug.keystore
+git commit -m "chore: lock persistent debug keystore [skip ci]"
+git push origin HEAD:main
+fi
+cp -f fixed-debug.keystore ~/.android/debug.keystore
+cp -f fixed-debug.keystore /home/runner/.android/debug.keystore
+cp -f fixed-debug.keystore app/fixed-debug.keystore
+​# Force Gradle to always sign debug builds with fixed-debug.keystore
+if ! grep -q "fixed-debug.keystore" app/build.gradle.kts; then
+cat << 'EOF' >> app/build.gradle.kts
+​android.signingConfigs.getByName("debug") {
+storeFile = rootProject.file("fixed-debug.keystore")
+storePassword = "android"
+keyAlias = "androiddebugkey"
+keyPassword = "android"
+}
+EOF
+fi
+​- name: Auto Increment Version Code & Name
+run: |
+NEW_CODE=((1000 +{{ github.run_number }}))
+sed -i "s/versionCode = [0-9]/versionCode = $NEW_CODE/g" app/build.gradle.kts
+sed -i 's/versionName = "[^"]"/versionName = "2.0.${{ github.run_number }}"/g' app/build.gradle.kts
+​- name: Create local.properties
+run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+​- name: Grant execute permission for gradlew
+run: chmod +x gradlew
+​- name: Build Debug APK
+run: ./gradlew assembleDebug --no-daemon
+​- name: Verify APK Signature Matches Fixed Keystore
+run: |
+echo "=== Expected Keystore Certificate ="
+keytool -list -v -keystore fixed-debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:"
+echo "= Built APK Certificate ==="
+for apk in app/build/outputs/apk/debug/*.apk; do
+keytool -printcert -jarfile "$apk" | grep -E "SHA1:|SHA256:"
+done
+​- name: Publish to Releases
+uses: softprops/action-gh-release@v2
+with:
+tag_name: v2.0.{{ github.run_number }}
+name: MyCloud v2.0.{{ github.run_number }}
+files: app/build/outputs/apk/debug/universal.apk
