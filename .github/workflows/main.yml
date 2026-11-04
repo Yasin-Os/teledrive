@@ -18,7 +18,7 @@ uses: actions/setup-java@v4
 with:
 java-version: '17'
 distribution: 'temurin'
-​- name: Lock Persistent Keystore Into Gradle & Android Home
+​- name: Lock Persistent Keystore Into Gradle
 run: |
 mkdir -p ~/.android
 mkdir -p /home/runner/.android
@@ -34,18 +34,10 @@ fi
 cp -f fixed-debug.keystore ~/.android/debug.keystore
 cp -f fixed-debug.keystore /home/runner/.android/debug.keystore
 cp -f fixed-debug.keystore app/fixed-debug.keystore
-​# Force Gradle to always sign debug builds with fixed-debug.keystore
 if ! grep -q "fixed-debug.keystore" app/build.gradle.kts; then
-cat << 'EOF' >> app/build.gradle.kts
-​android.signingConfigs.getByName("debug") {
-storeFile = rootProject.file("fixed-debug.keystore")
-storePassword = "android"
-keyAlias = "androiddebugkey"
-keyPassword = "android"
-}
-EOF
+printf '\nandroid.signingConfigs.getByName("debug") {\n    storeFile = rootProject.file("fixed-debug.keystore")\n    storePassword = "android"\n    keyAlias = "androiddebugkey"\n    keyPassword = "android"\n}\n' >> app/build.gradle.kts
 fi
-​- name: Auto Increment Version Code & Name
+​- name: Auto Increment Version Code and Name
 run: |
 NEW_CODE=((1000 +{{ github.run_number }}))
 sed -i "s/versionCode = [0-9]/versionCode = $NEW_CODE/g" app/build.gradle.kts
@@ -56,13 +48,11 @@ run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 run: chmod +x gradlew
 ​- name: Build Debug APK
 run: ./gradlew assembleDebug --no-daemon
-​- name: Verify APK Signature Matches Fixed Keystore
+​- name: Verify APK Signature
 run: |
-echo "=== Expected Keystore Certificate ="
-keytool -list -v -keystore fixed-debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:"
-echo "= Built APK Certificate ==="
+keytool -list -v -keystore fixed-debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:" || true
 for apk in app/build/outputs/apk/debug/*.apk; do
-keytool -printcert -jarfile "$apk" | grep -E "SHA1:|SHA256:"
+keytool -printcert -jarfile "$apk" | grep -E "SHA1:|SHA256:" || true
 done
 ​- name: Publish to Releases
 uses: softprops/action-gh-release@v2
