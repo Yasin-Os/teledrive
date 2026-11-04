@@ -27,28 +27,23 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.SystemUpdate
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -56,11 +51,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -108,7 +100,6 @@ import com.awd.teledrive.data.secure.SecureSettings
 import com.awd.teledrive.data.worker.TeleDriveWorkerManager
 import com.awd.teledrive.ui.navigation.NavGraph
 import com.awd.teledrive.ui.screens.security.SecurityViewModel
-import com.awd.teledrive.ui.screens.settings.SettingsViewModel
 import com.awd.teledrive.ui.theme.TeledriveTheme
 import com.awd.teledrive.ui.theme.ThemeViewModel
 import dagger.hilt.android.AndroidEntryPoint
@@ -192,24 +183,22 @@ class MainActivity : AppCompatActivity() {
         @OptIn(ExperimentalMaterial3Api::class)
         setContent {
             val themeViewModel: ThemeViewModel = hiltViewModel()
-            val settingsViewModel: SettingsViewModel = hiltViewModel()
 
             val isDarkModePref by themeViewModel.isDarkMode.collectAsState()
             val themeColor by themeViewModel.themeColor.collectAsState()
             val updateState by updateRepository.updateState.collectAsState()
-            val isDownloadMinimized by updateRepository.isDownloadMinimized.collectAsState()
+            val isBannerHidden by updateRepository.isDownloadMinimized.collectAsState()
 
             val darkTheme = isDarkModePref ?: isSystemInDarkTheme()
             val configuration = LocalConfiguration.current
 
             var showSplash by remember { mutableStateOf(true) }
 
-            // প্রতি ১০ মিনিট পর পর অটো-পোলিং করে দেখবে নতুন কোনো আপডেট রিলিজ হয়েছে কি না
             LaunchedEffect(showSplash) {
                 if (!showSplash) {
                     updateRepository.checkForUpdates(manual = false)
                     while (true) {
-                        delay(10 * 60 * 1000L)
+                        delay(5 * 60 * 1000L)
                         updateRepository.checkForUpdates(manual = false)
                     }
                 }
@@ -234,22 +223,19 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         if (!showSplash) {
-                            GlobalUpdateOverlay(
+                            SlimTopUpdateBar(
                                 updateState = updateState,
-                                isMinimized = isDownloadMinimized,
-                                onStartDownload = { release, inBackground ->
-                                    updateRepository.downloadAndInstall(release, runInBackground = inBackground)
-                                },
-                                onMinimizeToggle = { minimized ->
-                                    updateRepository.setDownloadMinimized(minimized)
+                                isHidden = isBannerHidden,
+                                onStartDownload = { release ->
+                                    updateRepository.downloadAndInstall(release, runInBackground = true)
                                 },
                                 onInstallReadyApk = { file ->
                                     updateRepository.installApk(file)
                                 },
-                                onCancelDownload = {
-                                    updateRepository.cancelUpdateDownload()
+                                onHideBanner = {
+                                    updateRepository.setDownloadMinimized(true)
                                 },
-                                onDismiss = {
+                                onResetState = {
                                     updateRepository.resetState()
                                 }
                             )
@@ -411,16 +397,18 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * কোনো মাঝখানের পপআপ ডায়ালগ ছাড়া শুধুমাত্র স্ক্রিনের উপরে একটি সরু (Slim) বার।
+ * ব্যাকগ্রাউন্ডে অটো ডাউনলোড হবে এবং ডাউনলোড শেষে ওই বারের ভেতরেই "Install Now" দেখাবে।
+ */
 @Composable
-fun GlobalUpdateOverlay(
+fun SlimTopUpdateBar(
     updateState: UpdateState,
-    isMinimized: Boolean,
-    onStartDownload: (GitHubRelease, Boolean) -> Unit,
-    onMinimizeToggle: (Boolean) -> Unit,
+    isHidden: Boolean,
+    onStartDownload: (GitHubRelease) -> Unit,
     onInstallReadyApk: (File) -> Unit,
-    onCancelDownload: () -> Unit,
-    onDismiss: () -> Unit
+    onHideBanner: () -> Unit,
+    onResetState: () -> Unit
 ) {
     val context = LocalContext.current
 
@@ -428,139 +416,203 @@ fun GlobalUpdateOverlay(
         when (updateState) {
             is UpdateState.UpToDate -> {
                 android.widget.Toast.makeText(context, context.getString(R.string.up_to_date), android.widget.Toast.LENGTH_SHORT).show()
-                onDismiss()
+                onResetState()
             }
             is UpdateState.Error -> {
-                android.widget.Toast.makeText(context, updateState.message, android.widget.Toast.LENGTH_LONG).show()
-                onDismiss()
+                android.widget.Toast.makeText(context, updateState.message, android.widget.Toast.LENGTH_SHORT).show()
+                onResetState()
             }
             else -> {}
         }
     }
 
-    // ১. নন-ব্লকিং ফ্লোটিং ব্যানার: যখন ইউজার "Run in Background" সিলেক্ট করে অ্যাপ ব্যবহার করবে
-    val showFloatingPill = (updateState is UpdateState.Downloading && isMinimized) || updateState is UpdateState.ReadyToInstall
+    val visible = !isHidden && (
+        updateState is UpdateState.NewVersionAvailable ||
+        updateState is UpdateState.Downloading ||
+        updateState is UpdateState.ReadyToInstall
+    )
 
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedVisibility(
-            visible = showFloatingPill,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            visible = visible,
+            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(tween(220)),
+            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(tween(180)),
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .padding(horizontal = 14.dp, vertical = 6.dp)
         ) {
             when (updateState) {
-                is UpdateState.Downloading -> {
+                is UpdateState.NewVersionAvailable -> {
                     Surface(
-                        onClick = { onMinimizeToggle(false) },
-                        shape = RoundedCornerShape(24.dp),
-                        color = Color(0xFF151924).copy(alpha = 0.96f),
-                        border = BorderStroke(1.dp, Color(0xFF2CE0FF).copy(alpha = 0.45f)),
-                        shadowElevation = 14.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    CircularProgressIndicator(
-                                        progress = { updateState.progress },
-                                        modifier = Modifier.size(20.dp),
-                                        color = Color(0xFF2CE0FF),
-                                        strokeWidth = 2.5.dp
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
-                                        Text(
-                                            text = "Updating MyCloud (${(updateState.progress * 100).toInt()}%)",
-                                            color = Color.White,
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        val speedPart = if (updateState.speedText.isNotEmpty()) " • ${updateState.speedText}" else ""
-                                        Text(
-                                            text = "${updateState.progressText}$speedPart",
-                                            color = Color.White.copy(alpha = 0.7f),
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
-                                IconButton(
-                                    onClick = onCancelDownload,
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Cancel",
-                                        tint = Color.White.copy(alpha = 0.7f),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            LinearProgressIndicator(
-                                progress = { updateState.progress },
-                                color = Color(0xFF2CE0FF),
-                                trackColor = Color.White.copy(alpha = 0.12f),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(4.dp)
-                                    .clip(CircleShape)
-                            )
-                        }
-                    }
-                }
-                is UpdateState.ReadyToInstall -> {
-                    Surface(
-                        onClick = { onInstallReadyApk(updateState.apkFile) },
-                        shape = RoundedCornerShape(24.dp),
-                        color = Color(0xFF102820).copy(alpha = 0.96f),
-                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.6f)),
-                        shadowElevation = 14.dp,
-                        modifier = Modifier.fillMaxWidth()
+                        onClick = { onStartDownload(updateState.release) },
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xFF141824).copy(alpha = 0.96f),
+                        border = BorderStroke(1.dp, Color(0xFF2CE0FF).copy(alpha = 0.5f)),
+                        shadowElevation = 10.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
                     ) {
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                .fillMaxSize()
+                                .padding(horizontal = 14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SystemUpdate,
+                                    contentDescription = null,
+                                    tint = Color(0xFF2CE0FF),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Update ${updateState.release.tag_name} available",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Button(
+                                onClick = { onStartDownload(updateState.release) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2CE0FF)),
+                                shape = RoundedCornerShape(50),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text(
+                                    text = "Download",
+                                    color = Color(0xFF070B14),
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is UpdateState.Downloading -> {
+                    val pct = (updateState.progress * 100).toInt().coerceIn(0, 100)
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xFF141824).copy(alpha = 0.96f),
+                        border = BorderStroke(1.dp, Color(0xFF2CE0FF).copy(alpha = 0.4f)),
+                        shadowElevation = 10.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LinearProgressIndicator(
+                                progress = { updateState.progress },
+                                color = Color(0xFF2CE0FF).copy(alpha = 0.18f),
+                                trackColor = Color.Transparent,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    CircularProgressIndicator(
+                                        progress = { updateState.progress },
+                                        modifier = Modifier.size(16.dp),
+                                        color = Color(0xFF2CE0FF),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    val verTag = updateState.release?.tag_name ?: ""
+                                    val speedPart = if (updateState.speedText.isNotEmpty()) " • ${updateState.speedText}" else ""
+                                    Text(
+                                        text = "Updating $verTag • $pct%$speedPart",
+                                        color = Color.White,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                IconButton(
+                                    onClick = onHideBanner,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Hide",
+                                        tint = Color.White.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                is UpdateState.ReadyToInstall -> {
+                    Surface(
+                        onClick = { onInstallReadyApk(updateState.apkFile) },
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xFF0E2920).copy(alpha = 0.97f),
+                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.7f)),
+                        shadowElevation = 12.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
                                 Icon(
                                     imageVector = Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = Color(0xFF10B981),
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "MyCloud ${updateState.release.tag_name} প্রস্তুত!",
-                                        color = Color.White,
-                                        fontSize = 13.5.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "এখনই ইনস্টল করতে এখানে ট্যাপ করুন",
-                                        color = Color(0xFFA7F3D0),
-                                        fontSize = 11.5.sp
-                                    )
-                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Update ${updateState.release.tag_name} Ready",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                             Button(
                                 onClick = { onInstallReadyApk(updateState.apkFile) },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                shape = RoundedCornerShape(14.dp)
+                                shape = RoundedCornerShape(50),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
                             ) {
-                                Text("Install", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text(
+                                    text = "Install Now",
+                                    color = Color.White,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
@@ -568,172 +620,5 @@ fun GlobalUpdateOverlay(
                 else -> {}
             }
         }
-    }
-
-    // ২. প্রিমিয়াম আপডেট পপআপ ডায়ালগ
-    when (updateState) {
-        is UpdateState.NewVersionAvailable -> {
-            AlertDialog(
-                onDismissRequest = onDismiss,
-                containerColor = Color(0xFF151824),
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.SystemUpdate,
-                            contentDescription = null,
-                            tint = Color(0xFF2CE0FF),
-                            modifier = Modifier.size(26.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Update Available!",
-                                color = Color.White,
-                                fontSize = 19.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Version ${updateState.release.tag_name}",
-                                color = Color(0xFF2CE0FF),
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                },
-                text = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 260.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Text(
-                            text = updateState.release.body.ifEmpty {
-                                "নতুন ভার্সন (${updateState.release.tag_name}) প্রস্তুত! আরও দ্রুত ও স্মুথ অভিজ্ঞতার জন্য এখনই আপডেট করে নিন।"
-                            },
-                            color = Color.White.copy(alpha = 0.85f),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { onStartDownload(updateState.release, false) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5A1F)),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Update Now", fontWeight = FontWeight.Bold, color = Color.White)
-                    }
-                },
-                dismissButton = {
-                    Row {
-                        TextButton(onClick = onDismiss) {
-                            Text(stringResource(R.string.later), color = Color.White.copy(alpha = 0.65f))
-                        }
-                        Spacer(modifier = Modifier.width(4.dp))
-                        OutlinedButton(
-                            onClick = { onStartDownload(updateState.release, true) },
-                            border = BorderStroke(1.dp, Color(0xFF2CE0FF).copy(alpha = 0.5f)),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Text("Background", color = Color(0xFF2CE0FF), fontSize = 12.5.sp)
-                        }
-                    }
-                }
-            )
-        }
-
-        is UpdateState.Downloading -> {
-            if (!isMinimized) {
-                AlertDialog(
-                    // বাইরে ট্যাপ করলেই অটোমেটিক ব্যাকগ্রাউন্ডে চলে যাবে, অ্যাপ আটকে থাকবে না!
-                    onDismissRequest = { onMinimizeToggle(true) },
-                    containerColor = Color(0xFF151824),
-                    title = {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Updating MyCloud...",
-                                color = Color.White,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "${(updateState.progress * 100).toInt()}%",
-                                color = Color(0xFF2CE0FF),
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                        }
-                    },
-                    text = {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            LinearProgressIndicator(
-                                progress = { updateState.progress },
-                                color = Color(0xFF2CE0FF),
-                                trackColor = Color.White.copy(alpha = 0.12f),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp)
-                                    .clip(CircleShape)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = updateState.progressText,
-                                    color = Color.White.copy(alpha = 0.78f),
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                                if (updateState.speedText.isNotEmpty()) {
-                                    Text(
-                                        text = updateState.speedText,
-                                        color = Color(0xFF2CE0FF),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "আপনি চাইলে ব্যাকগ্রাউন্ডে ডাউনলোড রেখে অ্যাপ ব্যবহার করতে পারেন।",
-                                color = Color.White.copy(alpha = 0.5f),
-                                fontSize = 11.5.sp
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = { onMinimizeToggle(true) },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2CE0FF).copy(alpha = 0.18f)),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = null,
-                                tint = Color(0xFF2CE0FF),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Run in Background", color = Color(0xFF2CE0FF), fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = onCancelDownload) {
-                            Text(stringResource(R.string.cancel), color = Color(0xFFEF5350))
-                        }
-                    }
-                )
-            }
-        }
-        else -> {}
     }
 }
