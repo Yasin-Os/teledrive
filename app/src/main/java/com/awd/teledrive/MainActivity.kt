@@ -173,6 +173,8 @@ class MainActivity : AppCompatActivity() {
                     if (lastPauseTime != 0L && (now - lastPauseTime > 15_000)) {
                         securityViewModel.setLocked(true)
                     }
+                    // যদি ইউজার Unknown Sources পারমিশন অন করে ফিরে আসে তবে অটো-ইনস্টল চালু করবে
+                    updateRepository.onAppResumed()
                     lifecycleScope.launch {
                         updateRepository.checkForUpdates(manual = false)
                     }
@@ -400,11 +402,6 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
     }
 }
 
-/**
- * স্ক্রিনের উপরে চিকন (Slim) আপডেট বার:
- * ১. ইউজারকে না জানিয়ে কখনোই অটোমেটিক ডাউনলোড শুরু করবে না—আগে "Update" বাটন দেখাবে।
- * ২. প্রতিটি ধাপে (Update Available, Downloading, Ready to Install) ডানপাশে "✕" বাটন এবং ডানে-বামে সোয়াইপ করে বারটি সরিয়ে দেওয়ার অপশন থাকবে।
- */
 @Composable
 fun SlimTopUpdateBar(
     updateState: UpdateState,
