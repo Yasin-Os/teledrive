@@ -82,6 +82,7 @@ class UpdateRepository @Inject constructor(
     private var lastAutoCheckTime: Long = 0L
     private var activeDownloadJob: Job? = null
     private val isChecking = AtomicBoolean(false)
+    private var pendingPermissionApkFile: File? = null
 
     private val notificationManager by lazy {
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -105,13 +106,27 @@ class UpdateRepository @Inject constructor(
         }
     }
 
+    /**
+     * ইউজার যদি "Install unknown apps" পারমিশন অন করে অ্যাপে ফিরে আসে,
+     * তবে সাথে সাথে স্বয়ংক্রিয়ভাবে ইনস্টলার ওপেন করবে।
+     */
+    fun onAppResumed() {
+        val pendingFile = pendingPermissionApkFile
+        if (pendingFile != null && pendingFile.exists()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()) {
+                pendingPermissionApkFile = null
+                installApk(pendingFile)
+            }
+        }
+    }
+
     suspend fun checkForUpdates(manual: Boolean = false) = withContext(Dispatchers.IO) {
         val currentState = _updateState.value
-        if (currentState is UpdateState.Downloading) {
+        if (currentState is UpdateState.Downloading && activeDownloadJob?.isActive == true) {
             if (manual) _isDownloadMinimized.value = false
             return@withContext
         }
-        if (currentState is UpdateState.ReadyToInstall) {
+        if (currentState is UpdateState.ReadyToInstall && isValidApkFile(currentState.apkFile)) {
             if (manual) {
                 _isDownloadMinimized.value = false
                 withContext(Dispatchers.Main) { installApk(currentState.apkFile) }
@@ -123,7 +138,7 @@ class UpdateRepository @Inject constructor(
 
         try {
             val now = System.currentTimeMillis()
-            if (!manual && (now - lastAutoCheckTime < 8_000L)) return@withContext
+            if (!manual && (now - lastAutoCheckTime < 10_000L)) return@withContext
             lastAutoCheckTime = now
 
             if (manual) {
@@ -156,7 +171,6 @@ class UpdateRepository @Inject constructor(
                         return@withContext
                     }
 
-                    // ইউজারকে না জানিয়ে কখনোই নিজে থেকে ডাউনলোড শুরু করবে না; শুধু অনুমতি চাইবে
                     _isDownloadMinimized.value = false
                     _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
                 } else {
@@ -400,7 +414,8 @@ class UpdateRepository @Inject constructor(
     }
 
     private fun getUpdateDir(): File {
-        return File(context.cacheDir, "updates").apply { if (!exists()) mkdirs() }
+        val baseDir = context.externalCacheDir ?: context.cacheDir
+        return File(baseDir, "updates").apply { if (!exists()) mkdirs() }
     }
 
     private fun getUpdateApkFile(version: String): File {
@@ -408,8 +423,12 @@ class UpdateRepository @Inject constructor(
         return File(getUpdateDir(), "MyCloud_v${cleanVer}.apk")
     }
 
+    /**
+     * প্যাকেজ নেম ভিন্ন হলেও (যেমন com.awd.teledrive -> com.yasin.mycloud) ফাইল যেন ডিলিট না হয়,
+     * তাই শুধুমাত্র APK ফাইলটি বৈধ কি না তা চেক করা হচ্ছে।
+     */
     private fun isValidApkFile(file: File): Boolean {
-        if (!file.exists() || file.length() < 5 * 1024 * 1024L) return false
+        if (!file.exists() || file.length() < 2 * 1024 * 1024L) return false
         return try {
             val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.packageManager.getPackageArchiveInfo(file.absolutePath, PackageManager.PackageInfoFlags.of(0))
@@ -417,21 +436,21 @@ class UpdateRepository @Inject constructor(
                 @Suppress("DEPRECATION")
                 context.packageManager.getPackageArchiveInfo(file.absolutePath, 0)
             }
-            archiveInfo != null && archiveInfo.packageName == context.packageName
+            archiveInfo != null
         } catch (e: Exception) {
-            true
+            file.length() > 10 * 1024 * 1024L
         }
     }
 
     private fun cleanupOldUpdateApks() {
         try {
             getUpdateDir().listFiles()?.forEach { it.delete() }
+            File(context.cacheDir, "updates").listFiles()?.forEach { it.delete() }
         } catch (e: Exception) {}
     }
 
     fun downloadAndInstall(release: GitHubRelease, runInBackground: Boolean = true) {
-        val currentState = _updateState.value
-        if (currentState is UpdateState.Downloading) {
+        if (_updateState.value is UpdateState.Downloading && activeDownloadJob?.isActive == true) {
             _isDownloadMinimized.value = false
             return
         }
@@ -441,9 +460,7 @@ class UpdateRepository @Inject constructor(
         if (isValidApkFile(finalApkFile)) {
             _isDownloadMinimized.value = false
             _updateState.value = UpdateState.ReadyToInstall(finalApkFile, release)
-            if (!runInBackground) {
-                installApk(finalApkFile)
-            }
+            installApk(finalApkFile)
             return
         }
 
@@ -460,6 +477,11 @@ class UpdateRepository @Inject constructor(
                 var downloadedComplete = false
 
                 for (attempt in 1..3) {
+                    if (isValidApkFile(finalApkFile)) {
+                        downloadedComplete = true
+                        break
+                    }
+
                     val existingBytes = if (partFile.exists()) partFile.length() else 0L
                     var activeConn: HttpURLConnection? = null
 
@@ -547,27 +569,25 @@ class UpdateRepository @Inject constructor(
                                     }
                                 }
                                 output.flush()
+                                try { output.fd.sync() } catch (e: Exception) {}
                             }
                         }
                         activeConn.disconnect()
 
-                        if (partFile.exists() && partFile.length() > 5 * 1024 * 1024L &&
-                            (totalBytes <= 0L || partFile.length() >= totalBytes)
-                        ) {
+                        // ডাউনলোড স্ট্রিম শেষ হলে ফাইলটি সাথে সাথে রিনেম করে লুপ থেকে বের হয়ে যাবে (বারবার ডাউনলোড হবে না)
+                        if (partFile.exists() && partFile.length() > 2 * 1024 * 1024L) {
                             if (finalApkFile.exists()) finalApkFile.delete()
                             val renamed = partFile.renameTo(finalApkFile)
                             if (!renamed) {
                                 partFile.copyTo(finalApkFile, overwrite = true)
                                 partFile.delete()
                             }
-                            if (isValidApkFile(finalApkFile)) {
-                                downloadedComplete = true
-                                break
-                            } else {
-                                finalApkFile.delete()
-                            }
+                            finalApkFile.setReadable(true, false)
+                            downloadedComplete = true
+                            break
                         }
                     } catch (streamEx: Exception) {
+                        Log.e("UpdateRepository", "Stream interrupted on attempt $attempt: ${streamEx.message}")
                         activeConn.disconnect()
                         if (attempt < 3) delay(1200L * attempt)
                     }
@@ -577,6 +597,11 @@ class UpdateRepository @Inject constructor(
                     _isDownloadMinimized.value = false
                     _updateState.value = UpdateState.ReadyToInstall(finalApkFile, release)
                     showReadyToInstallNotification(finalApkFile, release.tag_name)
+
+                    // ডাউনলোড ১০০% হওয়ার সাথে সাথেই স্বয়ংক্রিয়ভাবে ইনস্টলার ওপেন করবে
+                    withContext(Dispatchers.Main) {
+                        installApk(finalApkFile)
+                    }
                 } else {
                     cancelNotification()
                     _updateState.value = UpdateState.Error("Download interrupted. Tap App Update in Settings to retry.")
@@ -658,6 +683,9 @@ class UpdateRepository @Inject constructor(
                     if (location.isNullOrEmpty()) return null
                     currentUrl = if (location.startsWith("http")) location else URL(url, location).toString()
                     redirects++
+                } else if (code == 416 && resumeFromBytes > 0L) {
+                    conn.disconnect()
+                    return openFollowingRedirects(urlStr, 0L)
                 } else {
                     return conn
                 }
@@ -676,8 +704,11 @@ class UpdateRepository @Inject constructor(
                 return
             }
 
+            apkFile.setReadable(true, false)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-                Toast.makeText(context, "Allow 'Install unknown apps' to update MyCloud", Toast.LENGTH_LONG).show()
+                pendingPermissionApkFile = apkFile
+                Toast.makeText(context, "Allow 'Install unknown apps' to finish installing MyCloud", Toast.LENGTH_LONG).show()
                 val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                     data = Uri.parse("package:${context.packageName}")
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -686,23 +717,35 @@ class UpdateRepository @Inject constructor(
                 return
             }
 
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.provider",
-                apkFile
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
+            val authority = "${context.packageName}.provider"
+            val uri = FileProvider.getUriForFile(context, authority, apkFile)
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
-                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
-                putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, context.packageName)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
-            context.startActivity(intent)
+            context.startActivity(installIntent)
         } catch (e: Exception) {
-            Log.e("UpdateRepository", "Install intent failed", e)
-            Toast.makeText(context, "Install error: ${e.message}", Toast.LENGTH_LONG).show()
+            Log.e("UpdateRepository", "Primary install intent failed, trying fallback copy", e)
+            try {
+                // যদি externalCacheDir পাথে সমস্যা হয় তবে internal cacheDir-এ নিয়ে আবার চেষ্টা করবে
+                val fallbackDir = File(context.cacheDir, "updates").apply { if (!exists()) mkdirs() }
+                val fallbackFile = File(fallbackDir, apkFile.name)
+                if (apkFile.absolutePath != fallbackFile.absolutePath) {
+                    apkFile.copyTo(fallbackFile, overwrite = true)
+                    fallbackFile.setReadable(true, false)
+                }
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", fallbackFile)
+                val fallbackIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallbackIntent)
+            } catch (ex: Exception) {
+                Toast.makeText(context, "Install error: ${ex.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
