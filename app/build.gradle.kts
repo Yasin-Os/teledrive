@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    // কোডের ইমপোর্ট ঠিক রাখার জন্য namespace আগেরটাই থাকবে
+    // কোডের ইমপোর্ট ও ফোল্ডার স্ট্রাকচার অক্ষত রাখার জন্য namespace আগেরটাই থাকবে
     namespace = "com.awd.teledrive"
     compileSdk = 37
 
@@ -50,7 +50,7 @@ android {
     }
 
     defaultConfig {
-        // আপনার নিজস্ব স্বতন্ত্র প্যাকেজ নেম (মূল অ্যাপের সাথে আর কখনোই সংঘর্ষ হবে না)
+        // আপনার অ্যাপের নিজস্ব স্বতন্ত্র প্যাকেজ নেম
         applicationId = "com.yasin.mycloud"
         minSdk = 24
         targetSdk = 35
@@ -64,12 +64,10 @@ android {
         }
     }
 
+    // একাধিক APK তৈরি হওয়া বন্ধ করে শুধুমাত্র ১টি মূল Universal APK রাখা হলো
     splits {
         abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "armeabi-v7a")
-            isUniversalApk = true
+            isEnable = false
         }
     }
 
@@ -122,8 +120,9 @@ android {
 androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
-            val abi = output.filters.find { it.filterType == com.android.build.api.variant.FilterConfiguration.FilterType.ABI }?.identifier ?: "universal"
-            (output as? com.android.build.api.variant.impl.VariantOutputImpl)?.outputFileName?.set("awd-teledrive-v${android.defaultConfig.versionName}-$abi-${variant.name}.apk")
+            (output as? com.android.build.api.variant.impl.VariantOutputImpl)?.outputFileName?.set(
+                "MyCloud-v${android.defaultConfig.versionName}-universal-${variant.name}.apk"
+            )
         }
     }
 }
