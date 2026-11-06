@@ -27,7 +27,14 @@ class LoginViewModel @Inject constructor(
     private val secureSettings: SecureSettings
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow<LoginUiState>(LoginUiState.InitialSetup)
+    private val _uiState = MutableStateFlow<LoginUiState>(
+        when {
+            secureSettings.getBoolean("active_provider_telegram", false) -> LoginUiState.Success
+            authRepository.authState.value is AuthState.Authenticated -> LoginUiState.Success
+            authRepository.authState.value is AuthState.Loading -> LoginUiState.Loading
+            else -> LoginUiState.InitialSetup
+        }
+    )
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
     private val _authError = MutableStateFlow<String?>(null)
@@ -44,11 +51,15 @@ class LoginViewModel @Inject constructor(
 
     init {
         secureSettings.saveBoolean("active_provider_google", false)
-        secureSettings.saveBoolean("active_provider_telegram", true)
 
         viewModelScope.launch {
             authRepository.authState.collect { state ->
                 when (state) {
+                    is AuthState.Loading -> {
+                        if (_submittedPhone.value.isEmpty() && !secureSettings.getBoolean("active_provider_telegram", false)) {
+                            _uiState.value = LoginUiState.Loading
+                        }
+                    }
                     is AuthState.Unauthenticated -> {
                         if (_uiState.value !is LoginUiState.InitialSetup && _submittedPhone.value.isEmpty()) {
                             _uiState.value = LoginUiState.InitialSetup
@@ -71,7 +82,6 @@ class LoginViewModel @Inject constructor(
                         _authError.value = state.message
                         _isProcessing.value = false
                     }
-                    else -> {}
                 }
             }
         }
