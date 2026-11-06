@@ -81,6 +81,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -127,7 +128,6 @@ private val GlassBgBottom = Color(0xFF060A12)
 private val GlassCardSurface = Color(0xFF131D2E)
 private val GlassAccent = Color(0xFF38BDF8)
 private val GlassFab = Color(0xFF0EA5E9)
-private val GlassBorderIdle = Color(0xFF2A3950)
 private val GlassTextSub = Color(0xFF94A3B8)
 private val GlassError = Color(0xFFF87171)
 private val ModernFont = FontFamily.SansSerif
@@ -220,7 +220,7 @@ private fun sectionKey(name: String): Char {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  লোগো (ভেক্টর) + আগের সেই ড্রয়িং এনিমেশন (১২০ FPS অপ্টিমাইজড)
+//  লোগো (ভেক্টর) + ড্রয়িং এনিমেশন (১২০ FPS অপ্টিমাইজড)
 // ──────────────────────────────────────────────────────────────
 private class CachedTracePath(pathString: String) {
     val path: Path = PathParser().parsePathString(pathString).toPath()
@@ -399,7 +399,6 @@ private fun GlassCard(
     )
 }
 
-/** কম্প্যাক্ট নচ-লেবেলসহ গ্লাসি ইনপুট বক্স — যাতে কার্ড অযথা লম্বা না হয় */
 @Composable
 private fun NotchedGlassBox(
     label: String,
@@ -745,7 +744,6 @@ fun LoginContent(
     var numberFieldFocused by remember { mutableStateOf(false) }
     var passwordFocused by remember { mutableStateOf(false) }
 
-    // Request aborted অটো-রিকভারি কাউন্টার
     var abortRetryCount by remember { mutableIntStateOf(0) }
 
     val canGoBackToPhone = uiState is LoginUiState.EnteringCode || uiState is LoginUiState.EnteringPassword
@@ -801,7 +799,6 @@ fun LoginContent(
         onLoginSubmit(defaultApiId, defaultApiHash, fullPhone)
     }
 
-    // প্রথমবার API সেটআপের সময় TDLib "Request aborted" দিলে স্বয়ংক্রিয়ভাবে রিট্রাই করবে
     val isAbortedError = authError?.contains("Request aborted", ignoreCase = true) == true ||
         authError?.contains("aborted", ignoreCase = true) == true
 
@@ -826,7 +823,6 @@ fun LoginContent(
         }
     }
 
-    // যদি অটো-রিট্রাই চলছে এমন অবস্থায় থাকে, তবে ইউজারকে লাল "Request aborted" এরর দেখানোর দরকার নেই
     val displayError = if (isAbortedError && abortRetryCount < 3) null else authError
 
     val canSubmitPhone = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6
@@ -866,7 +862,6 @@ fun LoginContent(
                 )
                 .padding(padding)
         ) {
-            // ব্যাকগ্রাউন্ড গ্লাসি অরোরা গ্লো
             Canvas(modifier = Modifier.fillMaxSize()) {
                 drawCircle(
                     brush = Brush.radialGradient(
@@ -899,7 +894,6 @@ fun LoginContent(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                // ড্রাইভের লোগো — আঁকার এনিমেশনসহ
                 FloatingBrandMark(logoSize = 84.dp)
 
                 Spacer(modifier = Modifier.height(18.dp))
@@ -1295,7 +1289,6 @@ fun LoginContent(
                             }
                         }
 
-                        // এরর বার্তা
                         AnimatedVisibility(
                             visible = displayError != null,
                             enter = fadeIn() + expandVertically(),
@@ -1323,7 +1316,6 @@ fun LoginContent(
                         }
                     }
 
-                    // গ্লাস কার্ডের নিচে বাটন ও সিকিউরিটি ব্যাজ — যাতে কখনোই কার্ডের বর্ডারের ওপর ওভারল্যাপ না করে
                     if (fabVisible) {
                         Spacer(modifier = Modifier.height(14.dp))
                         Row(
@@ -1335,7 +1327,7 @@ fun LoginContent(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.alpha(0.6f)
+                                modifier = Modifier.graphicsLayer { alpha = 0.6f }
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Lock,
@@ -1362,7 +1354,6 @@ fun LoginContent(
                 }
             }
 
-            // উপরে বামে ব্যাক বাটন
             if (canGoBackToPhone) {
                 IconButton(
                     onClick = {
