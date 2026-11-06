@@ -5,9 +5,12 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -87,8 +90,13 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -130,23 +138,23 @@ private val GlassError = Color(0xFFF87171)
 private val ModernFont = FontFamily.SansSerif
 
 private object LoginText {
-    const val PHONE_TITLE = "Sign in to MyCloud"
-    const val PHONE_SUBTITLE = "Enter your Telegram phone number"
+    const val PHONE_TITLE = "Your phone number"
+    const val PHONE_SUBTITLE = "Confirm country code and enter your number"
     const val PHONE_LABEL = "Phone number"
-    const val COUNTRY_HINT = "Select Country"
-    const val COUNTRY_WRONG = "Invalid country code"
+    const val COUNTRY_HINT = "Country"
+    const val COUNTRY_WRONG = "Wrong country code"
 
-    const val CODE_TITLE_FALLBACK = "Verification Code"
+    const val CODE_TITLE_FALLBACK = "Enter code"
     const val CODE_SUBTITLE = "Enter the 5-digit code sent to Telegram"
     const val RESEND = "Resend code"
-    const val RESEND_IN = "Resend in"
+    const val RESEND_IN = "Resend code in"
 
-    const val PASSWORD_TITLE = "Cloud Password"
-    const val PASSWORD_SUBTITLE = "Enter your Two-Step Verification password"
-    const val PASSWORD_LABEL = "Password"
+    const val PASSWORD_TITLE = "Your password"
+    const val PASSWORD_SUBTITLE = "Two-Step Verification password"
+    const val PASSWORD_LABEL = "Enter password"
 
-    const val PICKER_TITLE = "Select Country"
-    const val SEARCH = "Search country or code..."
+    const val PICKER_TITLE = "Choose a country"
+    const val SEARCH = "Search"
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -218,20 +226,39 @@ private fun sectionKey(name: String): Char {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  ল্যাগ-মুক্ত ক্যাশড ভেক্টর লোগো
+//  লোগো (ভেক্টর) + আগের সেই ড্রয়িং এনিমেশন (১২০ FPS অপ্টিমাইজড)
 // ──────────────────────────────────────────────────────────────
+private class CachedPath(d: String, strokeWidth: Float) {
+    val path: Path = PathParser().parsePathString(d).toPath()
+    private val measure = PathMeasure().apply { setPath(path, false) }
+    private val length = measure.length
+    private val segment = Path()
+    private val stroke = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
+    fun drawTrimmed(scope: DrawScope, progress: Float, brush: Brush, alpha: Float = 1f) {
+        if (progress <= 0f || alpha <= 0f) return
+        if (progress >= 0.999f) {
+            scope.drawPath(path = path, brush = brush, alpha = alpha, style = stroke)
+            return
+        }
+        segment.rewind()
+        measure.getSegment(0f, length * progress.coerceAtMost(1f), segment, true)
+        scope.drawPath(path = segment, brush = brush, alpha = alpha, style = stroke)
+    }
+}
+
 private class BrandMarkVector {
-    val lobeUR = PathParser().parsePathString("M54,39 C64,39 73,45 75,55 L50,58 Z").toPath()
-    val aqua = PathParser().parsePathString("M48,75.5 L77.5,75.5 C84.8,75.5 90.5,69.8 90.5,62.5 C90.5,55.2 84.5,49.5 77.0,49.5 C70.5,49.5 65.0,53.8 63.2,59.8 L48,75.5 Z").toPath()
+    val lobeUR = CachedPath("M54,39 C64,39 73,45 75,55 L50,58 Z", 1.6f)
+    val aqua = CachedPath("M48,75.5 L77.5,75.5 C84.8,75.5 90.5,69.8 90.5,62.5 C90.5,55.2 84.5,49.5 77.0,49.5 C70.5,49.5 65.0,53.8 63.2,59.8 L48,75.5 Z", 1.6f)
     val gloss = PathParser().parsePathString("M68,54 C74,50 83,52 87,58 C82,54 74,53 68,54 Z").toPath()
-    val left = PathParser().parsePathString("M34,43.5 C23.2,43.5 14.5,52.0 14.5,62.5 C14.5,71.5 21.5,78.5 31.0,78.5 L48,62 Z").toPath()
-    val sphere = PathParser().parsePathString("M46.5,27.0 C35.5,27.0 26.8,35.8 26.8,46.8 C26.8,57.8 35.5,66.5 46.5,66.5 C57.5,66.5 66.2,57.8 66.2,46.8 C66.2,35.8 57.5,27.0 46.5,27.0 Z").toPath()
-    val ribbon = PathParser().parsePathString("M14.5,60.5 C14.8,74.8 26.5,81.5 41.5,78.5 C52.5,76.2 63.5,68.5 72.5,58.5 C76.8,53.5 76.5,45.5 71.2,41.5 C66.0,37.8 58.2,39.2 53.0,44.2 C43.5,53.5 34.5,62.5 25.5,65.2 C19.5,67.0 15.2,64.5 14.5,60.5 Z").toPath()
-    val arrow1 = PathParser().parsePathString("M16.0,63.0 C20.5,72.5 31.5,72.5 45.5,58.5 L42.5,55.5 L53.5,51.5 L51.0,62.5 L48.0,59.5 C32.5,75.0 19.5,75.5 16.0,63.0 Z").toPath()
-    val arrow2 = PathParser().parsePathString("M24.0,78.0 C36.5,80.5 49.5,71.5 60.0,53.5 L55.5,50.5 L67.5,43.0 L69.5,56.5 L65.0,54.0 C53.5,73.5 38.5,82.0 24.0,78.0 Z").toPath()
-    val arc1 = PathParser().parsePathString("M66.4,34.6 A9,9 0 0,1 75.4,39.8").toPath()
-    val arc2 = PathParser().parsePathString("M65.8,27.5 A16.2,16.2 0 0,1 81.9,36.8").toPath()
-    val arc3 = PathParser().parsePathString("M65.2,20.2 A23.5,23.5 0 0,1 88.5,33.7").toPath()
+    val left = CachedPath("M34,43.5 C23.2,43.5 14.5,52.0 14.5,62.5 C14.5,71.5 21.5,78.5 31.0,78.5 L48,62 Z", 1.6f)
+    val sphere = CachedPath("M46.5,27.0 C35.5,27.0 26.8,35.8 26.8,46.8 C26.8,57.8 35.5,66.5 46.5,66.5 C57.5,66.5 66.2,57.8 66.2,46.8 C66.2,35.8 57.5,27.0 46.5,27.0 Z", 1.6f)
+    val ribbon = CachedPath("M14.5,60.5 C14.8,74.8 26.5,81.5 41.5,78.5 C52.5,76.2 63.5,68.5 72.5,58.5 C76.8,53.5 76.5,45.5 71.2,41.5 C66.0,37.8 58.2,39.2 53.0,44.2 C43.5,53.5 34.5,62.5 25.5,65.2 C19.5,67.0 15.2,64.5 14.5,60.5 Z", 1.6f)
+    val arrow1 = CachedPath("M16.0,63.0 C20.5,72.5 31.5,72.5 45.5,58.5 L42.5,55.5 L53.5,51.5 L51.0,62.5 L48.0,59.5 C32.5,75.0 19.5,75.5 16.0,63.0 Z", 1.6f)
+    val arrow2 = CachedPath("M24.0,78.0 C36.5,80.5 49.5,71.5 60.0,53.5 L55.5,50.5 L67.5,43.0 L69.5,56.5 L65.0,54.0 C53.5,73.5 38.5,82.0 24.0,78.0 Z", 1.6f)
+    val arc1 = CachedPath("M66.4,34.6 A9,9 0 0,1 75.4,39.8", 4.5f)
+    val arc2 = CachedPath("M65.8,27.5 A16.2,16.2 0 0,1 81.9,36.8", 4.5f)
+    val arc3 = CachedPath("M65.2,20.2 A23.5,23.5 0 0,1 88.5,33.7", 4.5f)
 
     val bUR = Brush.linearGradient(0f to Color(0xFF2CE0FF), 1f to Color(0xFF0099F0), start = Offset(54f, 39f), end = Offset(75f, 56f))
     val bAqua = Brush.linearGradient(0f to Color(0xFF48F7E8), 0.55f to Color(0xFF00D2DC), 1f to Color(0xFF00A2C2), start = Offset(65f, 49f), end = Offset(88f, 76f))
@@ -241,17 +268,33 @@ private class BrandMarkVector {
     val bArrow1 = Brush.linearGradient(0f to Color(0xFF0055D4), 1f to Color(0xFF00B4FF), start = Offset(16f, 72f), end = Offset(53f, 51f))
     val bArrow2 = Brush.linearGradient(0f to Color(0xFF0038B8), 0.5f to Color(0xFF0078F0), 1f to Color(0xFF00A8FF), start = Offset(24f, 79f), end = Offset(68f, 43f))
     val bArc = Brush.linearGradient(0f to Color(0xFF18B8FF), 1f to Color(0xFF0055D4), start = Offset(65f, 21f), end = Offset(89f, 43f))
-    val arcStroke = Stroke(width = 4.5f, cap = StrokeCap.Round)
+
+    val bTrace = Brush.linearGradient(
+        0f to Color(0xFF2CE0FF),
+        1f to Color.White,
+        start = Offset(14f, 80f),
+        end = Offset(90f, 20f)
+    )
+
+    val traceOrder: List<CachedPath> = listOf(left, sphere, lobeUR, aqua, ribbon, arrow1, arrow2)
+    val arcs: List<CachedPath> = listOf(arc1, arc2, arc3)
 }
 
 @Composable
-private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 88.dp) {
+private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 96.dp) {
     val shapes = remember { BrandMarkVector() }
-    val transition = rememberInfiniteTransition(label = "LogoFloat")
+
+    // 0 → 1 : আউটলাইন আঁকা → রং ভরা → সিগন্যাল আর্ক আঁকা (হুবহু আগের এনিমেশন)
+    val drawProgress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        drawProgress.animateTo(1f, tween(2400, easing = LinearEasing))
+    }
+
+    val transition = rememberInfiniteTransition(label = "LogoPulse")
     val floatOffset by transition.animateFloat(
-        initialValue = -3.5f,
-        targetValue = 3.5f,
-        animationSpec = infiniteRepeatable(tween(2600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        initialValue = -3f,
+        targetValue = 3f,
+        animationSpec = infiniteRepeatable(tween(2400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "FloatY"
     )
 
@@ -259,55 +302,70 @@ private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 88.d
         modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
-        // গ্লাসি ব্যাকলাইট রিং ও গ্লো
-        Box(
-            modifier = Modifier
-                .size(logoSize * 1.22f)
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            GlassCyan.copy(alpha = 0.22f),
-                            GlassBlue.copy(alpha = 0.06f),
-                            Color.Transparent
-                        )
+        // নরম গ্লো
+        Canvas(modifier = Modifier.size(logoSize * 1.35f)) {
+            val glow = ((drawProgress.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color(0xFF0A8CFF).copy(alpha = 0.34f),
+                        Color(0xFF2CE0FF).copy(alpha = 0.10f),
+                        Color.Transparent
                     )
-                )
-                .border(
-                    width = 1.dp,
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.28f),
-                            GlassCyan.copy(alpha = 0.15f),
-                            Color.Transparent
-                        )
-                    ),
-                    shape = CircleShape
-                )
-        )
+                ),
+                radius = size.minDimension / 1.8f,
+                alpha = glow
+            )
+        }
 
         Canvas(
             modifier = Modifier
                 .size(logoSize)
-                .graphicsLayer { translationY = floatOffset }
+                .graphicsLayer {
+                    compositingStrategy = CompositingStrategy.Offscreen
+                    translationY = floatOffset
+                    val pop = 0.92f + 0.08f * FastOutSlowInEasing.transform(drawProgress.value)
+                    scaleX = pop
+                    scaleY = pop
+                }
         ) {
+            val t = drawProgress.value
+            val fillAlpha = ((t - 0.50f) / 0.32f).coerceIn(0f, 1f)
+            val outlineAlpha = 1f - fillAlpha
+
             val s = size.width / 82f
             translate(
                 left = size.width / 2f - 52f * s,
                 top = size.height / 2f - 50f * s
             ) {
                 scale(scale = s, pivot = Offset.Zero) {
-                    drawPath(shapes.lobeUR, shapes.bUR)
-                    drawPath(shapes.aqua, shapes.bAqua)
-                    drawPath(shapes.gloss, Color.White, alpha = 0.42f)
-                    drawPath(shapes.left, shapes.bLeft)
-                    drawPath(shapes.sphere, shapes.bSphere)
-                    drawPath(shapes.ribbon, shapes.bRibbon)
-                    drawPath(shapes.arrow1, shapes.bArrow1)
-                    drawPath(shapes.arrow2, shapes.bArrow2)
-                    drawPath(shapes.arc1, shapes.bArc, style = shapes.arcStroke)
-                    drawPath(shapes.arc2, shapes.bArc, style = shapes.arcStroke)
-                    drawPath(shapes.arc3, shapes.bArc, style = shapes.arcStroke)
+                    // ধাপ ১: আউটলাইন একে একে আঁকা হয়
+                    if (outlineAlpha > 0f) {
+                        shapes.traceOrder.forEachIndexed { i, cached ->
+                            val start = i * 0.045f
+                            val p = FastOutSlowInEasing.transform(((t - start) / 0.38f).coerceIn(0f, 1f))
+                            cached.drawTrimmed(this, p, shapes.bTrace, outlineAlpha)
+                        }
+                    }
+
+                    // ধাপ ২: গ্রেডিয়েন্ট রং ভরে ওঠে
+                    if (fillAlpha > 0f) {
+                        drawPath(shapes.lobeUR.path, shapes.bUR, alpha = fillAlpha)
+                        drawPath(shapes.aqua.path, shapes.bAqua, alpha = fillAlpha)
+                        drawPath(shapes.gloss, Color.White, alpha = 0.4f * fillAlpha)
+                        drawPath(shapes.left.path, shapes.bLeft, alpha = fillAlpha)
+                        drawPath(shapes.sphere.path, shapes.bSphere, alpha = fillAlpha)
+                        drawPath(shapes.ribbon.path, shapes.bRibbon, alpha = fillAlpha)
+                        drawPath(shapes.arrow1.path, shapes.bArrow1, alpha = fillAlpha)
+                        drawPath(shapes.arrow2.path, shapes.bArrow2, alpha = fillAlpha)
+                    }
+
+                    // ধাপ ৩: সিগন্যাল আর্ক ভেতর থেকে বাইরে আঁকা হয়
+                    shapes.arcs.forEachIndexed { k, arc ->
+                        val start = 0.66f + k * 0.07f
+                        val p = FastOutSlowInEasing.transform(((t - start) / 0.20f).coerceIn(0f, 1f))
+                        arc.drawTrimmed(this, p, shapes.bArc)
+                    }
                 }
             }
         }
@@ -437,9 +495,9 @@ private fun StepHeader(title: String, subtitle: String) {
         text = title,
         color = GlassTextPrimary,
         fontFamily = ModernFont,
-        fontSize = 24.sp,
+        fontSize = 23.sp,
         fontWeight = FontWeight.Bold,
-        letterSpacing = (-0.3).sp,
+        letterSpacing = (-0.2).sp,
         textAlign = TextAlign.Center
     )
     Spacer(modifier = Modifier.height(6.dp))
@@ -708,6 +766,20 @@ fun LoginContent(
         }
     }
 
+    // লোগো আঁকা শেষ হলে গ্লাসি কার্ড ও ফিল্ড ভেসে ওঠে, তারপর কিবোর্ড খোলে
+    var appear by remember { mutableStateOf(false) }
+    var logoFinished by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        appear = true
+        delay(1900)
+        logoFinished = true
+    }
+    val contentAlpha by animateFloatAsState(
+        targetValue = if (appear) 1f else 0f,
+        animationSpec = tween(600, delayMillis = 1500, easing = FastOutSlowInEasing),
+        label = "ContentAlpha"
+    )
+
     if (showCountryDialog) {
         CountryPickerDialog(
             selected = selectedCountry,
@@ -807,11 +879,12 @@ fun LoginContent(
                 ) {
                     Spacer(modifier = Modifier.height(20.dp))
 
-                    FloatingBrandMark(logoSize = 86.dp)
+                    // ড্রাইভের লোগো — আগের সেই আঁকার এনিমেশনসহ
+                    FloatingBrandMark(logoSize = 96.dp)
 
                     Spacer(modifier = Modifier.height(22.dp))
 
-                    // ফ্রস্টেড গ্লাস কার্ড (Frosted Glassmorphic Card)
+                    // ফ্রস্টেড গ্লাস কার্ড (লোগো আঁকা শেষ হলে ভেসে ওঠে)
                     Surface(
                         color = GlassCardSurface,
                         shape = RoundedCornerShape(28.dp),
@@ -826,7 +899,12 @@ fun LoginContent(
                             )
                         ),
                         shadowElevation = 20.dp,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                alpha = contentAlpha
+                                translationY = (1f - contentAlpha) * 24.dp.toPx()
+                            }
                     ) {
                         Column(
                             modifier = Modifier
@@ -921,9 +999,11 @@ fun LoginContent(
                                             Spacer(modifier = Modifier.height(16.dp))
 
                                             val phoneFocus = remember { FocusRequester() }
-                                            LaunchedEffect(Unit) {
-                                                delay(250)
-                                                runCatching { phoneFocus.requestFocus() }
+                                            LaunchedEffect(logoFinished) {
+                                                if (logoFinished) {
+                                                    delay(150)
+                                                    runCatching { phoneFocus.requestFocus() }
+                                                }
                                             }
 
                                             GlassInputBox(
@@ -1281,7 +1361,7 @@ fun LoginContent(
                 }
             }
 
-            // নিচে ডানে গ্লাসি অ্যাকশন বাটন (Forgot password? সম্পূর্ণ সরানো হয়েছে)
+            // নিচে ডানে গ্লাসি অ্যাকশন বাটন (ড্রয়িং এনিমেশনের সাথে পপ-আপ হয়)
             if (fabVisible) {
                 Box(
                     modifier = Modifier
@@ -1289,6 +1369,12 @@ fun LoginContent(
                         .navigationBarsPadding()
                         .imePadding()
                         .padding(horizontal = 24.dp, vertical = 20.dp)
+                        .graphicsLayer {
+                            alpha = contentAlpha
+                            val pop = 0.6f + 0.4f * contentAlpha
+                            scaleX = pop
+                            scaleY = pop
+                        }
                 ) {
                     GlassActionFab(
                         enabled = fabEnabled,
