@@ -33,7 +33,14 @@ class AuthRepository @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val _authState = MutableStateFlow<AuthState>(AuthState.Loading)
+    // ইউজার আগে থেকে লগইন করা থাকলে শুরু থেকেই Authenticated থাকবে, যাতে ভুল করেও LoginScreen না দেখায়
+    private val _authState = MutableStateFlow<AuthState>(
+        if (secureSettings.getBoolean("active_provider_telegram", false)) {
+            AuthState.Authenticated
+        } else {
+            AuthState.Loading
+        }
+    )
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
     private val _tdAuthState = MutableStateFlow<TdApi.AuthorizationState?>(null)
@@ -61,6 +68,7 @@ class AuthRepository @Inject constructor(
                 sendTdlibParameters()
             }
             is TdApi.AuthorizationStateWaitPhoneNumber -> {
+                secureSettings.saveBoolean("active_provider_telegram", false)
                 _authState.value = AuthState.Unauthenticated
             }
             is TdApi.AuthorizationStateWaitCode -> {
@@ -74,6 +82,7 @@ class AuthRepository @Inject constructor(
                 _authState.value = AuthState.Authenticated
             }
             is TdApi.AuthorizationStateClosed -> {
+                secureSettings.saveBoolean("active_provider_telegram", false)
                 _authState.value = AuthState.Unauthenticated
             }
             else -> {}
