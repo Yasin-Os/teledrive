@@ -5,12 +5,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -21,6 +18,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -64,7 +62,6 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -90,12 +87,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -103,6 +96,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -121,46 +115,42 @@ import java.text.Normalizer
 import java.util.Locale
 
 // ──────────────────────────────────────────────────────────────
-//  Telegram-style colour tokens
+//  Glassmorphism Theme Palette & Typography
 // ──────────────────────────────────────────────────────────────
-private val TgBg = Color(0xFF1E2733)
-private val TgBlue = Color(0xFF5EAEF0)      // focused outline, label, links
-private val TgFab = Color(0xFF229AF0)       // round action button
-private val TgBorder = Color(0xFF3A4859)    // idle outline
-private val TgGray = Color(0xFF7F8C9A)      // subtitles / hints
-private val TgError = Color(0xFFE5737A)
+private val GlassBgDark = Color(0xFF070B14)
+private val GlassBgMid = Color(0xFF0E1726)
+private val GlassCardSurface = Color(0xFF182438).copy(alpha = 0.58f)
+private val GlassFieldSurface = Color(0xFF0D1524).copy(alpha = 0.62f)
+private val GlassCyan = Color(0xFF38BDF8)
+private val GlassBlue = Color(0xFF0EA5E9)
+private val GlassBorderIdle = Color.White.copy(alpha = 0.14f)
+private val GlassTextPrimary = Color(0xFFF8FAFC)
+private val GlassTextSecondary = Color(0xFF94A3B8)
+private val GlassError = Color(0xFFF87171)
+private val ModernFont = FontFamily.SansSerif
 
-// ──────────────────────────────────────────────────────────────
-//  সব লেখা এক জায়গায় — বাংলা করতে চাইলে শুধু এখানে বদলান
-// ──────────────────────────────────────────────────────────────
 private object LoginText {
-    const val PHONE_TITLE = "Your phone number"
-    const val PHONE_SUBTITLE = "Please confirm your country code and enter your phone number."
+    const val PHONE_TITLE = "Sign in to MyCloud"
+    const val PHONE_SUBTITLE = "Enter your Telegram phone number"
     const val PHONE_LABEL = "Phone number"
-    const val COUNTRY_HINT = "Country"
-    const val COUNTRY_WRONG = "Wrong country code"
+    const val COUNTRY_HINT = "Select Country"
+    const val COUNTRY_WRONG = "Invalid country code"
 
-    const val CODE_TITLE_FALLBACK = "Enter code"
-    const val CODE_SUBTITLE = "We've sent the code to the Telegram app on your other device."
+    const val CODE_TITLE_FALLBACK = "Verification Code"
+    const val CODE_SUBTITLE = "Enter the 5-digit code sent to Telegram"
     const val RESEND = "Resend code"
-    const val RESEND_IN = "Resend code in"
+    const val RESEND_IN = "Resend in"
 
-    const val PASSWORD_TITLE = "Your password"
-    const val PASSWORD_SUBTITLE = "Two-Step Verification enabled. Your account is protected with an additional password."
-    const val PASSWORD_LABEL = "Enter password"
-    const val FORGOT = "Forgot password?"
-    const val FORGOT_BODY = "Open Telegram on another device and go to Settings → Privacy and Security → Two-Step Verification. If you added a recovery email, you can use it to reset your password there."
-    const val OK = "OK"
+    const val PASSWORD_TITLE = "Cloud Password"
+    const val PASSWORD_SUBTITLE = "Enter your Two-Step Verification password"
+    const val PASSWORD_LABEL = "Password"
 
-    const val PICKER_TITLE = "Choose a country"
-    const val SEARCH = "Search"
-
-    const val SECURITY = "End-to-End Encrypted • Powered by Telegram Cloud"
-    const val COPYRIGHT = "© 2026 Yasin Adnan. All rights reserved."
+    const val PICKER_TITLE = "Select Country"
+    const val SEARCH = "Search country or code..."
 }
 
 // ──────────────────────────────────────────────────────────────
-//  দেশের তালিকা: ISO কোড + ডায়াল কোড (পতাকা ও নাম নিজে থেকে তৈরি হয়)
+//  দেশের তালিকা: ISO কোড + ডায়াল কোড
 // ──────────────────────────────────────────────────────────────
 data class CountryOption(
     val name: String,
@@ -192,7 +182,6 @@ TK:690 TO:676 TT:1868 TN:216 TR:90 TM:993 TC:1649 TV:688 UG:256 UA:380 AE:971 GB
 US:1 VI:1340 UY:598 UZ:998 VU:678 VA:379 VE:58 VN:84 WF:681 EH:212 YE:967 ZM:260 ZW:263
 """
 
-// একাধিক দেশের একই কোড হলে যেটি আগে ধরা হবে (যেমন +1 → US)
 private val PRIMARY_ISO = setOf("US", "RU", "GB", "AU", "FI", "NO", "MA", "RE", "GP", "CW", "IT")
 
 private fun flagEmoji(iso: String): String {
@@ -229,7 +218,7 @@ private fun sectionKey(name: String): Char {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  লোগো (ভেক্টর) + ড্রয়িং এনিমেশন
+//  ল্যাগ-মুক্ত ক্যাশড ভেক্টর লোগো
 // ──────────────────────────────────────────────────────────────
 private class BrandMarkVector {
     val lobeUR = PathParser().parsePathString("M54,39 C64,39 73,45 75,55 L50,58 Z").toPath()
@@ -252,57 +241,17 @@ private class BrandMarkVector {
     val bArrow1 = Brush.linearGradient(0f to Color(0xFF0055D4), 1f to Color(0xFF00B4FF), start = Offset(16f, 72f), end = Offset(53f, 51f))
     val bArrow2 = Brush.linearGradient(0f to Color(0xFF0038B8), 0.5f to Color(0xFF0078F0), 1f to Color(0xFF00A8FF), start = Offset(24f, 79f), end = Offset(68f, 43f))
     val bArc = Brush.linearGradient(0f to Color(0xFF18B8FF), 1f to Color(0xFF0055D4), start = Offset(65f, 21f), end = Offset(89f, 43f))
-
-    // আউটলাইন আঁকার ব্রাশ
-    val bTrace = Brush.linearGradient(
-        0f to Color(0xFF2CE0FF),
-        1f to Color.White,
-        start = Offset(14f, 80f),
-        end = Offset(90f, 20f)
-    )
-
-    val traceOrder: List<Path> = listOf(left, sphere, lobeUR, aqua, ribbon, arrow1, arrow2)
-
-    private val measurer = PathMeasure()
-    private val segment = Path()
-
-    /** পাথের শুরু থেকে [progress] অংশ পর্যন্ত স্ট্রোক আঁকে */
-    fun drawTrimmed(
-        scope: DrawScope,
-        path: Path,
-        progress: Float,
-        brush: Brush,
-        width: Float,
-        alpha: Float = 1f
-    ) {
-        if (progress <= 0f || alpha <= 0f) return
-        measurer.setPath(path, false)
-        segment.rewind()
-        measurer.getSegment(0f, measurer.length * progress.coerceAtMost(1f), segment, true)
-        scope.drawPath(
-            path = segment,
-            brush = brush,
-            alpha = alpha,
-            style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-    }
+    val arcStroke = Stroke(width = 4.5f, cap = StrokeCap.Round)
 }
 
 @Composable
-private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 96.dp) {
+private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 88.dp) {
     val shapes = remember { BrandMarkVector() }
-
-    // 0 → 1 : আউটলাইন আঁকা → রং ভরা → সিগন্যাল আর্ক আঁকা
-    val drawProgress = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        drawProgress.animateTo(1f, tween(2400, easing = LinearEasing))
-    }
-
-    val transition = rememberInfiniteTransition(label = "LogoPulse")
+    val transition = rememberInfiniteTransition(label = "LogoFloat")
     val floatOffset by transition.animateFloat(
-        initialValue = -3f,
-        targetValue = 3f,
-        animationSpec = infiniteRepeatable(tween(2400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        initialValue = -3.5f,
+        targetValue = 3.5f,
+        animationSpec = infiniteRepeatable(tween(2600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "FloatY"
     )
 
@@ -310,69 +259,55 @@ private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 96.d
         modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
-        // নরম গ্লো
-        Canvas(modifier = Modifier.size(logoSize * 1.35f)) {
-            val glow = ((drawProgress.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color(0xFF0A8CFF).copy(alpha = 0.34f),
-                        Color(0xFF2CE0FF).copy(alpha = 0.10f),
-                        Color.Transparent
+        // গ্লাসি ব্যাকলাইট রিং ও গ্লো
+        Box(
+            modifier = Modifier
+                .size(logoSize * 1.22f)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            GlassCyan.copy(alpha = 0.22f),
+                            GlassBlue.copy(alpha = 0.06f),
+                            Color.Transparent
+                        )
                     )
-                ),
-                radius = size.minDimension / 1.8f,
-                alpha = glow
-            )
-        }
+                )
+                .border(
+                    width = 1.dp,
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.28f),
+                            GlassCyan.copy(alpha = 0.15f),
+                            Color.Transparent
+                        )
+                    ),
+                    shape = CircleShape
+                )
+        )
 
         Canvas(
             modifier = Modifier
                 .size(logoSize)
-                .graphicsLayer {
-                    translationY = floatOffset
-                    val pop = 0.92f + 0.08f * FastOutSlowInEasing.transform(drawProgress.value)
-                    scaleX = pop
-                    scaleY = pop
-                }
+                .graphicsLayer { translationY = floatOffset }
         ) {
-            val t = drawProgress.value
-            val fillAlpha = ((t - 0.50f) / 0.32f).coerceIn(0f, 1f)
-            val outlineAlpha = 1f - fillAlpha
-
             val s = size.width / 82f
             translate(
                 left = size.width / 2f - 52f * s,
                 top = size.height / 2f - 50f * s
             ) {
                 scale(scale = s, pivot = Offset.Zero) {
-                    // ধাপ ১: আউটলাইন একে একে আঁকা হয়
-                    if (outlineAlpha > 0f) {
-                        shapes.traceOrder.forEachIndexed { i, path ->
-                            val start = i * 0.045f
-                            val p = FastOutSlowInEasing.transform(((t - start) / 0.38f).coerceIn(0f, 1f))
-                            shapes.drawTrimmed(this, path, p, shapes.bTrace, 1.6f, outlineAlpha)
-                        }
-                    }
-
-                    // ধাপ ২: গ্রেডিয়েন্ট রং ভরে ওঠে
-                    if (fillAlpha > 0f) {
-                        drawPath(shapes.lobeUR, shapes.bUR, alpha = fillAlpha)
-                        drawPath(shapes.aqua, shapes.bAqua, alpha = fillAlpha)
-                        drawPath(shapes.gloss, Color.White, alpha = 0.4f * fillAlpha)
-                        drawPath(shapes.left, shapes.bLeft, alpha = fillAlpha)
-                        drawPath(shapes.sphere, shapes.bSphere, alpha = fillAlpha)
-                        drawPath(shapes.ribbon, shapes.bRibbon, alpha = fillAlpha)
-                        drawPath(shapes.arrow1, shapes.bArrow1, alpha = fillAlpha)
-                        drawPath(shapes.arrow2, shapes.bArrow2, alpha = fillAlpha)
-                    }
-
-                    // ধাপ ৩: সিগন্যাল আর্ক ভেতর থেকে বাইরে আঁকা হয়
-                    listOf(shapes.arc1, shapes.arc2, shapes.arc3).forEachIndexed { k, arc ->
-                        val start = 0.66f + k * 0.07f
-                        val p = FastOutSlowInEasing.transform(((t - start) / 0.20f).coerceIn(0f, 1f))
-                        shapes.drawTrimmed(this, arc, p, shapes.bArc, 4.5f)
-                    }
+                    drawPath(shapes.lobeUR, shapes.bUR)
+                    drawPath(shapes.aqua, shapes.bAqua)
+                    drawPath(shapes.gloss, Color.White, alpha = 0.42f)
+                    drawPath(shapes.left, shapes.bLeft)
+                    drawPath(shapes.sphere, shapes.bSphere)
+                    drawPath(shapes.ribbon, shapes.bRibbon)
+                    drawPath(shapes.arrow1, shapes.bArrow1)
+                    drawPath(shapes.arrow2, shapes.bArrow2)
+                    drawPath(shapes.arc1, shapes.bArc, style = shapes.arcStroke)
+                    drawPath(shapes.arc2, shapes.bArc, style = shapes.arcStroke)
+                    drawPath(shapes.arc3, shapes.bArc, style = shapes.arcStroke)
                 }
             }
         }
@@ -380,88 +315,116 @@ private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 96.d
 }
 
 // ──────────────────────────────────────────────────────────────
-//  টেলিগ্রামের মতো UI অংশগুলো
+//  Glassmorphism UI Components
 // ──────────────────────────────────────────────────────────────
 
-/** টেলিগ্রামের "নচ" লেবেলসহ আউটলাইন বক্স (ফোন নাম্বার / পাসওয়ার্ড) */
 @Composable
-private fun NotchedBox(
+private fun GlassInputBox(
     label: String,
     focused: Boolean,
     isError: Boolean,
     modifier: Modifier = Modifier,
     content: @Composable RowScope.() -> Unit
 ) {
-    val color by animateColorAsState(
+    val borderColor by animateColorAsState(
         targetValue = when {
-            isError -> TgError
-            focused -> TgBlue
-            else -> TgBorder
+            isError -> GlassError
+            focused -> GlassCyan
+            else -> GlassBorderIdle
         },
         animationSpec = tween(180),
-        label = "NotchColor"
+        label = "GlassInputBorder"
     )
-    val borderWidth = if (focused || isError) 2.dp else 1.dp
 
-    Box(modifier = modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            text = label.uppercase(Locale.US),
+            color = when {
+                isError -> GlassError
+                focused -> GlassCyan
+                else -> GlassTextSecondary
+            },
+            fontFamily = ModernFont,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.1.sp,
+            modifier = Modifier.padding(start = 6.dp, bottom = 7.dp)
+        )
         Row(
             modifier = Modifier
-                .padding(top = 8.dp)
                 .fillMaxWidth()
-                .height(58.dp)
-                .border(borderWidth, color, RoundedCornerShape(12.dp))
-                .padding(start = 16.dp, end = 8.dp),
+                .height(56.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(GlassFieldSurface)
+                .border(
+                    width = if (focused || isError) 1.6.dp else 1.dp,
+                    color = borderColor,
+                    shape = RoundedCornerShape(18.dp)
+                )
+                .padding(start = 16.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             content = content
-        )
-        Text(
-            text = label,
-            color = if (isError) TgError else if (focused) TgBlue else TgGray,
-            fontSize = 12.sp,
-            modifier = Modifier
-                .padding(start = 14.dp)
-                .background(TgBg)
-                .padding(horizontal = 4.dp)
         )
     }
 }
 
-/** টেলিগ্রামের নিচ-ডানের গোল অ্যাকশন বাটন */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TgFab(
+private fun GlassActionFab(
     enabled: Boolean,
     isProcessing: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val color by animateColorAsState(
-        targetValue = if (enabled || isProcessing) TgFab else TgFab.copy(alpha = 0.4f),
-        animationSpec = tween(200),
-        label = "FabColor"
-    )
     Surface(
         onClick = onClick,
-        enabled = enabled,
+        enabled = enabled && !isProcessing,
         shape = CircleShape,
-        color = color,
-        contentColor = Color.White,
-        shadowElevation = 6.dp,
-        modifier = modifier.size(56.dp)
+        color = Color.Transparent,
+        shadowElevation = if (enabled) 12.dp else 0.dp,
+        border = BorderStroke(
+            width = 1.dp,
+            brush = Brush.linearGradient(
+                colors = if (enabled || isProcessing) {
+                    listOf(Color.White.copy(alpha = 0.55f), GlassCyan.copy(alpha = 0.3f))
+                } else {
+                    listOf(Color.White.copy(alpha = 0.12f), Color.White.copy(alpha = 0.05f))
+                }
+            )
+        ),
+        modifier = modifier.size(58.dp)
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    if (enabled || isProcessing) {
+                        Brush.linearGradient(
+                            colors = listOf(Color(0xFF38BDF8), Color(0xFF0284C7))
+                        )
+                    } else {
+                        Brush.linearGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.08f),
+                                Color.White.copy(alpha = 0.04f)
+                            )
+                        )
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
             if (isProcessing) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(24.dp),
                     color = Color.White,
-                    strokeWidth = 2.5.dp
+                    strokeWidth = 2.4.dp
                 )
             } else {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = "Next",
-                    tint = Color.White,
-                    modifier = Modifier.size(26.dp)
+                    contentDescription = "Continue",
+                    tint = if (enabled) Color.White else Color.White.copy(alpha = 0.35f),
+                    modifier = Modifier.size(25.dp)
                 )
             }
         }
@@ -472,22 +435,25 @@ private fun TgFab(
 private fun StepHeader(title: String, subtitle: String) {
     Text(
         text = title,
-        color = Color.White,
-        fontSize = 22.sp,
-        fontWeight = FontWeight.SemiBold,
+        color = GlassTextPrimary,
+        fontFamily = ModernFont,
+        fontSize = 24.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = (-0.3).sp,
         textAlign = TextAlign.Center
     )
-    Spacer(modifier = Modifier.height(10.dp))
+    Spacer(modifier = Modifier.height(6.dp))
     Text(
         text = subtitle,
-        color = TgGray,
-        fontSize = 16.sp,
-        lineHeight = 22.sp,
+        color = GlassTextSecondary,
+        fontFamily = ModernFont,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Normal,
+        letterSpacing = 0.2.sp,
         textAlign = TextAlign.Center
     )
 }
 
-/** টেলিগ্রামের মতো পূর্ণ-স্ক্রিন দেশ নির্বাচন: সব দেশ, পতাকা, কোড, সার্চ, A–Z সেকশন */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CountryPickerDialog(
@@ -499,7 +465,7 @@ private fun CountryPickerDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Surface(color = TgBg, modifier = Modifier.fillMaxSize()) {
+        Surface(color = GlassBgDark, modifier = Modifier.fillMaxSize()) {
             var searching by remember { mutableStateOf(false) }
             var query by remember { mutableStateOf("") }
             val searchFocus = remember { FocusRequester() }
@@ -525,6 +491,9 @@ private fun CountryPickerDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(colors = listOf(GlassBgMid, GlassBgDark))
+                    )
                     .statusBarsPadding()
                     .navigationBarsPadding()
                     .imePadding()
@@ -532,8 +501,8 @@ private fun CountryPickerDialog(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(56.dp)
-                        .padding(horizontal = 4.dp),
+                        .height(58.dp)
+                        .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = {
@@ -552,14 +521,23 @@ private fun CountryPickerDialog(
                     if (searching) {
                         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                             if (query.isEmpty()) {
-                                Text(LoginText.SEARCH, color = TgGray, fontSize = 18.sp)
+                                Text(
+                                    text = LoginText.SEARCH,
+                                    color = GlassTextSecondary,
+                                    fontFamily = ModernFont,
+                                    fontSize = 16.sp
+                                )
                             }
                             BasicTextField(
                                 value = query,
                                 onValueChange = { query = it },
                                 singleLine = true,
-                                textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
-                                cursorBrush = SolidColor(TgBlue),
+                                textStyle = TextStyle(
+                                    color = Color.White,
+                                    fontFamily = ModernFont,
+                                    fontSize = 16.5.sp
+                                ),
+                                cursorBrush = SolidColor(GlassCyan),
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -568,21 +546,22 @@ private fun CountryPickerDialog(
                         }
                         if (query.isNotEmpty()) {
                             IconButton(onClick = { query = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = TgGray)
+                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = GlassTextSecondary)
                             }
                         }
                     } else {
                         Text(
                             text = LoginText.PICKER_TITLE,
                             color = Color.White,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Medium,
+                            fontFamily = ModernFont,
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold,
                             modifier = Modifier
                                 .weight(1f)
                                 .padding(start = 8.dp)
                         )
                         IconButton(onClick = { searching = true }) {
-                            Icon(Icons.Default.Search, contentDescription = "Search", tint = Color.White)
+                            Icon(Icons.Default.Search, contentDescription = "Search", tint = GlassCyan)
                         }
                     }
                 }
@@ -592,13 +571,14 @@ private fun CountryPickerDialog(
                         stickyHeader {
                             Text(
                                 text = letter.toString(),
-                                color = TgBlue,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
+                                color = GlassCyan,
+                                fontFamily = ModernFont,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.ExtraBold,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(TgBg)
-                                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                                    .background(GlassBgDark.copy(alpha = 0.92f))
+                                    .padding(horizontal = 22.dp, vertical = 8.dp)
                             )
                         }
                         items(list, key = { it.iso }) { country ->
@@ -607,21 +587,25 @@ private fun CountryPickerDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onSelect(country) }
-                                    .padding(horizontal = 20.dp, vertical = 13.dp),
+                                    .padding(horizontal = 22.dp, vertical = 13.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(text = country.flag, fontSize = 24.sp)
+                                Text(text = country.flag, fontSize = 23.sp)
                                 Spacer(modifier = Modifier.width(16.dp))
                                 Text(
                                     text = country.name,
-                                    color = if (isSelected) TgBlue else Color.White,
-                                    fontSize = 16.sp,
+                                    color = if (isSelected) GlassCyan else GlassTextPrimary,
+                                    fontFamily = ModernFont,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    fontSize = 15.5.sp,
                                     modifier = Modifier.weight(1f)
                                 )
                                 Text(
                                     text = "+${country.dialCode}",
-                                    color = if (isSelected) TgBlue else TgGray,
-                                    fontSize = 16.sp
+                                    color = if (isSelected) GlassCyan else GlassTextSecondary,
+                                    fontFamily = ModernFont,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 15.sp
                                 )
                             }
                         }
@@ -694,7 +678,6 @@ fun LoginContent(
     var countryCode by remember { mutableStateOf("880") }
     var localPhone by remember { mutableStateOf("") }
     var showCountryDialog by remember { mutableStateOf(false) }
-    var showForgotDialog by remember { mutableStateOf(false) }
 
     var code by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -715,7 +698,6 @@ fun LoginContent(
         onBackToPhoneInput()
     }
 
-    // রিসেন্ড টাইমার (রিসেন্ড চাপলে আবার নতুন করে ৬০ সেকেন্ড গোনে)
     LaunchedEffect(uiState, resendKey) {
         if (uiState is LoginUiState.EnteringCode) {
             resendTimer = 60
@@ -726,20 +708,6 @@ fun LoginContent(
         }
     }
 
-    // লোগো আঁকা শেষ হলে লেখা ও ফিল্ড ভেসে ওঠে, তারপর কিবোর্ড খোলে
-    var appear by remember { mutableStateOf(false) }
-    var logoFinished by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        appear = true
-        delay(1900)
-        logoFinished = true
-    }
-    val contentAlpha by animateFloatAsState(
-        targetValue = if (appear) 1f else 0f,
-        animationSpec = tween(600, delayMillis = 1500, easing = FastOutSlowInEasing),
-        label = "ContentAlpha"
-    )
-
     if (showCountryDialog) {
         CountryPickerDialog(
             selected = selectedCountry,
@@ -749,20 +717,6 @@ fun LoginContent(
                 showCountryDialog = false
             },
             onDismiss = { showCountryDialog = false }
-        )
-    }
-
-    if (showForgotDialog) {
-        AlertDialog(
-            onDismissRequest = { showForgotDialog = false },
-            containerColor = Color(0xFF263241),
-            title = { Text(LoginText.FORGOT, color = Color.White, fontWeight = FontWeight.SemiBold) },
-            text = { Text(LoginText.FORGOT_BODY, color = TgGray, lineHeight = 21.sp) },
-            confirmButton = {
-                TextButton(onClick = { showForgotDialog = false }) {
-                    Text(LoginText.OK, color = TgBlue, fontWeight = FontWeight.SemiBold)
-                }
-            }
         )
     }
 
@@ -798,15 +752,41 @@ fun LoginContent(
     }
 
     Scaffold(
-        containerColor = TgBg,
+        containerColor = GlassBgDark,
         contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(TgBg)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(GlassBgMid, GlassBgDark)
+                    )
+                )
                 .padding(padding)
         ) {
+            // গ্লাসমরফিজম অ্যাম্বিয়েন্ট লাইট অরবস (Ambient Aurora Orbs)
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFF0EA5E9).copy(alpha = 0.20f), Color.Transparent),
+                        center = Offset(size.width * 0.85f, size.height * 0.15f),
+                        radius = size.width * 0.70f
+                    ),
+                    center = Offset(size.width * 0.85f, size.height * 0.15f),
+                    radius = size.width * 0.70f
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFF6366F1).copy(alpha = 0.15f), Color.Transparent),
+                        center = Offset(size.width * 0.15f, size.height * 0.82f),
+                        radius = size.width * 0.75f
+                    ),
+                    center = Offset(size.width * 0.15f, size.height * 0.82f),
+                    radius = size.width * 0.75f
+                )
+            }
+
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
@@ -820,486 +800,497 @@ fun LoginContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .verticalScroll(scrollState)
-                        .heightIn(min = minContentHeight),
+                        .heightIn(min = minContentHeight)
+                        .padding(horizontal = 22.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
-                    // ড্রাইভের লোগো — আঁকার এনিমেশনসহ
-                    FloatingBrandMark(logoSize = 96.dp)
+                    FloatingBrandMark(logoSize = 86.dp)
 
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(22.dp))
 
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.graphicsLayer {
-                            alpha = contentAlpha
-                            translationY = (1f - contentAlpha) * 24.dp.toPx()
-                        }
-                    ) {
-                        AnimatedContent(
-                            targetState = uiState,
-                            transitionSpec = {
-                                (slideInHorizontally(
-                                    animationSpec = tween(260, easing = FastOutSlowInEasing),
-                                    initialOffsetX = { it / 3 }
-                                ) + fadeIn(tween(220))).togetherWith(
-                                    slideOutHorizontally(
-                                        animationSpec = tween(220, easing = FastOutSlowInEasing),
-                                        targetOffsetX = { -it / 3 }
-                                    ) + fadeOut(tween(180))
+                    // ফ্রস্টেড গ্লাস কার্ড (Frosted Glassmorphic Card)
+                    Surface(
+                        color = GlassCardSurface,
+                        shape = RoundedCornerShape(28.dp),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            brush = Brush.linearGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.26f),
+                                    Color.White.copy(alpha = 0.06f),
+                                    GlassCyan.copy(alpha = 0.18f)
                                 )
-                            },
-                            label = "AuthStepTransition"
-                        ) { targetState ->
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 32.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                when (targetState) {
-                                    is LoginUiState.InitialSetup -> {
-                                        StepHeader(LoginText.PHONE_TITLE, LoginText.PHONE_SUBTITLE)
+                            )
+                        ),
+                        shadowElevation = 20.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            Color.White.copy(alpha = 0.05f),
+                                            Color.Transparent
+                                        )
+                                    )
+                                )
+                                .padding(horizontal = 22.dp, vertical = 26.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            AnimatedContent(
+                                targetState = uiState,
+                                transitionSpec = {
+                                    (slideInHorizontally(
+                                        animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                        initialOffsetX = { it / 3 }
+                                    ) + fadeIn(tween(200))).togetherWith(
+                                        slideOutHorizontally(
+                                            animationSpec = tween(200, easing = FastOutSlowInEasing),
+                                            targetOffsetX = { -it / 3 }
+                                        ) + fadeOut(tween(160))
+                                    )
+                                },
+                                label = "AuthStepTransition"
+                            ) { targetState ->
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    when (targetState) {
+                                        is LoginUiState.InitialSetup -> {
+                                            StepHeader(LoginText.PHONE_TITLE, LoginText.PHONE_SUBTITLE)
 
-                                        Spacer(modifier = Modifier.height(32.dp))
+                                            Spacer(modifier = Modifier.height(26.dp))
 
-                                        // দেশ নির্বাচন (ট্যাপ করলে সব দেশের তালিকা খোলে)
-                                        val codeHasPrefix = remember(countryCode) {
-                                            countryCode.isEmpty() || hasCountryWithPrefix(countryCode)
-                                        }
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(54.dp)
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .border(1.dp, TgBorder, RoundedCornerShape(12.dp))
-                                                .clickable { showCountryDialog = true }
-                                                .padding(horizontal = 16.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            val country = selectedCountry
-                                            when {
-                                                country != null -> {
-                                                    Text(text = country.flag, fontSize = 22.sp)
-                                                    Spacer(modifier = Modifier.width(12.dp))
-                                                    Text(
-                                                        text = country.name,
-                                                        color = Color.White,
-                                                        fontSize = 17.sp,
-                                                        maxLines = 1,
+                                            val codeHasPrefix = remember(countryCode) {
+                                                countryCode.isEmpty() || hasCountryWithPrefix(countryCode)
+                                            }
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(54.dp)
+                                                    .clip(RoundedCornerShape(18.dp))
+                                                    .background(GlassFieldSurface)
+                                                    .border(1.dp, GlassBorderIdle, RoundedCornerShape(18.dp))
+                                                    .clickable { showCountryDialog = true }
+                                                    .padding(horizontal = 16.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                val country = selectedCountry
+                                                when {
+                                                    country != null -> {
+                                                        Text(text = country.flag, fontSize = 22.sp)
+                                                        Spacer(modifier = Modifier.width(12.dp))
+                                                        Text(
+                                                            text = country.name,
+                                                            color = GlassTextPrimary,
+                                                            fontFamily = ModernFont,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            fontSize = 16.sp,
+                                                            maxLines = 1,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                    codeHasPrefix -> Text(
+                                                        text = LoginText.COUNTRY_HINT,
+                                                        color = GlassTextSecondary,
+                                                        fontFamily = ModernFont,
+                                                        fontSize = 16.sp,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                    else -> Text(
+                                                        text = LoginText.COUNTRY_WRONG,
+                                                        color = GlassError,
+                                                        fontFamily = ModernFont,
+                                                        fontSize = 16.sp,
                                                         modifier = Modifier.weight(1f)
                                                     )
                                                 }
-                                                codeHasPrefix -> Text(
-                                                    text = LoginText.COUNTRY_HINT,
-                                                    color = TgGray,
-                                                    fontSize = 17.sp,
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                else -> Text(
-                                                    text = LoginText.COUNTRY_WRONG,
-                                                    color = TgError,
-                                                    fontSize = 17.sp,
-                                                    modifier = Modifier.weight(1f)
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                    contentDescription = null,
+                                                    tint = GlassTextSecondary
                                                 )
                                             }
-                                            Icon(
-                                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                                contentDescription = null,
-                                                tint = TgGray
-                                            )
-                                        }
 
-                                        Spacer(modifier = Modifier.height(12.dp))
+                                            Spacer(modifier = Modifier.height(16.dp))
 
-                                        val phoneFocus = remember { FocusRequester() }
-                                        LaunchedEffect(logoFinished) {
-                                            if (logoFinished) {
-                                                delay(150)
+                                            val phoneFocus = remember { FocusRequester() }
+                                            LaunchedEffect(Unit) {
+                                                delay(250)
                                                 runCatching { phoneFocus.requestFocus() }
                                             }
-                                        }
 
-                                        // ফোন নাম্বার বক্স: + কোড | নাম্বার
-                                        NotchedBox(
-                                            label = LoginText.PHONE_LABEL,
-                                            focused = codeFieldFocused || numberFieldFocused,
-                                            isError = authError != null
-                                        ) {
-                                            Text(
-                                                text = "+",
-                                                color = Color.White,
-                                                fontSize = 18.sp
-                                            )
-                                            BasicTextField(
-                                                value = countryCode,
-                                                onValueChange = { input ->
-                                                    val digits = input.filter { it.isDigit() }.take(4)
-                                                    countryCode = digits
-                                                    if (selectedCountry?.dialCode != digits) {
-                                                        selectedCountry = findCountryByCode(digits)
-                                                    }
-                                                },
-                                                singleLine = true,
-                                                textStyle = TextStyle(
-                                                    color = Color.White,
-                                                    fontSize = 18.sp
-                                                ),
-                                                cursorBrush = SolidColor(TgBlue),
-                                                keyboardOptions = KeyboardOptions(
-                                                    keyboardType = KeyboardType.Number,
-                                                    imeAction = ImeAction.Next
-                                                ),
-                                                modifier = Modifier
-                                                    .width(54.dp)
-                                                    .onFocusChanged { codeFieldFocused = it.isFocused }
-                                            )
-
-                                            Box(
-                                                modifier = Modifier
-                                                    .width(1.dp)
-                                                    .height(28.dp)
-                                                    .background(TgBorder)
-                                            )
-
-                                            Spacer(modifier = Modifier.width(14.dp))
-
-                                            BasicTextField(
-                                                value = localPhone,
-                                                onValueChange = { input ->
-                                                    localPhone = input.filter { it.isDigit() }.take(15)
-                                                },
-                                                singleLine = true,
-                                                textStyle = TextStyle(
-                                                    color = Color.White,
-                                                    fontSize = 18.sp,
-                                                    letterSpacing = 0.8.sp
-                                                ),
-                                                cursorBrush = SolidColor(TgBlue),
-                                                keyboardOptions = KeyboardOptions(
-                                                    keyboardType = KeyboardType.Phone,
-                                                    imeAction = ImeAction.Done
-                                                ),
-                                                keyboardActions = KeyboardActions(
-                                                    onDone = {
-                                                        if (countryCode.isNotBlank() && localPhone.length >= 6) {
-                                                            submitFormattedPhone()
-                                                        }
-                                                    }
-                                                ),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .focusRequester(phoneFocus)
-                                                    .onFocusChanged { numberFieldFocused = it.isFocused }
-                                            )
-                                        }
-                                    }
-
-                                    is LoginUiState.EnteringCode -> {
-                                        // শিরোনাম = পাঠানো নাম্বার; ট্যাপ করলে নাম্বার বদলানো যায়
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .clickable(enabled = submittedPhone.isNotEmpty()) {
-                                                    code = ""
-                                                    onBackToPhoneInput()
-                                                }
-                                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = submittedPhone.ifEmpty { LoginText.CODE_TITLE_FALLBACK },
-                                                color = Color.White,
-                                                fontSize = 22.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            if (submittedPhone.isNotEmpty()) {
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Icon(
-                                                    imageVector = Icons.Default.Edit,
-                                                    contentDescription = "Change number",
-                                                    tint = TgBlue,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Text(
-                                            text = LoginText.CODE_SUBTITLE,
-                                            color = TgGray,
-                                            fontSize = 16.sp,
-                                            lineHeight = 22.sp,
-                                            textAlign = TextAlign.Center
-                                        )
-
-                                        Spacer(modifier = Modifier.height(32.dp))
-
-                                        // কোড ঘরে ঢুকলেই কিবোর্ড খুলে যায়
-                                        val codeFocusRequester = remember { FocusRequester() }
-                                        LaunchedEffect(Unit) {
-                                            delay(300)
-                                            runCatching { codeFocusRequester.requestFocus() }
-                                        }
-
-                                        // ৫-ডিজিট কোড বক্স
-                                        BasicTextField(
-                                            value = code,
-                                            onValueChange = { input ->
-                                                val filtered = input.filter { it.isDigit() }.take(5)
-                                                code = filtered
-                                                if (filtered.length == 5 && !isProcessing) {
-                                                    onCodeSubmit(filtered)
-                                                }
-                                            },
-                                            keyboardOptions = KeyboardOptions(
-                                                keyboardType = KeyboardType.NumberPassword,
-                                                imeAction = ImeAction.Done
-                                            ),
-                                            keyboardActions = KeyboardActions(
-                                                onDone = { if (code.length == 5) onCodeSubmit(code) }
-                                            ),
-                                            modifier = Modifier.focusRequester(codeFocusRequester),
-                                            decorationBox = {
-                                                Row(
-                                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    modifier = Modifier.fillMaxWidth()
-                                                ) {
-                                                    repeat(5) { index ->
-                                                        val char = code.getOrNull(index)?.toString() ?: ""
-                                                        val isFocused = code.length == index
-                                                        val boxColor = when {
-                                                            authError != null -> TgError
-                                                            isFocused -> TgBlue
-                                                            else -> TgBorder
-                                                        }
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .weight(1f)
-                                                                .height(58.dp)
-                                                                .border(
-                                                                    width = if (isFocused || authError != null) 2.dp else 1.dp,
-                                                                    color = boxColor,
-                                                                    shape = RoundedCornerShape(12.dp)
-                                                                ),
-                                                            contentAlignment = Alignment.Center
-                                                        ) {
-                                                            Text(
-                                                                text = char,
-                                                                color = Color.White,
-                                                                fontSize = 22.sp,
-                                                                fontWeight = FontWeight.Medium
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        )
-
-                                        Spacer(modifier = Modifier.height(18.dp))
-
-                                        if (resendTimer > 0) {
-                                            val mm = resendTimer / 60
-                                            val ss = (resendTimer % 60).toString().padStart(2, '0')
-                                            Text(
-                                                text = "${LoginText.RESEND_IN} $mm:$ss",
-                                                color = TgGray,
-                                                fontSize = 15.sp
-                                            )
-                                        } else {
-                                            TextButton(
-                                                onClick = {
-                                                    onResendCode()
-                                                    resendKey++
-                                                },
-                                                enabled = !isProcessing
+                                            GlassInputBox(
+                                                label = LoginText.PHONE_LABEL,
+                                                focused = codeFieldFocused || numberFieldFocused,
+                                                isError = authError != null
                                             ) {
                                                 Text(
-                                                    text = LoginText.RESEND,
-                                                    color = TgBlue,
-                                                    fontSize = 16.sp
+                                                    text = "+",
+                                                    color = GlassCyan,
+                                                    fontFamily = ModernFont,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 17.sp
+                                                )
+                                                BasicTextField(
+                                                    value = countryCode,
+                                                    onValueChange = { input ->
+                                                        val digits = input.filter { it.isDigit() }.take(4)
+                                                        countryCode = digits
+                                                        if (selectedCountry?.dialCode != digits) {
+                                                            selectedCountry = findCountryByCode(digits)
+                                                        }
+                                                    },
+                                                    singleLine = true,
+                                                    textStyle = TextStyle(
+                                                        color = GlassTextPrimary,
+                                                        fontFamily = ModernFont,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        fontSize = 17.sp
+                                                    ),
+                                                    cursorBrush = SolidColor(GlassCyan),
+                                                    keyboardOptions = KeyboardOptions(
+                                                        keyboardType = KeyboardType.Number,
+                                                        imeAction = ImeAction.Next
+                                                    ),
+                                                    modifier = Modifier
+                                                        .width(50.dp)
+                                                        .onFocusChanged { codeFieldFocused = it.isFocused }
+                                                )
+
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(1.dp)
+                                                        .height(24.dp)
+                                                        .background(GlassBorderIdle)
+                                                )
+
+                                                Spacer(modifier = Modifier.width(14.dp))
+
+                                                BasicTextField(
+                                                    value = localPhone,
+                                                    onValueChange = { input ->
+                                                        localPhone = input.filter { it.isDigit() }.take(15)
+                                                    },
+                                                    singleLine = true,
+                                                    textStyle = TextStyle(
+                                                        color = GlassTextPrimary,
+                                                        fontFamily = ModernFont,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        fontSize = 17.5.sp,
+                                                        letterSpacing = 0.8.sp
+                                                    ),
+                                                    cursorBrush = SolidColor(GlassCyan),
+                                                    keyboardOptions = KeyboardOptions(
+                                                        keyboardType = KeyboardType.Phone,
+                                                        imeAction = ImeAction.Done
+                                                    ),
+                                                    keyboardActions = KeyboardActions(
+                                                        onDone = {
+                                                            if (countryCode.isNotBlank() && localPhone.length >= 6) {
+                                                                submitFormattedPhone()
+                                                            }
+                                                        }
+                                                    ),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .focusRequester(phoneFocus)
+                                                        .onFocusChanged { numberFieldFocused = it.isFocused }
                                                 )
                                             }
                                         }
-                                    }
 
-                                    is LoginUiState.EnteringPassword -> {
-                                        StepHeader(LoginText.PASSWORD_TITLE, LoginText.PASSWORD_SUBTITLE)
+                                        is LoginUiState.EnteringCode -> {
+                                            Surface(
+                                                onClick = {
+                                                    if (submittedPhone.isNotEmpty()) {
+                                                        code = ""
+                                                        onBackToPhoneInput()
+                                                    }
+                                                },
+                                                shape = CircleShape,
+                                                color = GlassFieldSurface,
+                                                border = BorderStroke(1.dp, GlassBorderIdle)
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                                ) {
+                                                    Text(
+                                                        text = submittedPhone.ifEmpty { LoginText.CODE_TITLE_FALLBACK },
+                                                        color = GlassTextPrimary,
+                                                        fontFamily = ModernFont,
+                                                        fontSize = 17.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        letterSpacing = 0.5.sp
+                                                    )
+                                                    if (submittedPhone.isNotEmpty()) {
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Icon(
+                                                            imageVector = Icons.Default.Edit,
+                                                            contentDescription = "Edit phone",
+                                                            tint = GlassCyan,
+                                                            modifier = Modifier.size(16.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        Spacer(modifier = Modifier.height(32.dp))
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            Text(
+                                                text = LoginText.CODE_SUBTITLE,
+                                                color = GlassTextSecondary,
+                                                fontFamily = ModernFont,
+                                                fontSize = 13.5.sp,
+                                                textAlign = TextAlign.Center
+                                            )
 
-                                        val passwordFocus = remember { FocusRequester() }
-                                        LaunchedEffect(Unit) {
-                                            delay(300)
-                                            runCatching { passwordFocus.requestFocus() }
-                                        }
+                                            Spacer(modifier = Modifier.height(26.dp))
 
-                                        NotchedBox(
-                                            label = LoginText.PASSWORD_LABEL,
-                                            focused = passwordFocused,
-                                            isError = authError != null
-                                        ) {
+                                            val codeFocusRequester = remember { FocusRequester() }
+                                            LaunchedEffect(Unit) {
+                                                delay(250)
+                                                runCatching { codeFocusRequester.requestFocus() }
+                                            }
+
                                             BasicTextField(
-                                                value = password,
-                                                onValueChange = { password = it },
-                                                singleLine = true,
-                                                textStyle = TextStyle(
-                                                    color = Color.White,
-                                                    fontSize = 18.sp
-                                                ),
-                                                cursorBrush = SolidColor(TgBlue),
-                                                visualTransformation = if (isPasswordVisible) {
-                                                    VisualTransformation.None
-                                                } else {
-                                                    PasswordVisualTransformation()
+                                                value = code,
+                                                onValueChange = { input ->
+                                                    val filtered = input.filter { it.isDigit() }.take(5)
+                                                    code = filtered
+                                                    if (filtered.length == 5 && !isProcessing) {
+                                                        onCodeSubmit(filtered)
+                                                    }
                                                 },
                                                 keyboardOptions = KeyboardOptions(
-                                                    keyboardType = KeyboardType.Password,
+                                                    keyboardType = KeyboardType.NumberPassword,
                                                     imeAction = ImeAction.Done
                                                 ),
                                                 keyboardActions = KeyboardActions(
-                                                    onDone = { if (password.isNotBlank()) onPasswordSubmit(password) }
+                                                    onDone = { if (code.length == 5) onCodeSubmit(code) }
                                                 ),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .focusRequester(passwordFocus)
-                                                    .onFocusChanged { passwordFocused = it.isFocused }
+                                                modifier = Modifier.focusRequester(codeFocusRequester),
+                                                decorationBox = {
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        repeat(5) { index ->
+                                                            val char = code.getOrNull(index)?.toString() ?: ""
+                                                            val isFocused = code.length == index
+                                                            val boxBorder = when {
+                                                                authError != null -> GlassError
+                                                                isFocused -> GlassCyan
+                                                                char.isNotEmpty() -> GlassCyan.copy(alpha = 0.5f)
+                                                                else -> GlassBorderIdle
+                                                            }
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .weight(1f)
+                                                                    .height(56.dp)
+                                                                    .clip(RoundedCornerShape(16.dp))
+                                                                    .background(GlassFieldSurface)
+                                                                    .border(
+                                                                        width = if (isFocused || authError != null) 1.8.dp else 1.dp,
+                                                                        color = boxBorder,
+                                                                        shape = RoundedCornerShape(16.dp)
+                                                                    ),
+                                                                contentAlignment = Alignment.Center
+                                                            ) {
+                                                                Text(
+                                                                    text = char,
+                                                                    color = GlassTextPrimary,
+                                                                    fontFamily = ModernFont,
+                                                                    fontSize = 21.sp,
+                                                                    fontWeight = FontWeight.Bold
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             )
-                                            IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
-                                                Icon(
-                                                    imageVector = if (isPasswordVisible) {
-                                                        Icons.Default.VisibilityOff
-                                                    } else {
-                                                        Icons.Default.Visibility
-                                                    },
-                                                    contentDescription = null,
-                                                    tint = TgGray
+
+                                            Spacer(modifier = Modifier.height(18.dp))
+
+                                            if (resendTimer > 0) {
+                                                val mm = resendTimer / 60
+                                                val ss = (resendTimer % 60).toString().padStart(2, '0')
+                                                Text(
+                                                    text = "${LoginText.RESEND_IN} $mm:$ss",
+                                                    color = GlassTextSecondary,
+                                                    fontFamily = ModernFont,
+                                                    fontSize = 13.5.sp,
+                                                    fontWeight = FontWeight.Medium
                                                 )
+                                            } else {
+                                                TextButton(
+                                                    onClick = {
+                                                        onResendCode()
+                                                        resendKey++
+                                                    },
+                                                    enabled = !isProcessing
+                                                ) {
+                                                    Text(
+                                                        text = LoginText.RESEND,
+                                                        color = GlassCyan,
+                                                        fontFamily = ModernFont,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        fontSize = 14.5.sp
+                                                    )
+                                                }
                                             }
                                         }
-                                    }
 
-                                    else -> {
-                                        Spacer(modifier = Modifier.height(24.dp))
-                                        CircularProgressIndicator(color = TgBlue)
-                                        Spacer(modifier = Modifier.height(24.dp))
+                                        is LoginUiState.EnteringPassword -> {
+                                            StepHeader(LoginText.PASSWORD_TITLE, LoginText.PASSWORD_SUBTITLE)
+
+                                            Spacer(modifier = Modifier.height(26.dp))
+
+                                            val passwordFocus = remember { FocusRequester() }
+                                            LaunchedEffect(Unit) {
+                                                delay(250)
+                                                runCatching { passwordFocus.requestFocus() }
+                                            }
+
+                                            GlassInputBox(
+                                                label = LoginText.PASSWORD_LABEL,
+                                                focused = passwordFocused,
+                                                isError = authError != null
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Lock,
+                                                    contentDescription = null,
+                                                    tint = if (passwordFocused) GlassCyan else GlassTextSecondary,
+                                                    modifier = Modifier.size(19.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(12.dp))
+                                                BasicTextField(
+                                                    value = password,
+                                                    onValueChange = { password = it },
+                                                    singleLine = true,
+                                                    textStyle = TextStyle(
+                                                        color = GlassTextPrimary,
+                                                        fontFamily = ModernFont,
+                                                        fontWeight = FontWeight.Medium,
+                                                        fontSize = 17.sp
+                                                    ),
+                                                    cursorBrush = SolidColor(GlassCyan),
+                                                    visualTransformation = if (isPasswordVisible) {
+                                                        VisualTransformation.None
+                                                    } else {
+                                                        PasswordVisualTransformation()
+                                                    },
+                                                    keyboardOptions = KeyboardOptions(
+                                                        keyboardType = KeyboardType.Password,
+                                                        imeAction = ImeAction.Done
+                                                    ),
+                                                    keyboardActions = KeyboardActions(
+                                                        onDone = { if (password.isNotBlank()) onPasswordSubmit(password) }
+                                                    ),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .focusRequester(passwordFocus)
+                                                        .onFocusChanged { passwordFocused = it.isFocused }
+                                                )
+                                                IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                                                    Icon(
+                                                        imageVector = if (isPasswordVisible) {
+                                                            Icons.Default.VisibilityOff
+                                                        } else {
+                                                            Icons.Default.Visibility
+                                                        },
+                                                        contentDescription = null,
+                                                        tint = GlassTextSecondary
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        else -> {
+                                            Spacer(modifier = Modifier.height(24.dp))
+                                            CircularProgressIndicator(color = GlassCyan)
+                                            Spacer(modifier = Modifier.height(24.dp))
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        // এরর বার্তা
-                        AnimatedVisibility(
-                            visible = authError != null,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically()
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 14.dp)
+                            AnimatedVisibility(
+                                visible = authError != null,
+                                enter = fadeIn() + expandVertically(),
+                                exit = fadeOut() + shrinkVertically()
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.ErrorOutline,
-                                    contentDescription = null,
-                                    tint = TgError,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = authError ?: "",
-                                    color = TgError,
-                                    fontSize = 13.sp,
-                                    lineHeight = 18.sp
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 14.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ErrorOutline,
+                                        contentDescription = null,
+                                        tint = GlassError,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = authError ?: "",
+                                        color = GlassError,
+                                        fontFamily = ModernFont,
+                                        fontSize = 13.sp
+                                    )
+                                }
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(36.dp))
-
-                        // ফুটার + কপিরাইট
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = null,
-                                tint = Color(0xFF5E6B7A),
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = LoginText.SECURITY,
-                                color = Color(0xFF5E6B7A),
-                                fontSize = 12.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = LoginText.COPYRIGHT,
-                            color = Color(0xFF4E5A68),
-                            fontSize = 11.5.sp,
-                            textAlign = TextAlign.Center
-                        )
                     }
 
-                    // নিচের গোল বাটনের জন্য জায়গা
-                    Spacer(modifier = Modifier.height(96.dp))
+                    Spacer(modifier = Modifier.height(92.dp))
                 }
             }
 
-            // টেলিগ্রামের মতো ব্যাক অ্যারো (উপরে বামে)
+            // গ্লাসি ব্যাক বাটন (উপরে বামে)
             if (canGoBackToPhone) {
-                IconButton(
+                Surface(
                     onClick = {
                         code = ""
                         password = ""
                         onBackToPhoneInput()
                     },
+                    shape = CircleShape,
+                    color = GlassCardSurface,
+                    border = BorderStroke(1.dp, GlassBorderIdle),
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .statusBarsPadding()
-                        .padding(8.dp)
+                        .padding(16.dp)
+                        .size(42.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = Color.White
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
 
-            // নিচে: "Forgot password?" (বামে) + গোল অ্যাকশন বাটন (ডানে) — কিবোর্ডের ঠিক উপরে
+            // নিচে ডানে গ্লাসি অ্যাকশন বাটন (Forgot password? সম্পূর্ণ সরানো হয়েছে)
             if (fabVisible) {
-                Row(
+                Box(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
+                        .align(Alignment.BottomEnd)
                         .navigationBarsPadding()
                         .imePadding()
-                        .padding(horizontal = 20.dp, vertical = 20.dp)
-                        .graphicsLayer {
-                            alpha = contentAlpha
-                            val pop = 0.6f + 0.4f * contentAlpha
-                            scaleX = pop
-                            scaleY = pop
-                        },
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 24.dp, vertical = 20.dp)
                 ) {
-                    if (uiState is LoginUiState.EnteringPassword) {
-                        TextButton(onClick = { showForgotDialog = true }) {
-                            Text(
-                                text = LoginText.FORGOT,
-                                color = TgBlue,
-                                fontSize = 17.sp
-                            )
-                        }
-                    } else {
-                        Spacer(modifier = Modifier.width(1.dp))
-                    }
-
-                    TgFab(
+                    GlassActionFab(
                         enabled = fabEnabled,
                         isProcessing = isProcessing,
                         onClick = onFabClick
