@@ -129,6 +129,7 @@ fun SettingsScreen(
     val downloadUri by viewModel.downloadUri.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
     val availableRelease by viewModel.availableRelease.collectAsState()
+    val lastCheckStatus by viewModel.lastCheckStatus.collectAsState()
     val isThumbnailAutoDownloadEnabled by viewModel.isThumbnailAutoDownloadEnabled.collectAsState()
 
     val context = LocalContext.current
@@ -161,6 +162,7 @@ fun SettingsScreen(
         versionName = viewModel.versionName,
         updateState = updateState,
         availableRelease = availableRelease,
+        lastCheckStatus = lastCheckStatus,
         isThumbnailAutoDownloadEnabled = isThumbnailAutoDownloadEnabled,
         isBackupWifiOnly = isBackupWifiOnly,
         deleteAfterBackup = deleteAfterBackup,
@@ -213,6 +215,7 @@ fun SettingsContent(
     versionName: String,
     updateState: UpdateState,
     availableRelease: GitHubRelease?,
+    lastCheckStatus: String?,
     isThumbnailAutoDownloadEnabled: Boolean,
     isBackupWifiOnly: Boolean,
     deleteAfterBackup: Boolean,
@@ -649,6 +652,14 @@ fun SettingsContent(
                     badgeText = updateBadge,
                     onClick = onCheckForUpdates
                 )
+                if (lastCheckStatus != null) {
+                    Text(
+                        text = lastCheckStatus,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 68.dp, bottom = 6.dp)
+                    )
+                }
                 ModernActionBarItem(
                     icon = Icons.AutoMirrored.Filled.Logout, title = "Log Out",
                     accentColor = MaterialTheme.colorScheme.error,

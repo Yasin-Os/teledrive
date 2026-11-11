@@ -37,6 +37,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -78,8 +80,12 @@ class UpdateRepository @Inject constructor(
     private val _isDownloadMinimized = MutableStateFlow(false)
     val isDownloadMinimized = _isDownloadMinimized.asStateFlow()
 
+    private val prefs by lazy { context.getSharedPreferences("mycloud_update_prefs", Context.MODE_PRIVATE) }
     private var dismissedTag: String? = null
     private var lastAutoCheckTime: Long = 0L
+
+    private val _lastCheckStatus = MutableStateFlow<String?>(null)
+    val lastCheckStatus = _lastCheckStatus.asStateFlow()
     private var activeDownloadJob: Job? = null
     private val isChecking = AtomicBoolean(false)
     private var pendingPermissionApkFile: File? = null
@@ -90,6 +96,17 @@ class UpdateRepository @Inject constructor(
 
     init {
         createUpdateNotificationChannel()
+        dismissedTag = prefs.getString("dismissed_tag", null)
+    }
+
+    private fun saveDismissedTag(tag: String?) {
+        dismissedTag = tag
+        prefs.edit().putString("dismissed_tag", tag).apply()
+    }
+
+    private fun recordCheckStatus(result: String) {
+        val time = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()).format(Date())
+        _lastCheckStatus.value = "Checked $time \u2022 $result"
     }
 
     fun setDownloadMinimized(minimized: Boolean) {
@@ -100,9 +117,9 @@ class UpdateRepository @Inject constructor(
         _isDownloadMinimized.value = true
         val currentState = _updateState.value
         if (currentState is UpdateState.NewVersionAvailable) {
-            dismissedTag = currentState.release.tag_name.removePrefix("v").trim()
+            saveDismissedTag(currentState.release.tag_name.removePrefix("v").trim())
         } else if (currentState is UpdateState.ReadyToInstall) {
-            dismissedTag = currentState.release.tag_name.removePrefix("v").trim()
+            saveDismissedTag(currentState.release.tag_name.removePrefix("v").trim())
         }
     }
 
@@ -161,6 +178,7 @@ class UpdateRepository @Inject constructor(
                             _isDownloadMinimized.value = false
                         }
                         _updateState.value = UpdateState.ReadyToInstall(cachedApk, latestRelease)
+                        recordCheckStatus("Update $latestVersion ready to install")
                         if (manual) {
                             withContext(Dispatchers.Main) { installApk(cachedApk) }
                         }
@@ -173,9 +191,11 @@ class UpdateRepository @Inject constructor(
 
                     _isDownloadMinimized.value = false
                     _updateState.value = UpdateState.NewVersionAvailable(latestRelease)
+                    recordCheckStatus("Update $latestVersion available")
                 } else {
                     _availableRelease.value = null
                     cleanupOldUpdateApks()
+                    recordCheckStatus("Up to date")
                     if (manual) {
                         _updateState.value = UpdateState.UpToDate
                     } else if (_updateState.value !is UpdateState.Downloading) {
@@ -183,12 +203,14 @@ class UpdateRepository @Inject constructor(
                     }
                 }
             } else {
+                recordCheckStatus("Check failed")
                 if (manual) {
                     _updateState.value = UpdateState.Error("Could not reach update server")
                 }
             }
         } catch (e: Exception) {
             Log.e("UpdateRepository", "Update check failed", e)
+            recordCheckStatus("Check failed")
             if (manual) {
                 _updateState.value = UpdateState.Error(e.message ?: "Unknown error")
             }
@@ -215,9 +237,11 @@ class UpdateRepository @Inject constructor(
             val vA = a.tag_name.removePrefix("v").trim()
             val vB = b.tag_name.removePrefix("v").trim()
             when {
-                isNewerVersion(vA, vB) -> -1
-                isNewerVersion(vB, vA) -> 1
+                isNewerVersion(vA, vB) -> 1
+                isNewerVersion(vB, vA) -> -1
+                a.prerelease != b.prerelease -> if (a.prerelease) -1 else 1
                 a.assets.any { it.size > 0 } && b.assets.none { it.size > 0 } -> 1
+                b.assets.any { it.size > 0 } && a.assets.none { it.size > 0 } -> -1
                 else -> 0
             }
         }
@@ -392,10 +416,13 @@ class UpdateRepository @Inject constructor(
         notes: String = "Update $tag"
     ): GitHubRelease {
         val ver = tag.removePrefix("v").trim()
+        // Current releases ship the signed release APK; the debug names are
+        // kept only as fallbacks for older releases that shipped debug builds.
         val candidateNames = listOf(
+            "MyCloud-v$ver-universal-release.apk",
+            "MyCloud-v$ver-universal-debug.apk",
             "awd-teledrive-v$ver-universal-debug.apk",
             "app-universal-debug.apk",
-            "MyCloud-v$ver-universal-debug.apk",
             "app-debug.apk"
         )
         val assets = candidateNames.map { fileName ->
@@ -424,21 +451,52 @@ class UpdateRepository @Inject constructor(
     }
 
     /**
-     * প্যাকেজ নেম ভিন্ন হলেও (যেমন com.awd.teledrive -> com.yasin.mycloud) ফাইল যেন ডিলিট না হয়,
-     * তাই শুধুমাত্র APK ফাইলটি বৈধ কি না তা চেক করা হচ্ছে।
+     * APK যাচাই: ফাইলটি পার্স হয় কি না, তার প্যাকেজ এই অ্যাপের প্যাকেজের সাথে
+     * মেলে কি না, এবং সাইনিং সার্টিফিকেট ইনস্টল করা অ্যাপের সাথে মেলে কি না —
+     * তিনটিই মিললে তবেই বৈধ। ভিন্ন প্যাকেজ বা ভিন্ন সিগনেচারের APK কখনো
+     * ডাউনলোড-করা ফাইল হিসেবে গ্রহণ বা ইনস্টল করা হবে না।
      */
     private fun isValidApkFile(file: File): Boolean {
         if (!file.exists() || file.length() < 2 * 1024 * 1024L) return false
         return try {
-            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.packageManager.getPackageArchiveInfo(file.absolutePath, PackageManager.PackageInfoFlags.of(0))
+            val pm = context.packageManager
+            val sigFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
             } else {
                 @Suppress("DEPRECATION")
-                context.packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+                PackageManager.GET_SIGNATURES
             }
-            archiveInfo != null
+            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageArchiveInfo(file.absolutePath, PackageManager.PackageInfoFlags.of(sigFlags.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageArchiveInfo(file.absolutePath, sigFlags)
+            } ?: return false
+            if (archiveInfo.packageName != context.packageName) return false
+            val installedInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(sigFlags.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, sigFlags)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val archiveSigners = archiveInfo.signingInfo?.apkContentsSigners
+                val installedSigners = installedInfo.signingInfo?.apkContentsSigners
+                if (archiveSigners != null && installedSigners != null) {
+                    archiveSigners.any { archiveSig -> installedSigners.any { it == archiveSig } }
+                } else true
+            } else {
+                @Suppress("DEPRECATION")
+                val archiveSigs = archiveInfo.signatures
+                @Suppress("DEPRECATION")
+                val installedSigs = installedInfo.signatures
+                if (archiveSigs != null && installedSigs != null) {
+                    archiveSigs.any { archiveSig -> installedSigs.any { it == archiveSig } }
+                } else true
+            }
         } catch (e: Exception) {
-            file.length() > 10 * 1024 * 1024L
+            Log.e("UpdateRepository", "APK validation failed", e)
+            false
         }
     }
 
@@ -652,6 +710,8 @@ class UpdateRepository @Inject constructor(
             }
         }
 
+        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-release.apk")
+        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-debug.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/awd-teledrive-v$ver-universal-debug.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-universal-debug.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-debug.apk")
@@ -837,7 +897,7 @@ class UpdateRepository @Inject constructor(
     fun resetState() {
         val currentState = _updateState.value
         if (currentState is UpdateState.NewVersionAvailable) {
-            dismissedTag = currentState.release.tag_name.removePrefix("v").trim()
+            saveDismissedTag(currentState.release.tag_name.removePrefix("v").trim())
         }
         if (currentState !is UpdateState.Downloading && currentState !is UpdateState.ReadyToInstall) {
             _updateState.value = UpdateState.Idle

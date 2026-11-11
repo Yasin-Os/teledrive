@@ -78,6 +78,9 @@ class SettingsViewModel @Inject constructor(
     val availableRelease = updateRepository.availableRelease
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val lastCheckStatus = updateRepository.lastCheckStatus
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     val versionName: String = VersionUtils.getVersionName(context).removePrefix("v").trim()
     val versionCode = VersionUtils.getVersionCode(context)
 
