@@ -87,9 +87,24 @@ class LoginViewModel @Inject constructor(
         }
     }
 
+    // Credentials the user previously saved (if any), used to prefill the
+    // login form. Empty when nothing was saved yet.
+    val savedApiId: String
+        get() = secureSettings.getInt("api_id", 0).takeIf { it != 0 }?.toString() ?: ""
+    val savedApiHash: String
+        get() = secureSettings.getString("api_hash", "") ?: ""
+
     fun onLoginSubmit(apiIdStr: String, apiHash: String, phoneNumber: String) {
-        val apiId = apiIdStr.toIntOrNull() ?: 94575
-        if (apiHash.isBlank() || phoneNumber.isBlank()) {
+        val apiId = apiIdStr.toIntOrNull()
+        if (apiId == null || apiId <= 0) {
+            _authError.value = "Please enter a valid Telegram API ID (from my.telegram.org)"
+            return
+        }
+        if (apiHash.isBlank()) {
+            _authError.value = "Please enter your Telegram API hash (from my.telegram.org)"
+            return
+        }
+        if (phoneNumber.isBlank()) {
             _authError.value = "Please enter a valid phone number"
             return
         }

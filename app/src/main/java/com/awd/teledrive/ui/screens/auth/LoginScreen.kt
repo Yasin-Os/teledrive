@@ -136,6 +136,9 @@ private object LoginText {
     const val PHONE_TITLE = "Your phone number"
     const val PHONE_SUBTITLE = "Confirm country code and enter your number"
     const val PHONE_LABEL = "Phone number"
+    const val API_ID_LABEL = "Telegram API ID"
+    const val API_HASH_LABEL = "Telegram API hash"
+    const val API_HINT = "Use your own credentials from my.telegram.org"
     const val COUNTRY_HINT = "Select Country"
     const val COUNTRY_WRONG = "Invalid country code"
 
@@ -704,6 +707,8 @@ fun LoginScreen(
         authError = authError,
         isProcessing = isProcessing,
         submittedPhone = submittedPhone,
+        initialApiId = viewModel.savedApiId,
+        initialApiHash = viewModel.savedApiHash,
         onLoginSubmit = viewModel::onLoginSubmit,
         onCodeSubmit = viewModel::onCodeSubmit,
         onPasswordSubmit = viewModel::onPasswordSubmit,
@@ -719,14 +724,22 @@ fun LoginContent(
     authError: String?,
     isProcessing: Boolean,
     submittedPhone: String = "",
+    initialApiId: String = "",
+    initialApiHash: String = "",
     onLoginSubmit: (String, String, String) -> Unit,
     onCodeSubmit: (String) -> Unit,
     onPasswordSubmit: (String) -> Unit,
     onResendCode: () -> Unit = {},
     onBackToPhoneInput: () -> Unit = {}
 ) {
-    val defaultApiId = "94575"
-    val defaultApiHash = "a3406de8d171bb422bb6ddf3bbd800e2"
+    // The user must enter their own Telegram API credentials (from
+    // my.telegram.org). No shared/default credential is used anywhere:
+    // previously the login silently submitted a hardcoded API ID/hash for
+    // every user. Saved credentials (if any) are prefilled.
+    var apiId by remember(initialApiId) { mutableStateOf(initialApiId) }
+    var apiHash by remember(initialApiHash) { mutableStateOf(initialApiHash) }
+    var apiIdFocused by remember { mutableStateOf(false) }
+    var apiHashFocused by remember { mutableStateOf(false) }
 
     var selectedCountry by remember { mutableStateOf<CountryOption?>(findCountryByCode("880")) }
     var countryCode by remember { mutableStateOf("880") }
@@ -796,7 +809,7 @@ fun LoginContent(
             if (cleanCode == "880" && it.startsWith("0")) it.removePrefix("0") else it
         }
         val fullPhone = "+$cleanCode$cleanLocal"
-        onLoginSubmit(defaultApiId, defaultApiHash, fullPhone)
+        onLoginSubmit(apiId.trim(), apiHash.trim(), fullPhone)
     }
 
     val isAbortedError = authError?.contains("Request aborted", ignoreCase = true) == true ||
@@ -825,7 +838,8 @@ fun LoginContent(
 
     val displayError = if (isAbortedError && abortRetryCount < 3) null else authError
 
-    val canSubmitPhone = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6
+    val canSubmitPhone = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6 &&
+        apiId.trim().isNotBlank() && apiHash.trim().isNotBlank()
     val canVerify = code.length == 5 && !isProcessing
     val canUnlock = password.isNotBlank() && !isProcessing
 
@@ -1074,6 +1088,84 @@ fun LoginContent(
                                                     .onFocusChanged { numberFieldFocused = it.isFocused }
                                             )
                                         }
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        NotchedGlassBox(
+                                            label = LoginText.API_ID_LABEL,
+                                            focused = apiIdFocused,
+                                            isError = displayError != null
+                                        ) {
+                                            BasicTextField(
+                                                value = apiId,
+                                                onValueChange = { input ->
+                                                    apiId = input.filter { it.isDigit() }.take(12)
+                                                },
+                                                singleLine = true,
+                                                textStyle = TextStyle(
+                                                    color = Color.White,
+                                                    fontSize = 17.sp,
+                                                    fontFamily = ModernFont,
+                                                    fontWeight = FontWeight.Medium
+                                                ),
+                                                cursorBrush = SolidColor(GlassAccent),
+                                                keyboardOptions = KeyboardOptions(
+                                                    keyboardType = KeyboardType.Number,
+                                                    imeAction = ImeAction.Next
+                                                ),
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .onFocusChanged { apiIdFocused = it.isFocused }
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        NotchedGlassBox(
+                                            label = LoginText.API_HASH_LABEL,
+                                            focused = apiHashFocused,
+                                            isError = displayError != null
+                                        ) {
+                                            BasicTextField(
+                                                value = apiHash,
+                                                onValueChange = { input ->
+                                                    apiHash = input.filterNot { it.isWhitespace() }.take(64)
+                                                },
+                                                singleLine = true,
+                                                textStyle = TextStyle(
+                                                    color = Color.White,
+                                                    fontSize = 17.sp,
+                                                    fontFamily = ModernFont,
+                                                    fontWeight = FontWeight.Medium
+                                                ),
+                                                cursorBrush = SolidColor(GlassAccent),
+                                                keyboardOptions = KeyboardOptions(
+                                                    keyboardType = KeyboardType.Text,
+                                                    imeAction = ImeAction.Done
+                                                ),
+                                                keyboardActions = KeyboardActions(
+                                                    onDone = {
+                                                        if (canSubmitPhone) {
+                                                            abortRetryCount = 0
+                                                            submitFormattedPhone()
+                                                        }
+                                                    }
+                                                ),
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .onFocusChanged { apiHashFocused = it.isFocused }
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        Text(
+                                            text = LoginText.API_HINT,
+                                            color = GlassTextSub,
+                                            fontSize = 12.5.sp,
+                                            fontFamily = ModernFont,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
                                     }
 
                                     is LoginUiState.EnteringCode -> {
