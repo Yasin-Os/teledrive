@@ -23,7 +23,19 @@ class MasterPasswordService @Inject constructor(
     
     private val saltKey = "master_password_salt"
     private val hashKey = "master_password_hash"
-    private val rawKey = "master_password_raw"
+
+    // Legacy key from older builds that stored the master password in plaintext.
+    // It is deleted on startup (see init) and never written again.
+    private val legacyRawKey = "master_password_raw"
+
+    init {
+        // One-time migration: erase any plaintext master password left behind
+        // by older builds. Only the Argon2 hash is kept. Nothing in the app
+        // reads the plaintext value (getStoredPassword had no callers), so
+        // deleting it cannot break unlocking: the user still verifies with
+        // verifyPassword(), which only needs salt + hash.
+        secureSettings.removeString(legacyRawKey)
+    }
 
     fun isPasswordSet(): Boolean {
         return secureSettings.getString(hashKey) != null
@@ -31,14 +43,15 @@ class MasterPasswordService @Inject constructor(
 
     fun setPassword(password: String) {
         val salt = generateSalt()
-        val hash = hashPassword(password, salt) ?: return
+        val hash = hashPassword(password, salt)
+        if (hash == null) {
+            Log.e("MasterPasswordService", "setPassword failed: could not hash password")
+            return
+        }
         secureSettings.saveString(saltKey, bytesToHex(salt))
         secureSettings.saveString(hashKey, hash)
-        secureSettings.saveString(rawKey, password)
-    }
-
-    fun getStoredPassword(): String? {
-        return secureSettings.getString(rawKey)
+        // Never store the password itself: only salt + Argon2 hash are kept.
+        secureSettings.removeString(legacyRawKey)
     }
 
     fun verifyPassword(password: String): Boolean {
