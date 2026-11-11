@@ -27,18 +27,8 @@ jobs:
 
       - name: Setup Persistent Debug Keystore
         run: |
-          mkdir -p ~/.android /home/runner/.android
-          if [ ! -f fixed-debug.keystore ]; then
-            keytool -genkeypair -v -keystore fixed-debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git pull --rebase origin main
-            git add fixed-debug.keystore
-            git commit -m "chore: add persistent debug keystore [skip ci]"
-            git push origin HEAD:main
-          fi
+          mkdir -p ~/.android
           cp -f fixed-debug.keystore ~/.android/debug.keystore
-          cp -f fixed-debug.keystore /home/runner/.android/debug.keystore
           cp -f fixed-debug.keystore app/fixed-debug.keystore
 
       - name: Auto Increment Version Code and Name
