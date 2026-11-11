@@ -12,7 +12,11 @@ android {
     compileSdk = 37
 
     signingConfigs {
-        // চিরস্থায়ী সিগনেচারের জন্য fixed-debug.keystore সরাসরি বাইন্ড করা হলো
+        // Debug builds intentionally use the committed fixed-debug.keystore
+        // so debug APKs keep a stable signature across machines and CI runs
+        // (existing debug installs keep updating in place). This is a DEBUG
+        // keystore with the public default password: it must never be used
+        // for release signing (see the release signing config below).
         getByName("debug") {
             val rootKeystore = rootProject.file("fixed-debug.keystore")
             val appKeystore = file("fixed-debug.keystore")
@@ -33,18 +37,26 @@ android {
         }
 
         create("release") {
+            // Release signing ONLY from a real release keystore supplied via
+            // environment (CI secrets: KEYSTORE_PATH, KEY_STORE_PASSWORD,
+            // ALIAS, KEY_PASSWORD). It must never fall back to the debug
+            // keystore: the debug keystore is committed to this repo with the
+            // public default password, so anything signed with it can be
+            // reproduced by anyone. If no release keystore is configured the
+            // release build stays unsigned instead of silently shipping a
+            // debug-signed APK as a "release".
             val keystorePath = System.getenv("KEYSTORE_PATH")
-            val rootKeystore = rootProject.file("fixed-debug.keystore")
             if (keystorePath != null && file(keystorePath).exists()) {
                 storeFile = file(keystorePath)
                 storePassword = System.getenv("KEY_STORE_PASSWORD")
                 keyAlias = System.getenv("ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
-            } else if (rootKeystore.exists()) {
-                storeFile = rootKeystore
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
+            } else {
+                logger.warn(
+                    "No release keystore configured (KEYSTORE_PATH). " +
+                        "The release APK will be unsigned; configure a dedicated " +
+                        "release keystore before publishing a release."
+                )
             }
         }
     }
