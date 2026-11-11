@@ -41,6 +41,10 @@ class SecureSettings @Inject constructor(
         sharedPreferences.edit().putString(key, value).apply()
     }
 
+    fun removeString(key: String) {
+        sharedPreferences.edit().remove(key).apply()
+    }
+
     fun getString(key: String, defaultValue: String? = null): String? {
         return sharedPreferences.getString(key, defaultValue)
     }
