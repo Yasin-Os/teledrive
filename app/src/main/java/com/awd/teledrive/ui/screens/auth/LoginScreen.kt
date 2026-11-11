@@ -1,18 +1,13 @@
 package com.awd.teledrive.ui.screens.auth
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -81,7 +76,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -90,11 +84,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -139,6 +131,11 @@ private object LoginText {
     const val API_ID_LABEL = "Telegram API ID"
     const val API_HASH_LABEL = "Telegram API hash"
     const val API_HINT = "Use your own credentials from my.telegram.org"
+    const val API_GUIDE_LINK = "Don't have API credentials? Get them in 2 minutes"
+    const val API_GUIDE_TITLE = "Get your Telegram API credentials"
+    const val API_GUIDE_NOTE = "Your credentials stay on your device and are never shared with anyone."
+    const val API_GUIDE_OPEN = "Open my.telegram.org"
+    const val API_GUIDE_CLOSE = "Close"
     const val COUNTRY_HINT = "Select Country"
     const val COUNTRY_WRONG = "Invalid country code"
 
@@ -223,39 +220,20 @@ private fun sectionKey(name: String): Char {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  লোগো (ভেক্টর) + ড্রয়িং এনিমেশন (১২০ FPS অপ্টিমাইজড)
+//  লোগো (ভেক্টর) — স্ট্যাটিক, কোনো ড্রয়িং এনিমেশন নেই
 // ──────────────────────────────────────────────────────────────
-private class CachedTracePath(pathString: String) {
-    val path: Path = PathParser().parsePathString(pathString).toPath()
-    val measure: PathMeasure = PathMeasure().apply { setPath(path, false) }
-    val length: Float = measure.length
-    val segment: Path = Path()
-
-    fun draw(scope: DrawScope, progress: Float, brush: Brush, strokeWidth: Float, alpha: Float = 1f) {
-        if (progress <= 0f || alpha <= 0f) return
-        segment.rewind()
-        measure.getSegment(0f, length * progress.coerceAtMost(1f), segment, true)
-        scope.drawPath(
-            path = segment,
-            brush = brush,
-            alpha = alpha,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-    }
-}
-
 private class BrandMarkVector {
-    val lobeUR = CachedTracePath("M54,39 C64,39 73,45 75,55 L50,58 Z")
-    val aqua = CachedTracePath("M48,75.5 L77.5,75.5 C84.8,75.5 90.5,69.8 90.5,62.5 C90.5,55.2 84.5,49.5 77.0,49.5 C70.5,49.5 65.0,53.8 63.2,59.8 L48,75.5 Z")
+    val lobeUR = PathParser().parsePathString("M54,39 C64,39 73,45 75,55 L50,58 Z").toPath()
+    val aqua = PathParser().parsePathString("M48,75.5 L77.5,75.5 C84.8,75.5 90.5,69.8 90.5,62.5 C90.5,55.2 84.5,49.5 77.0,49.5 C70.5,49.5 65.0,53.8 63.2,59.8 L48,75.5 Z").toPath()
     val gloss = PathParser().parsePathString("M68,54 C74,50 83,52 87,58 C82,54 74,53 68,54 Z").toPath()
-    val left = CachedTracePath("M34,43.5 C23.2,43.5 14.5,52.0 14.5,62.5 C14.5,71.5 21.5,78.5 31.0,78.5 L48,62 Z")
-    val sphere = CachedTracePath("M46.5,27.0 C35.5,27.0 26.8,35.8 26.8,46.8 C26.8,57.8 35.5,66.5 46.5,66.5 C57.5,66.5 66.2,57.8 66.2,46.8 C66.2,35.8 57.5,27.0 46.5,27.0 Z")
-    val ribbon = CachedTracePath("M14.5,60.5 C14.8,74.8 26.5,81.5 41.5,78.5 C52.5,76.2 63.5,68.5 72.5,58.5 C76.8,53.5 76.5,45.5 71.2,41.5 C66.0,37.8 58.2,39.2 53.0,44.2 C43.5,53.5 34.5,62.5 25.5,65.2 C19.5,67.0 15.2,64.5 14.5,60.5 Z")
-    val arrow1 = CachedTracePath("M16.0,63.0 C20.5,72.5 31.5,72.5 45.5,58.5 L42.5,55.5 L53.5,51.5 L51.0,62.5 L48.0,59.5 C32.5,75.0 19.5,75.5 16.0,63.0 Z")
-    val arrow2 = CachedTracePath("M24.0,78.0 C36.5,80.5 49.5,71.5 60.0,53.5 L55.5,50.5 L67.5,43.0 L69.5,56.5 L65.0,54.0 C53.5,73.5 38.5,82.0 24.0,78.0 Z")
-    val arc1 = CachedTracePath("M66.4,34.6 A9,9 0 0,1 75.4,39.8")
-    val arc2 = CachedTracePath("M65.8,27.5 A16.2,16.2 0 0,1 81.9,36.8")
-    val arc3 = CachedTracePath("M65.2,20.2 A23.5,23.5 0 0,1 88.5,33.7")
+    val left = PathParser().parsePathString("M34,43.5 C23.2,43.5 14.5,52.0 14.5,62.5 C14.5,71.5 21.5,78.5 31.0,78.5 L48,62 Z").toPath()
+    val sphere = PathParser().parsePathString("M46.5,27.0 C35.5,27.0 26.8,35.8 26.8,46.8 C26.8,57.8 35.5,66.5 46.5,66.5 C57.5,66.5 66.2,57.8 66.2,46.8 C66.2,35.8 57.5,27.0 46.5,27.0 Z").toPath()
+    val ribbon = PathParser().parsePathString("M14.5,60.5 C14.8,74.8 26.5,81.5 41.5,78.5 C52.5,76.2 63.5,68.5 72.5,58.5 C76.8,53.5 76.5,45.5 71.2,41.5 C66.0,37.8 58.2,39.2 53.0,44.2 C43.5,53.5 34.5,62.5 25.5,65.2 C19.5,67.0 15.2,64.5 14.5,60.5 Z").toPath()
+    val arrow1 = PathParser().parsePathString("M16.0,63.0 C20.5,72.5 31.5,72.5 45.5,58.5 L42.5,55.5 L53.5,51.5 L51.0,62.5 L48.0,59.5 C32.5,75.0 19.5,75.5 16.0,63.0 Z").toPath()
+    val arrow2 = PathParser().parsePathString("M24.0,78.0 C36.5,80.5 49.5,71.5 60.0,53.5 L55.5,50.5 L67.5,43.0 L69.5,56.5 L65.0,54.0 C53.5,73.5 38.5,82.0 24.0,78.0 Z").toPath()
+    val arc1 = PathParser().parsePathString("M66.4,34.6 A9,9 0 0,1 75.4,39.8").toPath()
+    val arc2 = PathParser().parsePathString("M65.8,27.5 A16.2,16.2 0 0,1 81.9,36.8").toPath()
+    val arc3 = PathParser().parsePathString("M65.2,20.2 A23.5,23.5 0 0,1 88.5,33.7").toPath()
 
     val bUR = Brush.linearGradient(0f to Color(0xFF2CE0FF), 1f to Color(0xFF0099F0), start = Offset(54f, 39f), end = Offset(75f, 56f))
     val bAqua = Brush.linearGradient(0f to Color(0xFF48F7E8), 0.55f to Color(0xFF00D2DC), 1f to Color(0xFF00A2C2), start = Offset(65f, 49f), end = Offset(88f, 76f))
@@ -266,40 +244,19 @@ private class BrandMarkVector {
     val bArrow2 = Brush.linearGradient(0f to Color(0xFF0038B8), 0.5f to Color(0xFF0078F0), 1f to Color(0xFF00A8FF), start = Offset(24f, 79f), end = Offset(68f, 43f))
     val bArc = Brush.linearGradient(0f to Color(0xFF18B8FF), 1f to Color(0xFF0055D4), start = Offset(65f, 21f), end = Offset(89f, 43f))
 
-    val bTrace = Brush.linearGradient(
-        0f to Color(0xFF2CE0FF),
-        1f to Color.White,
-        start = Offset(14f, 80f),
-        end = Offset(90f, 20f)
-    )
-
-    val traceOrder: List<CachedTracePath> = listOf(left, sphere, lobeUR, aqua, ribbon, arrow1, arrow2)
-    val arcs: List<CachedTracePath> = listOf(arc1, arc2, arc3)
+    val arcs: List<Path> = listOf(arc1, arc2, arc3)
 }
 
 @Composable
-private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 84.dp) {
+private fun BrandMark(modifier: Modifier = Modifier, logoSize: Dp = 84.dp) {
     val shapes = remember { BrandMarkVector() }
-
-    val drawProgress = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        drawProgress.animateTo(1f, tween(2400, easing = LinearEasing))
-    }
-
-    val transition = rememberInfiniteTransition(label = "LogoPulse")
-    val floatOffset by transition.animateFloat(
-        initialValue = -3f,
-        targetValue = 3f,
-        animationSpec = infiniteRepeatable(tween(2400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "FloatY"
-    )
 
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
+        // Soft static glow behind the logo.
         Canvas(modifier = Modifier.size(logoSize * 1.35f)) {
-            val glow = ((drawProgress.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
@@ -308,54 +265,32 @@ private fun FloatingBrandMark(modifier: Modifier = Modifier, logoSize: Dp = 84.d
                         Color.Transparent
                     )
                 ),
-                radius = size.minDimension / 1.8f,
-                alpha = glow
+                radius = size.minDimension / 1.8f
             )
         }
 
-        Canvas(
-            modifier = Modifier
-                .size(logoSize)
-                .graphicsLayer {
-                    translationY = floatOffset
-                    val pop = 0.92f + 0.08f * FastOutSlowInEasing.transform(drawProgress.value)
-                    scaleX = pop
-                    scaleY = pop
-                }
-        ) {
-            val t = drawProgress.value
-            val fillAlpha = ((t - 0.50f) / 0.32f).coerceIn(0f, 1f)
-            val outlineAlpha = 1f - fillAlpha
-
+        // The finished logo, drawn once in full.
+        Canvas(modifier = Modifier.size(logoSize)) {
             val s = size.width / 82f
             translate(
                 left = size.width / 2f - 52f * s,
                 top = size.height / 2f - 50f * s
             ) {
                 scale(scale = s, pivot = Offset.Zero) {
-                    if (outlineAlpha > 0f) {
-                        shapes.traceOrder.forEachIndexed { i, cachedPath ->
-                            val start = i * 0.045f
-                            val p = FastOutSlowInEasing.transform(((t - start) / 0.38f).coerceIn(0f, 1f))
-                            cachedPath.draw(this, p, shapes.bTrace, 1.6f, outlineAlpha)
-                        }
-                    }
-
-                    if (fillAlpha > 0f) {
-                        drawPath(shapes.lobeUR.path, shapes.bUR, alpha = fillAlpha)
-                        drawPath(shapes.aqua.path, shapes.bAqua, alpha = fillAlpha)
-                        drawPath(shapes.gloss, Color.White, alpha = 0.4f * fillAlpha)
-                        drawPath(shapes.left.path, shapes.bLeft, alpha = fillAlpha)
-                        drawPath(shapes.sphere.path, shapes.bSphere, alpha = fillAlpha)
-                        drawPath(shapes.ribbon.path, shapes.bRibbon, alpha = fillAlpha)
-                        drawPath(shapes.arrow1.path, shapes.bArrow1, alpha = fillAlpha)
-                        drawPath(shapes.arrow2.path, shapes.bArrow2, alpha = fillAlpha)
-                    }
-
-                    shapes.arcs.forEachIndexed { k, arc ->
-                        val start = 0.66f + k * 0.07f
-                        val p = FastOutSlowInEasing.transform(((t - start) / 0.20f).coerceIn(0f, 1f))
-                        arc.draw(this, p, shapes.bArc, 4.5f)
+                    drawPath(shapes.lobeUR, shapes.bUR)
+                    drawPath(shapes.aqua, shapes.bAqua)
+                    drawPath(shapes.gloss, Color.White, alpha = 0.4f)
+                    drawPath(shapes.left, shapes.bLeft)
+                    drawPath(shapes.sphere, shapes.bSphere)
+                    drawPath(shapes.ribbon, shapes.bRibbon)
+                    drawPath(shapes.arrow1, shapes.bArrow1)
+                    drawPath(shapes.arrow2, shapes.bArrow2)
+                    shapes.arcs.forEach { arc ->
+                        drawPath(
+                            path = arc,
+                            brush = shapes.bArc,
+                            style = Stroke(width = 4.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                        )
                     }
                 }
             }
@@ -674,6 +609,97 @@ private fun CountryPickerDialog(
 }
 
 // ──────────────────────────────────────────────────────────────
+//  API credentials guide
+// ──────────────────────────────────────────────────────────────
+@Composable
+private fun ApiGuideDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val steps = listOf(
+        "Open my.telegram.org in your browser and log in with your Telegram phone number.",
+        "Tap \"API development tools\".",
+        "Create a new app — any name and platform will do.",
+        "Copy the api_id (numbers) and api_hash (letters and digits) back into the fields above."
+    )
+    Dialog(onDismissRequest = onDismiss) {
+        GlassCard {
+            Text(
+                text = LoginText.API_GUIDE_TITLE,
+                color = Color.White,
+                fontSize = 18.sp,
+                fontFamily = ModernFont,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            steps.forEachIndexed { index, step ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        text = "${index + 1}.",
+                        color = GlassAccent,
+                        fontSize = 13.5.sp,
+                        fontFamily = ModernFont,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(20.dp)
+                    )
+                    Text(
+                        text = step,
+                        color = Color.White,
+                        fontSize = 13.5.sp,
+                        fontFamily = ModernFont,
+                        lineHeight = 19.sp
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = LoginText.API_GUIDE_NOTE,
+                color = GlassTextSub,
+                fontSize = 12.5.sp,
+                fontFamily = ModernFont,
+                lineHeight = 18.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            TextButton(
+                onClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse("https://my.telegram.org")).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                        )
+                    }
+                    onDismiss()
+                }
+            ) {
+                Text(
+                    text = LoginText.API_GUIDE_OPEN,
+                    color = GlassAccent,
+                    fontSize = 14.5.sp,
+                    fontFamily = ModernFont,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = LoginText.API_GUIDE_CLOSE,
+                    color = GlassTextSub,
+                    fontSize = 14.sp,
+                    fontFamily = ModernFont
+                )
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
 //  স্ক্রিন
 // ──────────────────────────────────────────────────────────────
 @Composable
@@ -745,6 +771,7 @@ fun LoginContent(
     var countryCode by remember { mutableStateOf("880") }
     var localPhone by remember { mutableStateOf("") }
     var showCountryDialog by remember { mutableStateOf(false) }
+    var showApiGuide by remember { mutableStateOf(false) }
 
     var code by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -778,19 +805,6 @@ fun LoginContent(
         }
     }
 
-    var appear by remember { mutableStateOf(false) }
-    var logoFinished by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        appear = true
-        delay(1900)
-        logoFinished = true
-    }
-    val contentAlpha by animateFloatAsState(
-        targetValue = if (appear) 1f else 0f,
-        animationSpec = tween(600, delayMillis = 1500, easing = FastOutSlowInEasing),
-        label = "ContentAlpha"
-    )
-
     if (showCountryDialog) {
         CountryPickerDialog(
             selected = selectedCountry,
@@ -801,6 +815,10 @@ fun LoginContent(
             },
             onDismiss = { showCountryDialog = false }
         )
+    }
+
+    if (showApiGuide) {
+        ApiGuideDialog(onDismiss = { showApiGuide = false })
     }
 
     val submitFormattedPhone = {
@@ -908,18 +926,31 @@ fun LoginContent(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                FloatingBrandMark(logoSize = 84.dp)
+                BrandMark(logoSize = 84.dp)
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "MyCloud",
+                    color = Color.White,
+                    fontSize = 24.sp,
+                    fontFamily = ModernFont,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.4.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Your personal cloud, on Telegram",
+                    color = GlassTextSub,
+                    fontSize = 13.5.sp,
+                    fontFamily = ModernFont
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
 
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer {
-                            alpha = contentAlpha
-                            translationY = (1f - contentAlpha) * 20.dp.toPx()
-                        }
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     GlassCard {
                         AnimatedContent(
@@ -1002,11 +1033,9 @@ fun LoginContent(
                                         Spacer(modifier = Modifier.height(10.dp))
 
                                         val phoneFocus = remember { FocusRequester() }
-                                        LaunchedEffect(logoFinished) {
-                                            if (logoFinished) {
-                                                delay(150)
-                                                runCatching { phoneFocus.requestFocus() }
-                                            }
+                                        LaunchedEffect(Unit) {
+                                            delay(300)
+                                            runCatching { phoneFocus.requestFocus() }
                                         }
 
                                         NotchedGlassBox(
@@ -1165,6 +1194,19 @@ fun LoginContent(
                                             fontSize = 12.5.sp,
                                             fontFamily = ModernFont,
                                             modifier = Modifier.fillMaxWidth()
+                                        )
+
+                                        Spacer(modifier = Modifier.height(6.dp))
+
+                                        Text(
+                                            text = LoginText.API_GUIDE_LINK,
+                                            color = GlassAccent,
+                                            fontSize = 12.5.sp,
+                                            fontFamily = ModernFont,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { showApiGuide = true }
                                         )
                                     }
 
