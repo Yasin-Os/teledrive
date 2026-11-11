@@ -90,9 +90,25 @@ class AuthRepository @Inject constructor(
     }
 
     fun sendTdlibParameters() {
-        val apiId = secureSettings.getInt("api_id", 94575).takeIf { it != 0 } ?: 94575
-        val apiHash = secureSettings.getString("api_hash", "a3406de8d171bb422bb6ddf3bbd800e2")
-            ?.takeIf { it.isNotBlank() } ?: "a3406de8d171bb422bb6ddf3bbd800e2"
+        // No shared/default credentials: every user must use their own API
+        // ID / API hash from https://my.telegram.org (entered on the login
+        // screen or in Settings). Previously a hardcoded fallback credential
+        // was used for every install, which shared one Telegram app identity
+        // across all users and could be revoked or abused.
+        // Users who already logged in keep working: their own credentials
+        // were saved with saveApiCredentials() and are read back here.
+        val apiId = secureSettings.getInt("api_id", 0)
+        val apiHash = secureSettings.getString("api_hash", "")?.takeIf { it.isNotBlank() }
+        if (apiId == 0 || apiHash == null) {
+            android.util.Log.e(
+                "AuthRepository",
+                "Telegram API credentials are not configured; waiting for the user to enter their own API ID and API hash"
+            )
+            _authState.value = AuthState.Error(
+                "Telegram API ID and API hash are not set. Enter your own credentials from my.telegram.org to continue."
+            )
+            return
+        }
 
         val params = TdApi.SetTdlibParameters().apply {
             databaseDirectory = "${context.filesDir.absolutePath}/tdlib"
