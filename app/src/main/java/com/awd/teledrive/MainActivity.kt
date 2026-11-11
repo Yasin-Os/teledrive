@@ -43,6 +43,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -52,6 +53,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -93,6 +95,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
+import com.awd.teledrive.core.utils.VersionUtils
 import com.awd.teledrive.data.model.GitHubRelease
 import com.awd.teledrive.data.repository.SettingsRepository
 import com.awd.teledrive.data.repository.UpdateRepository
@@ -230,9 +233,6 @@ class MainActivity : AppCompatActivity() {
                             SlimTopUpdateBar(
                                 updateState = updateState,
                                 isHidden = isBannerHidden,
-                                onStartDownload = { release ->
-                                    updateRepository.downloadAndInstall(release, runInBackground = true)
-                                },
                                 onInstallReadyApk = { file ->
                                     updateRepository.installApk(file)
                                 },
@@ -243,6 +243,18 @@ class MainActivity : AppCompatActivity() {
                                     updateRepository.resetState()
                                 }
                             )
+
+                            val currentUpdateState = updateState
+                            if (currentUpdateState is UpdateState.NewVersionAvailable && !isBannerHidden) {
+                                UpdateAvailableDialog(
+                                    release = currentUpdateState.release,
+                                    installedVersion = VersionUtils.getVersionName(LocalContext.current),
+                                    onUpdate = {
+                                        updateRepository.downloadAndInstall(currentUpdateState.release, runInBackground = true)
+                                    },
+                                    onLater = { updateRepository.dismissBanner() }
+                                )
+                            }
                         }
                     }
                 }
@@ -424,10 +436,70 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
 }
 
 @Composable
+private fun UpdateAvailableDialog(
+    release: GitHubRelease,
+    installedVersion: String,
+    onUpdate: () -> Unit,
+    onLater: () -> Unit
+) {
+    val notes = release.body.trim().take(400)
+    AlertDialog(
+        onDismissRequest = onLater,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.SystemUpdate,
+                contentDescription = null,
+                tint = Color(0xFF2CE0FF),
+                modifier = Modifier.size(28.dp)
+            )
+        },
+        title = {
+            Text(
+                text = "Update ${release.tag_name} available",
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Your version: ${installedVersion.removePrefix("v")}  \u2192  ${release.tag_name.removePrefix("v")}",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 13.sp
+                )
+                if (notes.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = notes,
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onUpdate,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2CE0FF))
+            ) {
+                Text(text = "Update", color = Color(0xFF070B14), fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onLater) {
+                Text(text = "Later", color = Color.White.copy(alpha = 0.8f))
+            }
+        },
+        containerColor = Color(0xFF141824),
+        titleContentColor = Color.White,
+        textContentColor = Color.White
+    )
+}
+
+@Composable
 fun SlimTopUpdateBar(
     updateState: UpdateState,
     isHidden: Boolean,
-    onStartDownload: (GitHubRelease) -> Unit,
     onInstallReadyApk: (File) -> Unit,
     onDismissBanner: () -> Unit,
     onResetState: () -> Unit
@@ -448,8 +520,9 @@ fun SlimTopUpdateBar(
         }
     }
 
+    // New versions are announced with a dialog now; this bar only shows
+    // download progress and the ready-to-install state.
     val visible = !isHidden && (
-        updateState is UpdateState.NewVersionAvailable ||
         updateState is UpdateState.Downloading ||
         updateState is UpdateState.ReadyToInstall
     )
@@ -482,75 +555,6 @@ fun SlimTopUpdateBar(
                 }
         ) {
             when (updateState) {
-                is UpdateState.NewVersionAvailable -> {
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Color(0xFF141824).copy(alpha = 0.96f),
-                        border = BorderStroke(1.dp, Color(0xFF2CE0FF).copy(alpha = 0.5f)),
-                        shadowElevation = 10.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(start = 14.dp, end = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.SystemUpdate,
-                                    contentDescription = null,
-                                    tint = Color(0xFF2CE0FF),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Update ${updateState.release.tag_name} available",
-                                    color = Color.White,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Button(
-                                    onClick = { onStartDownload(updateState.release) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2CE0FF)),
-                                    shape = RoundedCornerShape(50),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                    modifier = Modifier.height(28.dp)
-                                ) {
-                                    Text(
-                                        text = "Update",
-                                        color = Color(0xFF070B14),
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(4.dp))
-                                IconButton(
-                                    onClick = onDismissBanner,
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Dismiss",
-                                        tint = Color.White.copy(alpha = 0.65f),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
                 is UpdateState.Downloading -> {
                     val pct = (updateState.progress * 100).toInt().coerceIn(0, 100)
                     Surface(
