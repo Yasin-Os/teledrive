@@ -120,7 +120,7 @@ object DatabaseModule {
         var plainDb: SQLiteDatabase? = null
         try {
             plainDb = SQLiteDatabase.openDatabase(
-                plainFile.absolutePath, null as String?, null, SQLiteDatabase.OPEN_READWRITE
+                plainFile.absolutePath, null, SQLiteDatabase.OPEN_READWRITE
             )
             val expectedDriveItems = countRows(plainDb, "drive_items")
             val expectedTransfers = countRows(plainDb, "transfers")
@@ -137,7 +137,7 @@ object DatabaseModule {
             plainDb = null
 
             SQLiteDatabase.openDatabase(
-                encryptedFile.absolutePath, passphrase, null, SQLiteDatabase.OPEN_READWRITE
+                encryptedFile.absolutePath, passphrase, null, SQLiteDatabase.OPEN_READWRITE, null
             ).use { encDb ->
                 val actualDriveItems = countRows(encDb, "drive_items")
                 val actualTransfers = countRows(encDb, "transfers")
@@ -178,14 +178,14 @@ object DatabaseModule {
             val expectedDriveItems: Long
             val expectedTransfers: Long
             SQLiteDatabase.openDatabase(
-                plainFile.absolutePath, null as String?, null, SQLiteDatabase.OPEN_READONLY
+                plainFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY
             ).use { plainDb ->
                 expectedDriveItems = countRows(plainDb, "drive_items")
                 expectedTransfers = countRows(plainDb, "transfers")
             }
             var encryptedComplete = false
             SQLiteDatabase.openDatabase(
-                encryptedFile.absolutePath, passphrase, null, SQLiteDatabase.OPEN_READONLY
+                encryptedFile.absolutePath, passphrase, null, SQLiteDatabase.OPEN_READONLY, null
             ).use { encDb ->
                 encryptedComplete =
                     countRows(encDb, "drive_items") == expectedDriveItems &&
