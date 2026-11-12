@@ -29,6 +29,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.view.WindowManager
 import android.widget.Toast
+import android.util.Log
+import android.os.SystemClock
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -276,7 +278,7 @@ object BackgroundAudioEngine {
             }
             ContextCompat.registerReceiver(appCtx, controlReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
             receiverRegistered = true
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "registerReceiverIfNeeded failed", e) }
     }
 
     private fun ensureMediaSession(appCtx: Context) {
@@ -464,19 +466,19 @@ object BackgroundAudioEngine {
             val nm = context.applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.cancel(NOTIF_ID)
             mediaSession?.isActive = false
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "hideNotification failed", e) }
     }
 
     fun stopAndRelease(context: Context) {
         hideNotification(context)
         try {
             mediaSession?.release()
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "stopAndRelease failed", e) }
         mediaSession = null
         try {
             activePlayer?.stop()
             activePlayer?.release()
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "stopAndRelease failed", e) }
         activePlayer = null
         activeUrl = null
     }
@@ -807,7 +809,7 @@ class ZeroLagTdlibDataSource(
         fileUpdatesJob = null
         try {
             raf?.close()
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "TdStream close failed", e) }
         raf = null
         openedFilePath = null
     }
@@ -859,6 +861,7 @@ fun VideoPlayerScreen(
     var isBuffering by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
+    var lastNotificationUpdateMs by remember { mutableLongStateOf(0L) }
     var controlsVisible by remember { mutableStateOf(true) }
     var isLocked by remember { mutableStateOf(false) }
     var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
@@ -991,12 +994,23 @@ fun VideoPlayerScreen(
     }
 
     // ব্যাকগ্রাউন্ডে অডিও মোড চালু থাকলে প্রতি সেকেন্ডে মিডিয়া নোটিফিকেশনের সিকবার আপডেট হবে
-    LaunchedEffect(isAudioPlayerMode, isPlaying, currentPosition, duration, fileName) {
-        if (isAudioPlayerMode) {
-            BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
-            BackgroundAudioEngine.updateNotification(context)
-        } else {
+    // (পজিশন টিকে আর রিবিল্ড হয় না — শুধু মোড/প্লে-স্টেট/ফাইল বদলালে, আর প্লে চলাকালীন
+    // সর্বোচ্চ সেকেন্ডে একবার)
+    LaunchedEffect(isAudioPlayerMode, isPlaying, fileName) {
+        if (!isAudioPlayerMode) {
             BackgroundAudioEngine.hideNotification(context)
+            return@LaunchedEffect
+        }
+        BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
+        BackgroundAudioEngine.updateNotification(context)
+        lastNotificationUpdateMs = SystemClock.elapsedRealtime()
+        while (isPlaying) {
+            delay(1000)
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastNotificationUpdateMs >= 1000L) {
+                BackgroundAudioEngine.updateNotification(context)
+                lastNotificationUpdateMs = now
+            }
         }
     }
 
@@ -1030,12 +1044,17 @@ fun VideoPlayerScreen(
                 onBack()
                 break
             }
-            if (activeGestureMode != GestureMode.SEEK) {
-                currentPosition = active.currentPosition.coerceAtLeast(0L)
-            }
-            if (active.duration > 0) duration = active.duration
             isPlaying = active.isPlaying
-            delay(250)
+            if (active.isPlaying) {
+                if (activeGestureMode != GestureMode.SEEK) {
+                    currentPosition = active.currentPosition.coerceAtLeast(0L)
+                }
+                if (active.duration > 0) duration = active.duration
+                delay(250)
+            } else {
+                // পজ অবস্থায় পজিশন পড়ার দরকার নেই — ব্যাটারি বাঁচাতে ধীরে পোল করো
+                delay(1000)
+            }
         }
     }
 
@@ -1252,7 +1271,7 @@ fun VideoPlayerScreen(
 
         if (isBuffering && activeGestureMode == GestureMode.NONE) {
             CircularProgressIndicator(
-                color = Color(0xFF2ECC71),
+                color = MaterialTheme.colorScheme.primary,
                 strokeWidth = 3.5.dp,
                 modifier = Modifier.size(46.dp).align(Alignment.Center)
             )
@@ -1440,7 +1459,7 @@ fun VideoPlayerScreen(
                                 resetWindowBrightness(activity)
                                 isAudioPlayerMode = true
                             },
-                            color = Color(0xFF1DB954),
+                            color = MaterialTheme.colorScheme.primary,
                             shape = RoundedCornerShape(20.dp),
                             modifier = Modifier
                                 .align(Alignment.End)
@@ -1571,7 +1590,7 @@ fun VideoPlayerScreen(
                             },
                             colors = SliderDefaults.colors(
                                 thumbColor = Color.White,
-                                activeTrackColor = Color(0xFF2ECC71),
+                                activeTrackColor = MaterialTheme.colorScheme.primary,
                                 inactiveTrackColor = Color.White.copy(alpha = 0.3f)
                             ),
                             modifier = Modifier
@@ -1685,7 +1704,7 @@ fun VideoPlayerScreen(
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                     try {
                                         activity?.enterPictureInPictureMode(PictureInPictureParams.Builder().build())
-                                    } catch (e: Exception) {}
+                                    } catch (e: Exception) { Log.w("VideoPlayerScreen", "enterPictureInPictureMode failed", e) }
                                 }
                             },
                             modifier = Modifier.size(32.dp)
@@ -1815,7 +1834,7 @@ private fun PlayItVinylAudioPlayerUI(
                     val ey = cy + (barStartRadius + len) * sin(angleRad)
 
                     drawLine(
-                        color = Color(0xFF2ECC71),
+                        color = Color.White,
                         start = Offset(sx, sy),
                         end = Offset(ex, ey),
                         strokeWidth = 4.2f,

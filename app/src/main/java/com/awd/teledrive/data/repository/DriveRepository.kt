@@ -1,5 +1,6 @@
 package com.awd.teledrive.data.repository
 
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.database.ContentObserver
@@ -253,7 +254,7 @@ class DriveRepository @Inject constructor(
                 current.add(fileKey)
                 customPrefs.edit().putStringSet("backed_up_paths_v3", current).apply()
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("DriveRepo", "markFileBackedUp failed", e) }
     }
 
     private fun extractTdFileFromMessage(msg: TdApi.Message): TdApi.File? {
@@ -595,7 +596,13 @@ class DriveRepository @Inject constructor(
         val modifiedSelectionArgs = if (watermarkSec == 0L) null
             else arrayOf(watermarkSec.toString())
 
-        val projection = arrayOf(MediaStore.MediaColumns.DATA)
+        // The deprecated DATA column is gone: reconstruct the file
+        // path from _ID + DISPLAY_NAME + RELATIVE_PATH instead.
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH
+        )
         val uris = mutableListOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -609,10 +616,17 @@ class DriveRepository @Inject constructor(
         uris.forEach { uri ->
             try {
                 context.contentResolver.query(uri, projection, modifiedSelection, modifiedSelectionArgs, null)?.use { cursor ->
-                    val dataIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                    if (dataIdx != -1) {
+                    val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                    val nameIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val relIdx = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                    if (idIdx != -1 && nameIdx != -1) {
                         while (cursor.moveToNext()) {
-                            val filePath = cursor.getString(dataIdx) ?: continue
+                            val displayName = cursor.getString(nameIdx) ?: continue
+                            // RELATIVE_PATH is null/-1 for files at the
+                            // storage root and ends with '/' otherwise.
+                            val relativePath = if (relIdx != -1) cursor.getString(relIdx).orEmpty() else ""
+                            val relDir = if (relativePath.isEmpty() || relativePath.endsWith("/")) relativePath else "$relativePath/"
+                            val filePath = File(Environment.getExternalStorageDirectory(), relDir + displayName).absolutePath
                             if (normalizedPaths.any { folder -> filePath.startsWith("$folder/") || filePath == folder }) {
                                 val f = File(filePath)
                                 if (f.exists() && f.isFile && f.length() > 0 && !f.name.startsWith(".")) {
@@ -625,7 +639,7 @@ class DriveRepository @Inject constructor(
                         }
                     }
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { Log.w("DriveRepo", "collectTargetBackupFiles failed", e) }
         }
 
         rawFolders.filter { it.startsWith("content://") }.forEach { uriStr ->
@@ -635,7 +649,7 @@ class DriveRepository @Inject constructor(
                 if (docDir != null && docDir.exists()) {
                     scanDocumentTreeFallback(docDir, backedUpSet, foundFiles)
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { Log.w("DriveRepo", "collectTargetBackupFiles failed", e) }
         }
 
         return foundFiles.values.sortedBy { it.lastModified() }
@@ -675,7 +689,7 @@ class DriveRepository @Inject constructor(
                         if (tempFile.exists() && tempFile.length() > 0) {
                             out[key] = tempFile
                         }
-                    } catch (e: Exception) {}
+                    } catch (e: Exception) { Log.w("DriveRepo", "scanDocumentTreeFallback failed", e) }
                 }
             }
         }
@@ -816,7 +830,7 @@ class DriveRepository @Inject constructor(
                     try {
                         val m = json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex).trim())
                         mergedManifest = mergeManifests(mergedManifest, m)
-                    } catch (e: Exception) {}
+                    } catch (e: Exception) { Log.w("DriveRepo", "processManifestMessages failed", e) }
                 }
             }
         }
@@ -1165,7 +1179,7 @@ class DriveRepository @Inject constructor(
                         }
                         syncVirtualFoldersToDb()
                     }
-                } catch (e: Exception) { }
+                } catch (e: Exception) { Log.w("DriveRepo", "processManifestMessages: manifest parse failed", e) }
             } else if (text.startsWith(FILE_META_PREFIX)) {
                 try {
                     val jsonStartIndex = text.indexOf('{')
@@ -1189,7 +1203,7 @@ class DriveRepository @Inject constructor(
                             scope.launch { driveDao.updateVirtualParent(meta.messageId, vId) }
                         }
                     }
-                } catch (e: Exception) { }
+                } catch (e: Exception) { Log.w("DriveRepo", "processManifestMessages: manifest parse failed", e) }
             }
         }
 
@@ -1515,7 +1529,7 @@ class DriveRepository @Inject constructor(
                         uploadReadyFile = copyTarget
                         tempCopyFile = copyTarget
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) { Log.w("DriveRepo", "uploadSinglePart encryption failed", e) }
             }
 
             var finalPath = uploadReadyFile.absolutePath
@@ -1536,7 +1550,7 @@ class DriveRepository @Inject constructor(
                 } catch (e: Exception) {
                     if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
                     transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
-                    try { onUploadCompleted(false) } catch (_: Exception) {}
+                    try { onUploadCompleted(false) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
                     return@enqueueTransfer 
                 }
             } else {
@@ -1612,19 +1626,46 @@ class DriveRepository @Inject constructor(
                 if (!completedSuccess && backupTrackingKey != null) {
                     inFlightBackupKeys.remove(backupTrackingKey)
                 }
-            } catch (e: Exception) {}
-            try { onUploadCompleted(completedSuccess) } catch (_: Exception) {}
+            } catch (e: Exception) { Log.w("DriveRepo", "upload completion cleanup failed", e) }
+            try { onUploadCompleted(completedSuccess) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
         }
     }
 
     private fun deletePhoneFileCompletely(file: File) {
         val path = file.absolutePath
-        try { if (file.exists()) file.delete() } catch (e: Exception) {}
+        try { if (file.exists()) file.delete() } catch (e: Exception) { Log.w("DriveRepo", "deletePhoneFileCompletely: file delete failed", e) }
         try {
+            // The deprecated DATA column is gone: resolve the row
+            // by DISPLAY_NAME, match it by reconstructing the path from
+            // RELATIVE_PATH (null/empty = storage root), then delete by _ID.
             val externalUri = MediaStore.Files.getContentUri("external")
-            context.contentResolver.delete(externalUri, "${MediaStore.MediaColumns.DATA}=?", arrayOf(path))
-        } catch (e: Exception) {}
-        try { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) } catch (e: Exception) {}
+            val projection = arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.RELATIVE_PATH
+            )
+            context.contentResolver.query(
+                externalUri,
+                projection,
+                "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                arrayOf(file.name),
+                null
+            )?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                val relIdx = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                if (idIdx != -1) {
+                    while (cursor.moveToNext()) {
+                        val relativePath = if (relIdx != -1) cursor.getString(relIdx).orEmpty() else ""
+                        val relDir = if (relativePath.isEmpty() || relativePath.endsWith("/")) relativePath else "$relativePath/"
+                        val storedPath = File(Environment.getExternalStorageDirectory(), relDir + file.name).absolutePath
+                        if (storedPath == path) {
+                            val itemUri = ContentUris.withAppendedId(externalUri, cursor.getLong(idIdx))
+                            context.contentResolver.delete(itemUri, null, null)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) { Log.w("DriveRepo", "deletePhoneFileCompletely: MediaStore delete failed", e) }
+        try { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) } catch (e: Exception) { Log.w("DriveRepo", "deletePhoneFileCompletely: media scan failed", e) }
     }
 
     private fun sendSplitMasterMetadata(groupId: String, name: String, size: Long, mime: String, parts: Int, vfId: String?, enc: Boolean, ids: List<Long>) {
@@ -1736,7 +1777,7 @@ class DriveRepository @Inject constructor(
                         encryptionManager.decryptFile(source, dest, password) { }
                     }
                     scope.launch(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.save_success), Toast.LENGTH_SHORT).show() }
-                } catch (e: Exception) { }
+                } catch (e: Exception) { Log.w("DriveRepo", "saveToPublicStorage failed", e) }
             }
         } else {
             transferRepository.saveToPublicDownloads(source.absolutePath, file.name)
@@ -2055,7 +2096,7 @@ class DriveRepository @Inject constructor(
         try {
             val files = directory.listFiles() ?: return 0L
             for (file in files) size += if (file.isDirectory) calculateDirectorySize(file) else file.length()
-        } catch (e: Exception) { }
+        } catch (e: Exception) { Log.w("DriveRepo", "calculateDirectorySize failed", e) }
         return size
     }
 
@@ -2097,7 +2138,7 @@ class DriveRepository @Inject constructor(
             val intent = Intent(context, com.awd.teledrive.data.service.TransferService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
             else context.startService(intent)
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("DriveRepo", "startTransferService failed", e) }
     }
 
     private fun parseSplitMetadata(caption: String): SplitMetadata? {

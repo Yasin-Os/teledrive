@@ -1,6 +1,7 @@
 package com.awd.teledrive.ui.screens.preview
 
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -167,7 +168,7 @@ class PreviewViewModel @Inject constructor(
         super.onCleared()
         // Cleanup decrypted preview files
         _decryptedPaths.value.values.forEach { path ->
-            try { File(path).delete() } catch (e: Exception) {}
+            try { File(path).delete() } catch (e: Exception) { Log.w("PreviewViewModel", "onCleared: temp file delete failed", e) }
         }
     }
 

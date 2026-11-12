@@ -43,6 +43,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
+import com.awd.teledrive.core.utils.FileUtils
+import com.awd.teledrive.ui.theme.CategoryBlue
+import com.awd.teledrive.ui.theme.CategoryGreen
+import com.awd.teledrive.ui.theme.CategoryOrange
+import com.awd.teledrive.ui.theme.CategoryPink
+import com.awd.teledrive.ui.theme.CategoryPurple
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,7 +92,7 @@ fun CloudAnalysisScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = formatSize(totalSize),
+                    text = FileUtils.formatSize(totalSize),
                     style = MaterialTheme.typography.displayMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -143,7 +149,7 @@ fun CloudAnalysisScreen(
                 label = stringResource(R.string.category_images),
                 count = photoStat?.count ?: 0,
                 size = photoStat?.totalSize ?: 0L,
-                color = Color(0xFF4CAF50),
+                color = CategoryGreen,
                 description = stringResource(R.string.category_thumbnails_desc) // or similar
             )
             AnalysisItem(
@@ -151,7 +157,7 @@ fun CloudAnalysisScreen(
                 label = stringResource(R.string.category_videos),
                 count = videoStat?.count ?: 0,
                 size = videoStat?.totalSize ?: 0L,
-                color = Color(0xFFE91E63),
+                color = CategoryPink,
                 description = stringResource(R.string.category_videos_desc)
             )
             AnalysisItem(
@@ -159,7 +165,7 @@ fun CloudAnalysisScreen(
                 label = stringResource(R.string.category_audio),
                 count = audioStat?.count ?: 0,
                 size = audioStat?.totalSize ?: 0L,
-                color = Color(0xFFFF9800),
+                color = CategoryOrange,
                 description = stringResource(R.string.category_audio_desc)
             )
             AnalysisItem(
@@ -167,7 +173,7 @@ fun CloudAnalysisScreen(
                 label = stringResource(R.string.category_documents),
                 count = docStat?.count ?: 0,
                 size = docStat?.totalSize ?: 0L,
-                color = Color(0xFF2196F3),
+                color = CategoryBlue,
                 description = stringResource(R.string.category_documents_desc)
             )
             AnalysisItem(
@@ -175,7 +181,7 @@ fun CloudAnalysisScreen(
                 label = stringResource(R.string.category_others),
                 count = otherStat?.count ?: 0,
                 size = otherStat?.totalSize ?: 0L,
-                color = Color(0xFF9C27B0),
+                color = CategoryPurple,
                 description = stringResource(R.string.category_others_desc)
             )
             
@@ -213,7 +219,7 @@ fun AnalysisItem(
         },
         trailingContent = {
             Text(
-                text = formatSize(size),
+                text = FileUtils.formatSize(size),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -221,9 +227,3 @@ fun AnalysisItem(
     )
 }
 
-private fun formatSize(size: Long): String {
-    if (size <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
-    return String.format(java.util.Locale.getDefault(), "%.1f %s", size / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
-}

@@ -94,18 +94,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
+import com.awd.teledrive.core.utils.FileUtils
 import com.awd.teledrive.data.model.GitHubRelease
 import com.awd.teledrive.data.repository.SettingsRepository
 import com.awd.teledrive.data.repository.UpdateState
 import com.awd.teledrive.domain.model.CloudBackup
 import com.awd.teledrive.ui.screens.home.HomeViewModel
 import com.awd.teledrive.ui.screens.security.SecurityViewModel
+import com.awd.teledrive.ui.theme.AccentCyanLight
+import com.awd.teledrive.ui.theme.AccentPink
+import com.awd.teledrive.ui.theme.AmberAccent
+import com.awd.teledrive.ui.theme.BlueAccent
+import com.awd.teledrive.ui.theme.EmeraldAccent
+import com.awd.teledrive.ui.theme.SkyAccent
 import com.awd.teledrive.ui.theme.ThemeViewModel
+import com.awd.teledrive.ui.theme.VioletAccent
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.log10
-import kotlin.math.pow
 
 @Composable
 fun SettingsScreen(
@@ -273,7 +279,6 @@ fun SettingsContent(
     var showCacheSizeDialog by remember { mutableStateOf(false) }
     var showCacheAgeDialog by remember { mutableStateOf(false) }
     var showLogoutConfirm by remember { mutableStateOf(false) }
-    var showThemeRestartConfirm by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showLanguageChangedDialog by remember { mutableStateOf(false) }
@@ -346,18 +351,18 @@ fun SettingsContent(
 
         AlertDialog(
             onDismissRequest = { showCreateAppPinDialog = false },
-            title = { Text("Set App PIN") },
+            title = { Text(stringResource(R.string.set_app_pin)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = newPin, onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(4); err = null },
-                        label = { Text("4-Digit PIN") }, visualTransformation = PasswordVisualTransformation(),
+                        label = { Text(stringResource(R.string.pin_4_digit)) }, visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = confirmPin, onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(4); err = null },
-                        label = { Text("Confirm PIN") }, visualTransformation = PasswordVisualTransformation(),
+                        label = { Text(stringResource(R.string.confirm_pin)) }, visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         isError = err != null, supportingText = err?.let { { Text(it) } },
                         singleLine = true, modifier = Modifier.fillMaxWidth()
@@ -366,14 +371,14 @@ fun SettingsContent(
             },
             confirmButton = {
                 Button(onClick = {
-                    if (newPin.length != 4) err = "Enter 4 digits"
-                    else if (newPin != confirmPin) err = "PIN mismatch"
+                    if (newPin.length != 4) err = context.getString(R.string.err_pin_4_digits)
+                    else if (newPin != confirmPin) err = context.getString(R.string.err_pin_mismatch)
                     else {
                         onCreateAppPin(newPin)
                         showCreateAppPinDialog = false
-                        Toast.makeText(context, "App PIN Lock enabled", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.pin_lock_enabled), Toast.LENGTH_SHORT).show()
                     }
-                }) { Text("Save") }
+                }) { Text(stringResource(R.string.save)) }
             },
             dismissButton = {
                 TextButton(onClick = { showCreateAppPinDialog = false; onSetSecurityEnabled(false) }) { Text(stringResource(R.string.cancel)) }
@@ -389,26 +394,26 @@ fun SettingsContent(
 
         AlertDialog(
             onDismissRequest = { showChangeAppPinDialog = false },
-            title = { Text("Change App PIN") },
+            title = { Text(stringResource(R.string.change_app_pin)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (isAppPinSet) {
                         OutlinedTextField(
                             value = oldPin, onValueChange = { oldPin = it.filter { c -> c.isDigit() }.take(4); err = null },
-                            label = { Text("Current PIN") }, visualTransformation = PasswordVisualTransformation(),
+                            label = { Text(stringResource(R.string.current_pin)) }, visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                             singleLine = true, modifier = Modifier.fillMaxWidth()
                         )
                     }
                     OutlinedTextField(
                         value = newPin, onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(4); err = null },
-                        label = { Text("New 4-Digit PIN") }, visualTransformation = PasswordVisualTransformation(),
+                        label = { Text(stringResource(R.string.new_pin_4_digit)) }, visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = confirmPin, onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(4); err = null },
-                        label = { Text("Confirm New PIN") }, visualTransformation = PasswordVisualTransformation(),
+                        label = { Text(stringResource(R.string.confirm_new_pin)) }, visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         isError = err != null, supportingText = err?.let { { Text(it) } },
                         singleLine = true, modifier = Modifier.fillMaxWidth()
@@ -417,13 +422,13 @@ fun SettingsContent(
             },
             confirmButton = {
                 Button(onClick = {
-                    if (newPin.length != 4) err = "New PIN must be 4 digits"
-                    else if (newPin != confirmPin) err = "New PIN did not match"
+                    if (newPin.length != 4) err = context.getString(R.string.err_new_pin_4_digits)
+                    else if (newPin != confirmPin) err = context.getString(R.string.err_new_pin_mismatch)
                     else if (onChangeAppPin(oldPin, newPin)) {
                         showChangeAppPinDialog = false
-                        Toast.makeText(context, "PIN Updated", Toast.LENGTH_SHORT).show()
-                    } else err = "Current PIN is incorrect"
-                }) { Text("Update") }
+                        Toast.makeText(context, context.getString(R.string.pin_updated), Toast.LENGTH_SHORT).show()
+                    } else err = context.getString(R.string.err_current_pin_incorrect)
+                }) { Text(stringResource(R.string.update)) }
             },
             dismissButton = {
                 TextButton(onClick = { showChangeAppPinDialog = false }) { Text(stringResource(R.string.cancel)) }
@@ -447,26 +452,6 @@ fun SettingsContent(
         )
     }
 
-    if (showThemeRestartConfirm) {
-        AlertDialog(
-            onDismissRequest = { showThemeRestartConfirm = false },
-            title = { Text(stringResource(R.string.theme_changed_title)) },
-            text = { Text(stringResource(R.string.theme_changed_message)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showThemeRestartConfirm = false
-                    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                    intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                    (context as? android.app.Activity)?.finish()
-                }) { Text(stringResource(R.string.restart_app)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showThemeRestartConfirm = false }) { Text(stringResource(R.string.cancel)) }
-            }
-        )
-    }
-
     if (showCacheSizeDialog) {
         AlertDialog(
             onDismissRequest = { showCacheSizeDialog = false },
@@ -475,7 +460,7 @@ fun SettingsContent(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SettingsRepository.CACHE_SIZE_OPTIONS.forEach { option ->
                         ModernSelectionItem(
-                            title = if (option == 0L) stringResource(R.string.no_limit) else formatSize(option),
+                            title = if (option == 0L) stringResource(R.string.no_limit) else FileUtils.formatSize(option),
                             isSelected = cacheSizeLimit == option,
                             onClick = { onSetCacheSizeLimit(option); showCacheSizeDialog = false }
                         )
@@ -529,7 +514,6 @@ fun SettingsContent(
                                 onClick = {
                                     onSetThemeColor(color)
                                     showThemeColorDialog = false
-                                    showThemeRestartConfirm = true
                                 },
                                 color = color, shape = CircleShape, modifier = Modifier.size(48.dp),
                                 border = if (themeColor == color) BorderStroke(3.dp, MaterialTheme.colorScheme.onSurface) else null
@@ -676,113 +660,113 @@ fun SettingsContent(
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             // 1. Backup Bar Section (Emerald Accent)
-            SettingsSectionBar(title = "Backup", accentColor = Color(0xFF10B981), glowAlpha = glowAlpha) {
+            SettingsSectionBar(title = stringResource(R.string.settings_section_backup), accentColor = EmeraldAccent, glowAlpha = glowAlpha) {
                 ModernToggleBarItem(
-                    icon = Icons.Default.CloudUpload, title = "Auto Backup",
-                    accentColor = Color(0xFF10B981), checked = isAutoBackupEnabled,
+                    icon = Icons.Default.CloudUpload, title = stringResource(R.string.auto_backup),
+                    accentColor = EmeraldAccent, checked = isAutoBackupEnabled,
                     onCheckedChange = onSetAutoBackupEnabled
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.Delete, title = "Auto-Delete from Phone",
-                    accentColor = Color(0xFF10B981), checked = deleteAfterBackup,
+                    icon = Icons.Default.Delete, title = stringResource(R.string.auto_delete_from_phone),
+                    accentColor = EmeraldAccent, checked = deleteAfterBackup,
                     onCheckedChange = onSetDeleteAfterBackup
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.Wifi, title = "Wi-Fi Only",
-                    accentColor = Color(0xFF10B981), checked = isBackupWifiOnly,
+                    icon = Icons.Default.Wifi, title = stringResource(R.string.wifi_only),
+                    accentColor = EmeraldAccent, checked = isBackupWifiOnly,
                     enabled = isAutoBackupEnabled, onCheckedChange = onSetBackupWifiOnly
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Folder, title = "Target Folders",
-                    accentColor = Color(0xFF10B981), badgeText = "Select",
+                    icon = Icons.Default.Folder, title = stringResource(R.string.target_folders),
+                    accentColor = EmeraldAccent, badgeText = stringResource(R.string.select),
                     onClick = onNavigateToBackupFolders
                 )
                 if (lastBackupTime > 0) {
                     val date = Date(lastBackupTime)
                     val format = SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault())
                     ModernActionBarItem(
-                        icon = Icons.Default.History, title = "Last Sync",
-                        accentColor = Color(0xFF10B981), badgeText = format.format(date),
+                        icon = Icons.Default.History, title = stringResource(R.string.last_sync),
+                        accentColor = EmeraldAccent, badgeText = format.format(date),
                         showArrow = false, onClick = {}
                     )
                 }
                 ModernActionBarItem(
-                    icon = Icons.Default.CloudUpload, title = "Sync Now",
-                    accentColor = Color(0xFF10B981), onClick = onTriggerManualBackup
+                    icon = Icons.Default.CloudUpload, title = stringResource(R.string.sync_now),
+                    accentColor = EmeraldAccent, onClick = onTriggerManualBackup
                 )
             }
 
             // 2. Storage & Cache Bar Section (Cyan Accent)
-            SettingsSectionBar(title = "Storage", accentColor = Color(0xFF0EA5E9), glowAlpha = glowAlpha) {
+            SettingsSectionBar(title = stringResource(R.string.storage), accentColor = SkyAccent, glowAlpha = glowAlpha) {
                 ModernActionBarItem(
-                    icon = Icons.Default.Cloud, title = "Cloud Usage",
-                    accentColor = Color(0xFF0EA5E9), badgeText = formatSize(totalStorageUsed),
+                    icon = Icons.Default.Cloud, title = stringResource(R.string.cloud_usage),
+                    accentColor = SkyAccent, badgeText = FileUtils.formatSize(totalStorageUsed),
                     onClick = onNavigateToCloudAnalysis
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Storage, title = "Local Cache",
-                    accentColor = Color(0xFF0EA5E9), badgeText = formatSize(internalCacheSize),
+                    icon = Icons.Default.Storage, title = stringResource(R.string.local_cache),
+                    accentColor = SkyAccent, badgeText = FileUtils.formatSize(internalCacheSize),
                     onClick = onNavigateToCacheDetails
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Storage, title = "Cache Limit",
-                    accentColor = Color(0xFF0EA5E9),
-                    badgeText = if (cacheSizeLimit == 0L) "Unlimited" else formatSize(cacheSizeLimit),
+                    icon = Icons.Default.Storage, title = stringResource(R.string.cache_limit),
+                    accentColor = SkyAccent,
+                    badgeText = if (cacheSizeLimit == 0L) stringResource(R.string.unlimited) else FileUtils.formatSize(cacheSizeLimit),
                     onClick = { showCacheSizeDialog = true }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.History, title = "Cache Duration",
-                    accentColor = Color(0xFF0EA5E9), badgeText = formatCacheAge(cacheAgeLimit, context),
+                    icon = Icons.Default.History, title = stringResource(R.string.cache_duration),
+                    accentColor = SkyAccent, badgeText = formatCacheAge(cacheAgeLimit, context),
                     onClick = { showCacheAgeDialog = true }
                 )
             }
 
             // 3. Security Bar Section (Violet Accent)
-            SettingsSectionBar(title = "Security", accentColor = Color(0xFF8B5CF6), glowAlpha = glowAlpha) {
+            SettingsSectionBar(title = stringResource(R.string.security), accentColor = VioletAccent, glowAlpha = glowAlpha) {
                 ModernToggleBarItem(
-                    icon = Icons.Default.Lock, title = "App PIN Lock",
-                    accentColor = Color(0xFF8B5CF6), checked = isSecurityEnabled,
+                    icon = Icons.Default.Lock, title = stringResource(R.string.app_pin_lock),
+                    accentColor = VioletAccent, checked = isSecurityEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled && !isAppPinSet) showCreateAppPinDialog = true
                         else onSetSecurityEnabled(enabled)
                     }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Edit, title = "Change App PIN",
-                    accentColor = Color(0xFF8B5CF6), badgeText = if (isAppPinSet) "4-Digit" else "Not Set",
+                    icon = Icons.Default.Edit, title = stringResource(R.string.change_app_pin),
+                    accentColor = VioletAccent, badgeText = if (isAppPinSet) stringResource(R.string.pin_4_digit_short) else stringResource(R.string.not_set),
                     onClick = {
                         if (!isAppPinSet) showCreateAppPinDialog = true
                         else showChangeAppPinDialog = true
                     }
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.Fingerprint, title = "Biometric Unlock",
-                    accentColor = Color(0xFF8B5CF6), checked = isBiometricEnabled,
+                    icon = Icons.Default.Fingerprint, title = stringResource(R.string.biometric_unlock),
+                    accentColor = VioletAccent, checked = isBiometricEnabled,
                     enabled = isSecurityEnabled, onCheckedChange = onSetBiometricEnabled
                 )
             }
 
             // 4. Appearance & Downloads Bar Section (Amber Accent)
-            SettingsSectionBar(title = "Appearance & Files", accentColor = Color(0xFFF59E0B), glowAlpha = glowAlpha) {
+            SettingsSectionBar(title = stringResource(R.string.appearance_files), accentColor = AmberAccent, glowAlpha = glowAlpha) {
                 ModernToggleBarItem(
-                    icon = Icons.Default.DarkMode, title = "Dark Theme",
-                    accentColor = Color(0xFFF59E0B), checked = isDarkMode,
-                    onCheckedChange = { onSetDarkMode(it); showThemeRestartConfirm = true }
+                    icon = Icons.Default.DarkMode, title = stringResource(R.string.dark_theme),
+                    accentColor = AmberAccent, checked = isDarkMode,
+                    onCheckedChange = onSetDarkMode
                 )
                 ModernToggleBarItem(
-                    icon = Icons.Default.PhotoLibrary, title = "Auto-Load Thumbnails",
-                    accentColor = Color(0xFFF59E0B), checked = isThumbnailAutoDownloadEnabled,
+                    icon = Icons.Default.PhotoLibrary, title = stringResource(R.string.auto_load_thumbnails),
+                    accentColor = AmberAccent, checked = isThumbnailAutoDownloadEnabled,
                     onCheckedChange = onSetThumbnailAutoDownload
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Palette, title = "Accent Color",
+                    icon = Icons.Default.Palette, title = stringResource(R.string.accent_color),
                     accentColor = themeColor, onClick = { showThemeColorDialog = true }
                 )
-                val downloadPath = if (downloadUri.isNullOrEmpty()) "Downloads"
-                else Uri.parse(downloadUri).path?.substringAfterLast(':') ?: "Custom"
+                val downloadPath = if (downloadUri.isNullOrEmpty()) stringResource(R.string.downloads)
+                else Uri.parse(downloadUri).path?.substringAfterLast(':') ?: stringResource(R.string.custom)
                 ModernActionBarItem(
-                    icon = Icons.Default.FolderOpen, title = "Save Location",
-                    accentColor = Color(0xFF3B82F6), badgeText = downloadPath,
+                    icon = Icons.Default.FolderOpen, title = stringResource(R.string.save_location),
+                    accentColor = BlueAccent, badgeText = downloadPath,
                     onClick = { folderLauncher.launch(null) }
                 )
             }
@@ -793,27 +777,27 @@ fun SettingsContent(
                     updateState is UpdateState.ReadyToInstall
 
             val updateAccent = when (updateState) {
-                is UpdateState.ReadyToInstall -> Color(0xFF10B981)
-                is UpdateState.Downloading -> Color(0xFF2CE0FF)
-                else -> if (availableRelease != null) Color(0xFF10B981) else Color(0xFFEC4899)
+                is UpdateState.ReadyToInstall -> EmeraldAccent
+                is UpdateState.Downloading -> AccentCyanLight
+                else -> if (availableRelease != null) EmeraldAccent else AccentPink
             }
 
             val updateTitle = when (updateState) {
-                is UpdateState.ReadyToInstall -> "Update Ready (${updateState.release.tag_name})"
-                is UpdateState.Downloading -> "Updating MyCloud..."
-                else -> if (availableRelease != null) "New Update (${availableRelease.tag_name})" else "App Update"
+                is UpdateState.ReadyToInstall -> stringResource(R.string.update_ready, updateState.release.tag_name)
+                is UpdateState.Downloading -> stringResource(R.string.updating_app)
+                else -> if (availableRelease != null) stringResource(R.string.new_update, availableRelease.tag_name) else stringResource(R.string.app_update)
             }
 
             val updateBadge = when (updateState) {
-                is UpdateState.Checking -> "Checking..."
+                is UpdateState.Checking -> stringResource(R.string.checking)
                 is UpdateState.Downloading -> "${(updateState.progress * 100).toInt()}%"
-                is UpdateState.ReadyToInstall -> "Install Now"
-                else -> if (availableRelease != null) "Update Now" else "v${versionName.removePrefix("v")}"
+                is UpdateState.ReadyToInstall -> stringResource(R.string.install_now)
+                else -> if (availableRelease != null) stringResource(R.string.update_now) else "v${versionName.removePrefix("v")}"
             }
 
             SettingsSectionBar(
-                title = "System",
-                accentColor = if (hasUpdateOrReady) updateAccent else Color(0xFFEC4899),
+                title = stringResource(R.string.system),
+                accentColor = if (hasUpdateOrReady) updateAccent else AccentPink,
                 glowAlpha = glowAlpha
             ) {
                 ModernActionBarItem(
@@ -855,7 +839,7 @@ fun SettingsContent(
                     onClick = onNavigateToAbout
                 )
                 ModernActionBarItem(
-                    icon = Icons.AutoMirrored.Filled.Logout, title = "Log Out",
+                    icon = Icons.AutoMirrored.Filled.Logout, title = stringResource(R.string.log_out),
                     accentColor = MaterialTheme.colorScheme.error,
                     titleColor = MaterialTheme.colorScheme.error,
                     onClick = { showLogoutConfirm = true }
@@ -903,13 +887,13 @@ fun SettingsContent(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "© 2026 MyCloud • All Rights Reserved",
+                    text = stringResource(R.string.copyright_footer),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Developed by Yasin Adnan",
+                    text = stringResource(R.string.developed_by),
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp),
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -1101,12 +1085,6 @@ fun ModernSelectionItem(title: String, isSelected: Boolean, onClick: () -> Unit)
     }
 }
 
-private fun formatSize(size: Long): String {
-    if (size <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt()
-    return String.format(Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
-}
 
 private fun formatCacheAge(seconds: Int, context: Context): String {
     return when (seconds) {

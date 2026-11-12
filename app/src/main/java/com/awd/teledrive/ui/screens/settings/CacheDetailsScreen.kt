@@ -47,10 +47,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
+import com.awd.teledrive.core.utils.FileUtils
+import com.awd.teledrive.ui.theme.DangerRed
+import com.awd.teledrive.ui.theme.DeleteRed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -150,7 +152,7 @@ fun CacheDetailsScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = formatSize(stats.totalSize),
+                    text = FileUtils.formatSize(stats.totalSize),
                     style = MaterialTheme.typography.displayMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -208,7 +210,7 @@ fun CacheDetailsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isDark) Color(0xFFEF5350) else Color(0xFFD32F2F),
+                    containerColor = if (isDark) DeleteRed else DangerRed,
                     contentColor = Color.White
                 ),
                 elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
@@ -242,7 +244,7 @@ fun CacheCategoryItem(
         supportingContent = { 
             Column {
                 Text(subtitle, style = MaterialTheme.typography.bodySmall)
-                Text(formatSize(size), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                Text(FileUtils.formatSize(size), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
             }
         },
         leadingContent = { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) },
@@ -256,9 +258,3 @@ fun CacheCategoryItem(
     )
 }
 
-private fun formatSize(size: Long): String {
-    if (size <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
-    return String.format(Locale.getDefault(), "%.1f %s", size / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
-}

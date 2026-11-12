@@ -157,7 +157,7 @@ class TransferRepository @Inject constructor(
 
     init {
         scope.launch {
-            try { transferDao.clearCompleted() } catch (e: Exception) {}
+            try { transferDao.clearCompleted() } catch (e: Exception) { Log.w("TransferRepo", "clearCompleted failed", e) }
 
             restorePersistedTransfers()
 
@@ -243,7 +243,7 @@ class TransferRepository @Inject constructor(
             try {
                 transferDao.deleteTransfer(key)
                 if (uniqueId.isNotEmpty()) transferDao.deleteTransfer(uniqueId)
-            } catch (e: Exception) {}
+            } catch (e: Exception) { Log.w("TransferRepo", "completeAndCleanupTransfer cleanup failed", e) }
         }
     }
 
@@ -454,7 +454,7 @@ class TransferRepository @Inject constructor(
         }
         publishState()
         scope.launch {
-            try { transferDao.clearCompleted() } catch (e: Exception) {}
+            try { transferDao.clearCompleted() } catch (e: Exception) { Log.w("TransferRepo", "clearCompleted failed", e) }
         }
     }
 
@@ -549,6 +549,6 @@ class TransferRepository @Inject constructor(
                     }
                 }
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("TransferRepo", "saveToUserSelectedFolder failed", e) }
     }
 }
