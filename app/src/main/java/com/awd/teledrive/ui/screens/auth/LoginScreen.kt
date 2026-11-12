@@ -19,6 +19,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -55,13 +56,16 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -121,17 +125,18 @@ private val GlassCardSurface = Color(0xFF131D2E)
 private val GlassAccent = Color(0xFF38BDF8)
 private val GlassFab = Color(0xFF0EA5E9)
 private val GlassTextSub = Color(0xFF94A3B8)
-private val GlassError = Color(0xFFF87171)
+// Calm amber for warnings: red scares users, amber asks for attention.
+private val GlassAlert = Color(0xFFFBBF24)
 private val ModernFont = FontFamily.SansSerif
 
 private object LoginText {
     const val PHONE_TITLE = "Your phone number"
-    const val PHONE_SUBTITLE = "Confirm country code and enter your number"
+    const val PHONE_SUBTITLE = "Enter your Telegram number"
     const val PHONE_LABEL = "Phone number"
-    const val API_ID_LABEL = "Telegram API ID"
-    const val API_HASH_LABEL = "Telegram API hash"
-    const val API_HINT = "Use your own credentials from my.telegram.org"
+    const val API_ID_LABEL = "API ID"
+    const val API_HASH_LABEL = "API hash"
     const val API_GUIDE_LINK = "Don't have API credentials? Get them in 2 minutes"
+    const val API_CREATE = "Create API ID"
     const val API_GUIDE_TITLE = "Get your Telegram API credentials"
     const val API_GUIDE_NOTE = "Your credentials stay on your device and are never shared with anyone."
     const val API_GUIDE_OPEN = "Open my.telegram.org"
@@ -347,7 +352,7 @@ private fun NotchedGlassBox(
 ) {
     val borderColor by animateColorAsState(
         targetValue = when {
-            isError -> GlassError
+            isError -> GlassAlert
             focused -> GlassAccent
             else -> Color.White.copy(alpha = 0.18f)
         },
@@ -373,7 +378,7 @@ private fun NotchedGlassBox(
         Text(
             text = label,
             color = when {
-                isError -> GlassError
+                isError -> GlassAlert
                 focused -> GlassAccent
                 else -> GlassTextSub
             },
@@ -772,6 +777,7 @@ fun LoginContent(
     var localPhone by remember { mutableStateOf("") }
     var showCountryDialog by remember { mutableStateOf(false) }
     var showApiGuide by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     var code by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -855,6 +861,10 @@ fun LoginContent(
     }
 
     val displayError = if (isAbortedError && abortRetryCount < 3) null else authError
+
+    // A missing-credentials error highlights only the API boxes, so the
+    // phone box stays calm when the phone number itself is not the problem.
+    val apiCredentialsError = displayError?.contains("API", ignoreCase = true) == true
 
     val canSubmitPhone = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6 &&
         apiId.trim().isNotBlank() && apiHash.trim().isNotBlank()
@@ -1017,7 +1027,7 @@ fun LoginContent(
                                                 )
                                                 else -> Text(
                                                     text = LoginText.COUNTRY_WRONG,
-                                                    color = GlassError,
+                                                    color = GlassAlert,
                                                     fontSize = 15.5.sp,
                                                     fontFamily = ModernFont,
                                                     modifier = Modifier.weight(1f)
@@ -1041,7 +1051,7 @@ fun LoginContent(
                                         NotchedGlassBox(
                                             label = LoginText.PHONE_LABEL,
                                             focused = codeFieldFocused || numberFieldFocused,
-                                            isError = displayError != null
+                                            isError = displayError != null && !apiCredentialsError
                                         ) {
                                             Text(
                                                 text = "+",
@@ -1120,83 +1130,114 @@ fun LoginContent(
 
                                         Spacer(modifier = Modifier.height(10.dp))
 
-                                        NotchedGlassBox(
-                                            label = LoginText.API_ID_LABEL,
-                                            focused = apiIdFocused,
-                                            isError = displayError != null
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
-                                            BasicTextField(
-                                                value = apiId,
-                                                onValueChange = { input ->
-                                                    apiId = input.filter { it.isDigit() }.take(12)
-                                                },
-                                                singleLine = true,
-                                                textStyle = TextStyle(
-                                                    color = Color.White,
-                                                    fontSize = 17.sp,
-                                                    fontFamily = ModernFont,
-                                                    fontWeight = FontWeight.Medium
-                                                ),
-                                                cursorBrush = SolidColor(GlassAccent),
-                                                keyboardOptions = KeyboardOptions(
-                                                    keyboardType = KeyboardType.Number,
-                                                    imeAction = ImeAction.Next
-                                                ),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .onFocusChanged { apiIdFocused = it.isFocused }
+                                            NotchedGlassBox(
+                                                label = LoginText.API_ID_LABEL,
+                                                focused = apiIdFocused,
+                                                isError = apiCredentialsError,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                BasicTextField(
+                                                    value = apiId,
+                                                    onValueChange = { input ->
+                                                        apiId = input.filter { it.isDigit() }.take(12)
+                                                    },
+                                                    singleLine = true,
+                                                    textStyle = TextStyle(
+                                                        color = Color.White,
+                                                        fontSize = 17.sp,
+                                                        fontFamily = ModernFont,
+                                                        fontWeight = FontWeight.Medium
+                                                    ),
+                                                    cursorBrush = SolidColor(GlassAccent),
+                                                    keyboardOptions = KeyboardOptions(
+                                                        keyboardType = KeyboardType.Number,
+                                                        imeAction = ImeAction.Next
+                                                    ),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .onFocusChanged { apiIdFocused = it.isFocused }
+                                                )
+                                            }
+
+                                            NotchedGlassBox(
+                                                label = LoginText.API_HASH_LABEL,
+                                                focused = apiHashFocused,
+                                                isError = apiCredentialsError,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                BasicTextField(
+                                                    value = apiHash,
+                                                    onValueChange = { input ->
+                                                        apiHash = input.filterNot { it.isWhitespace() }.take(64)
+                                                    },
+                                                    singleLine = true,
+                                                    textStyle = TextStyle(
+                                                        color = Color.White,
+                                                        fontSize = 17.sp,
+                                                        fontFamily = ModernFont,
+                                                        fontWeight = FontWeight.Medium
+                                                    ),
+                                                    cursorBrush = SolidColor(GlassAccent),
+                                                    keyboardOptions = KeyboardOptions(
+                                                        keyboardType = KeyboardType.Text,
+                                                        imeAction = ImeAction.Done
+                                                    ),
+                                                    keyboardActions = KeyboardActions(
+                                                        onDone = {
+                                                            if (canSubmitPhone) {
+                                                                abortRetryCount = 0
+                                                                submitFormattedPhone()
+                                                            }
+                                                        }
+                                                    ),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .onFocusChanged { apiHashFocused = it.isFocused }
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(12.dp))
+
+                                        OutlinedButton(
+                                            onClick = {
+                                                runCatching {
+                                                    context.startActivity(
+                                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://my.telegram.org")).apply {
+                                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                        }
+                                                    )
+                                                }
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp),
+                                            shape = RoundedCornerShape(14.dp),
+                                            border = BorderStroke(1.dp, GlassAccent.copy(alpha = 0.55f)),
+                                            colors = ButtonDefaults.outlinedButtonColors(
+                                                containerColor = GlassAccent.copy(alpha = 0.08f),
+                                                contentColor = GlassAccent
+                                            )
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.OpenInNew,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = LoginText.API_CREATE,
+                                                fontSize = 14.5.sp,
+                                                fontFamily = ModernFont,
+                                                fontWeight = FontWeight.SemiBold
                                             )
                                         }
 
                                         Spacer(modifier = Modifier.height(10.dp))
-
-                                        NotchedGlassBox(
-                                            label = LoginText.API_HASH_LABEL,
-                                            focused = apiHashFocused,
-                                            isError = displayError != null
-                                        ) {
-                                            BasicTextField(
-                                                value = apiHash,
-                                                onValueChange = { input ->
-                                                    apiHash = input.filterNot { it.isWhitespace() }.take(64)
-                                                },
-                                                singleLine = true,
-                                                textStyle = TextStyle(
-                                                    color = Color.White,
-                                                    fontSize = 17.sp,
-                                                    fontFamily = ModernFont,
-                                                    fontWeight = FontWeight.Medium
-                                                ),
-                                                cursorBrush = SolidColor(GlassAccent),
-                                                keyboardOptions = KeyboardOptions(
-                                                    keyboardType = KeyboardType.Text,
-                                                    imeAction = ImeAction.Done
-                                                ),
-                                                keyboardActions = KeyboardActions(
-                                                    onDone = {
-                                                        if (canSubmitPhone) {
-                                                            abortRetryCount = 0
-                                                            submitFormattedPhone()
-                                                        }
-                                                    }
-                                                ),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .onFocusChanged { apiHashFocused = it.isFocused }
-                                            )
-                                        }
-
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        Text(
-                                            text = LoginText.API_HINT,
-                                            color = GlassTextSub,
-                                            fontSize = 12.5.sp,
-                                            fontFamily = ModernFont,
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-
-                                        Spacer(modifier = Modifier.height(6.dp))
 
                                         Text(
                                             text = LoginText.API_GUIDE_LINK,
@@ -1290,7 +1331,7 @@ fun LoginContent(
                                                         val char = code.getOrNull(index)?.toString() ?: ""
                                                         val isFocused = code.length == index
                                                         val boxColor = when {
-                                                            displayError != null -> GlassError
+                                                            displayError != null -> GlassAlert
                                                             isFocused -> GlassAccent
                                                             char.isNotEmpty() -> GlassAccent.copy(alpha = 0.5f)
                                                             else -> Color.White.copy(alpha = 0.16f)
@@ -1435,13 +1476,13 @@ fun LoginContent(
                                 Icon(
                                     imageVector = Icons.Default.ErrorOutline,
                                     contentDescription = null,
-                                    tint = GlassError,
+                                    tint = GlassAlert,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
                                     text = displayError ?: "",
-                                    color = GlassError,
+                                    color = GlassAlert,
                                     fontSize = 12.5.sp,
                                     fontFamily = ModernFont,
                                     lineHeight = 17.sp
