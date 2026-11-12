@@ -106,6 +106,13 @@ class PreviewViewModel @Inject constructor(
             driveRepository.downloadForPreview(file.id, file.parentChatId, file.name)
         } else if (file.isEncrypted && !_decryptedPaths.value.containsKey(file.id)) {
             decryptForPreview(file)
+        } else if (!file.isEncrypted) {
+            // Batch 7b content search: a local copy is now available for
+            // preview — index its text (best-effort, never throws).
+            // Encrypted files are skipped inside the indexer: their local
+            // bytes are ciphertext, and indexing a decrypted copy would
+            // put secure plaintext into the unencrypted FTS table.
+            driveRepository.indexFileContentForSearch(file)
         }
     }
 
