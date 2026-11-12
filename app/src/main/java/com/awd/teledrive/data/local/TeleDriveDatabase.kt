@@ -1,144 +1,238 @@
-package com.awd.teledrive.data.local
+package com.awd.teledrive.di
 
-import androidx.room.Database
-import androidx.room.RoomDatabase
-import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
+import android.content.Context
+import android.util.Log
+import androidx.room.Room
+import com.awd.teledrive.data.local.DriveDao
+import com.awd.teledrive.data.local.MIGRATION_5_6
+import com.awd.teledrive.data.local.MIGRATION_6_7
+import com.awd.teledrive.data.local.TeleDriveDatabase
+import com.awd.teledrive.data.local.TransferDao
+import com.awd.teledrive.data.secure.SecureSettings
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.components.SingletonComponent
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+import java.io.File
+import javax.inject.Singleton
 
-/**
- * Adds the P1-1 Room indexes on drive_items (parentChatId, virtualParentId,
- * remoteUniqueId, virtualId, splitGroupId, isStarred). The index names match
- * the explicit names declared on DriveItemEntity, so the schema Room expects
- * at version 6 is exactly what this migration creates.
- */
-val MIGRATION_5_6: Migration = object : Migration(5, 6) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_parentChatId ON drive_items (parentChatId)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_virtualParentId ON drive_items (virtualParentId)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_remoteUniqueId ON drive_items (remoteUniqueId)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_virtualId ON drive_items (virtualId)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_splitGroupId ON drive_items (splitGroupId)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_isStarred ON drive_items (isStarred)")
+@Module
+@InstallIn(SingletonComponent::class)
+object DatabaseModule {
+
+    private const val TAG = "DatabaseModule"
+    private const val LEGACY_PLAIN_DB_NAME = "teledrive_no_enc.db"
+    private const val ENCRYPTED_DB_NAME = "teledrive_enc.db"
+
+    @Provides
+    @Singleton
+    fun provideDatabase(
+        @ApplicationContext context: Context,
+        secureSettings: SecureSettings
+    ): TeleDriveDatabase {
+        // The native SQLCipher library must be loaded before any SQLCipher API
+        // (including SupportOpenHelperFactory) is used.
+        System.loadLibrary("sqlcipher")
+
+        val plainFile = context.getDatabasePath(LEGACY_PLAIN_DB_NAME)
+        val encryptedFile = context.getDatabasePath(ENCRYPTED_DB_NAME)
+
+        if (plainFile.exists() && plainFile.length() == 0L) {
+            // Room created the file but never initialised it: nothing to migrate.
+            deleteDatabaseFiles(plainFile)
+        }
+
+        val passphrase: ByteArray? = try {
+            secureSettings.getOrCreateDatabasePassphrase()
+        } catch (e: Exception) {
+            Log.e(TAG, "Secure storage unavailable, cannot obtain database passphrase", e)
+            null
+        }
+
+        if (passphrase == null) {
+            // Fail-closed for new installs (no key = no encrypted DB), but never
+            // lock existing users out of their plaintext data: if only a
+            // plaintext DB exists, keep opening it unencrypted.
+            if (!encryptedFile.exists() && plainFile.exists()) {
+                Log.e(TAG, "Opening legacy plaintext database: secure storage unavailable")
+                return buildPlainDatabase(context)
+            }
+            throw IllegalStateException("Secure storage unavailable: cannot open the encrypted database")
+        }
+
+        val useEncrypted: Boolean = when {
+            encryptedFile.exists() && !plainFile.exists() -> true
+            !encryptedFile.exists() && !plainFile.exists() -> true // fresh install
+            !encryptedFile.exists() && plainFile.exists() ->
+                migratePlaintextToEncrypted(plainFile, encryptedFile, passphrase)
+            else -> reconcileDuplicateDatabases(plainFile, encryptedFile, passphrase)
+        }
+
+        return if (useEncrypted) {
+            buildEncryptedDatabase(context, passphrase)
+        } else {
+            buildPlainDatabase(context)
+        }
     }
-}
 
-/**
- * Adds DriveItemEntity.contentHash (nullable, so existing rows are untouched)
- * with its index, plus the file_hashes table that remembers content hashes
- * across history re-syncs. The index name and table columns match exactly
- * what Room expects for the version 7 schema.
- */
-val MIGRATION_6_7: Migration = object : Migration(6, 7) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE drive_items ADD COLUMN contentHash TEXT")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_contentHash ON drive_items (contentHash)")
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS file_hashes (" +
-                "remoteUniqueId TEXT NOT NULL, " +
-                "contentHash TEXT NOT NULL, " +
-                "size INTEGER NOT NULL, " +
-                "updatedAt INTEGER NOT NULL, " +
-                "PRIMARY KEY(remoteUniqueId))"
+    private fun buildEncryptedDatabase(context: Context, passphrase: ByteArray): TeleDriveDatabase {
+        return Room.databaseBuilder(
+            context,
+            TeleDriveDatabase::class.java,
+            ENCRYPTED_DB_NAME
         )
+            .openHelperFactory(SupportOpenHelperFactory(passphrase))
+            // Current v5 installs upgrade to v6 through MIGRATION_5_6 and keep
+            // their data; fallbackToDestructiveMigration stays only as a last
+            // resort for pre-v5 installs with no migration path.
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+            .fallbackToDestructiveMigration(true)
+            .addMigrations(MIGRATION_7_8) // v7 -> v8: smart-search FTS tables + recent searches
+            .build()
     }
-}
 
-/**
- * Batch 7b smart search (v7 -> v8): FTS name index, file-content index
- * and recent searches.
- *
- * The drive_items_fts SQL below is byte-for-byte what Room 2.8.4
- * generates for `@Fts4(contentEntity = DriveItemEntity::class)` on
- * `DriveItemFts(name: String)` — verified against the Room 2.8.4
- * compiler sources (FtsEntity.createTableQuery / createSyncTriggers,
- * Property.databaseDefinition). Three details matter for migration
- * validation (Room compares the parsed FTS options, not the raw string):
- *  - `name` is `TEXT NOT NULL` (non-null Kotlin String);
- *  - the content option uses BACKTICKS (`` content=`drive_items` ``) —
- *    single quotes would parse to a different option string and fail
- *    validation with "Migration didn't properly handle";
- *  - Room 2.8.4 does NOT emit a `content_rowid` option (SQLite defaults
- *    it to `rowid`, which is what the triggers use), so none is written
- *    here either.
- * The four trigger statements are likewise Room's generated ones
- * (DELETE ... WHERE `docid`=OLD.`rowid`, INSERT (`docid`, `name`)
- * VALUES (NEW.`rowid`, NEW.`name`)). Room drops and re-creates these
- * triggers itself around migrations, so the names must match Room's
- * `room_fts_content_sync_<table>_<op>` pattern exactly.
- * The backfill INSERT SELECT is required: triggers only fire on future
- * writes, so without it every pre-existing file would be invisible to
- * name search until its row is re-written.
- *
- * REGISTRATION: DatabaseModule registers MIGRATION_5_6, MIGRATION_6_7
- * and MIGRATION_7_8 in both builders — without the 7->8 path Room's
- * fallbackToDestructiveMigration(true) would WIPE the database on upgrade.
- *
- * Renumbered at rebase: PR #13 (Batch 7a) merged first with its own
- * Migration(6, 7), so this one became Migration(7, 8) and the database
- * version is 8 (migration chain 6 -> 7 -> 8).
- */
-val MIGRATION_7_8: Migration = object : Migration(7, 8) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        // 1. External-content FTS4 mirror of drive_items.name.
-        db.execSQL(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS `drive_items_fts` " +
-                "USING FTS4(`name` TEXT NOT NULL, content=`drive_items`)"
+    private fun buildPlainDatabase(context: Context): TeleDriveDatabase {
+        return Room.databaseBuilder(
+            context,
+            TeleDriveDatabase::class.java,
+            LEGACY_PLAIN_DB_NAME
         )
-        db.execSQL(
-            "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_drive_items_fts_BEFORE_UPDATE " +
-                "BEFORE UPDATE ON `drive_items` BEGIN " +
-                "DELETE FROM `drive_items_fts` WHERE `docid`=OLD.`rowid`; END"
-        )
-        db.execSQL(
-            "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_drive_items_fts_BEFORE_DELETE " +
-                "BEFORE DELETE ON `drive_items` BEGIN " +
-                "DELETE FROM `drive_items_fts` WHERE `docid`=OLD.`rowid`; END"
-        )
-        db.execSQL(
-            "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_drive_items_fts_AFTER_UPDATE " +
-                "AFTER UPDATE ON `drive_items` BEGIN " +
-                "INSERT INTO `drive_items_fts`(`docid`, `name`) " +
-                "VALUES (NEW.`rowid`, NEW.`name`); END"
-        )
-        db.execSQL(
-            "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_drive_items_fts_AFTER_INSERT " +
-                "AFTER INSERT ON `drive_items` BEGIN " +
-                "INSERT INTO `drive_items_fts`(`docid`, `name`) " +
-                "VALUES (NEW.`rowid`, NEW.`name`); END"
-        )
-        // Backfill: index every file that already exists.
-        db.execSQL(
-            "INSERT INTO `drive_items_fts`(`docid`, `name`) " +
-                "SELECT `rowid`, `name` FROM `drive_items`"
-        )
-        // 2. Standalone FTS4 table for indexed file text (managed manually
-        // via DriveDao; same NOT NULL columns Room generates for
-        // FileContentFts).
-        db.execSQL(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS `file_content_fts` " +
-                "USING FTS4(`remoteUniqueId` TEXT NOT NULL, `contentText` TEXT NOT NULL)"
-        )
-        // 3. Recent search queries.
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS `recent_searches` " +
-                "(`query` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, PRIMARY KEY(`query`))"
-        )
+            // Same as the encrypted builder: v5 -> v6 goes through the
+            // migration and keeps data; destructive fallback is only for
+            // pre-v5 installs with no migration path.
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+            .fallbackToDestructiveMigration(true)
+            .addMigrations(MIGRATION_7_8) // v7 -> v8: smart-search FTS tables + recent searches
+            .build()
     }
-}
 
-@Database(
-    entities = [
-        DriveItemEntity::class,
-        TransferEntity::class,
-        FileHashEntity::class,
-        DriveItemFts::class,
-        FileContentFts::class,
-        RecentSearch::class
-    ],
-    version = 8,
-    exportSchema = false
-)
-abstract class TeleDriveDatabase : RoomDatabase() {
-    abstract fun driveDao(): DriveDao
-    abstract fun transferDao(): TransferDao
+    private fun countRows(db: SQLiteDatabase, table: String): Long {
+        db.rawQuery("SELECT count(*) FROM $table", null).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getLong(0) else -1L
+        }
+    }
+
+    /**
+     * Migrates the existing plaintext database into a new SQLCipher-encrypted
+     * file with sqlcipher_export, then verifies the row counts match before
+     * deleting the plaintext original. Returns true only if the encrypted
+     * database is verified complete. On any failure the plaintext database is
+     * left untouched and the partial encrypted file is removed, so the next
+     * launch retries from intact data.
+     */
+    private fun migratePlaintextToEncrypted(
+        plainFile: File,
+        encryptedFile: File,
+        passphrase: ByteArray
+    ): Boolean {
+        Log.i(TAG, "Migrating plaintext database to encrypted database")
+        var plainDb: SQLiteDatabase? = null
+        try {
+            plainDb = SQLiteDatabase.openDatabase(
+                plainFile.absolutePath, null, SQLiteDatabase.OPEN_READWRITE
+            )
+            val expectedDriveItems = countRows(plainDb, "drive_items")
+            val expectedTransfers = countRows(plainDb, "transfers")
+            // The passphrase bytes are bound as a blob, so the ATTACH key
+            // derivation is identical to SupportOpenHelperFactory's byte[]
+            // password (PBKDF2 over the same bytes).
+            plainDb.execSQL(
+                "ATTACH DATABASE ? AS encrypted KEY ?",
+                arrayOf<Any>(encryptedFile.absolutePath, passphrase)
+            )
+            plainDb.rawQuery("SELECT sqlcipher_export('encrypted')", null).use { it.moveToFirst() }
+            plainDb.execSQL("DETACH DATABASE encrypted")
+            plainDb.close()
+            plainDb = null
+
+            SQLiteDatabase.openDatabase(
+                encryptedFile.absolutePath, passphrase, null, SQLiteDatabase.OPEN_READWRITE, null
+            ).use { encDb ->
+                val actualDriveItems = countRows(encDb, "drive_items")
+                val actualTransfers = countRows(encDb, "transfers")
+                if (actualDriveItems != expectedDriveItems || actualTransfers != expectedTransfers) {
+                    throw IllegalStateException(
+                        "Migration verification failed: drive_items $actualDriveItems != $expectedDriveItems, " +
+                            "transfers $actualTransfers != $expectedTransfers"
+                    )
+                }
+            }
+            deleteDatabaseFiles(plainFile)
+            Log.i(TAG, "Database migration complete: $expectedDriveItems items, $expectedTransfers transfers")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Database migration failed, keeping plaintext database", e)
+            deleteDatabaseFiles(encryptedFile)
+            return false
+        } finally {
+            try {
+                plainDb?.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * Both files exist: a previous migration was interrupted. If the encrypted
+     * copy is complete, drop the plaintext original; if it is partial, remove
+     * it and re-migrate from the intact plaintext database. Returns true if
+     * the encrypted database is the copy to use.
+     */
+    private fun reconcileDuplicateDatabases(
+        plainFile: File,
+        encryptedFile: File,
+        passphrase: ByteArray
+    ): Boolean {
+        return try {
+            val expectedDriveItems: Long
+            val expectedTransfers: Long
+            SQLiteDatabase.openDatabase(
+                plainFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY
+            ).use { plainDb ->
+                expectedDriveItems = countRows(plainDb, "drive_items")
+                expectedTransfers = countRows(plainDb, "transfers")
+            }
+            var encryptedComplete = false
+            SQLiteDatabase.openDatabase(
+                encryptedFile.absolutePath, passphrase, null, SQLiteDatabase.OPEN_READONLY, null
+            ).use { encDb ->
+                encryptedComplete =
+                    countRows(encDb, "drive_items") == expectedDriveItems &&
+                        countRows(encDb, "transfers") == expectedTransfers
+            }
+            if (encryptedComplete) {
+                deleteDatabaseFiles(plainFile)
+                true
+            } else {
+                Log.w(TAG, "Encrypted database is incomplete, re-migrating from plaintext database")
+                deleteDatabaseFiles(encryptedFile)
+                migratePlaintextToEncrypted(plainFile, encryptedFile, passphrase)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not reconcile duplicate databases, keeping both and using the encrypted one", e)
+            true
+        }
+    }
+
+    private fun deleteDatabaseFiles(dbFile: File) {
+        listOf("", "-wal", "-shm", "-journal").forEach { suffix ->
+            try {
+                File(dbFile.absolutePath + suffix).delete()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    @Provides
+    fun provideDriveDao(database: TeleDriveDatabase): DriveDao {
+        return database.driveDao()
+    }
+
+    @Provides
+    fun provideTransferDao(database: TeleDriveDatabase): TransferDao {
+        return database.transferDao()
+    }
 }
