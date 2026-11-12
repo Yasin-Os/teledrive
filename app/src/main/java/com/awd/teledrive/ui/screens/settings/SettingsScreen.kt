@@ -38,19 +38,25 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Wifi
@@ -91,6 +97,7 @@ import com.awd.teledrive.R
 import com.awd.teledrive.data.model.GitHubRelease
 import com.awd.teledrive.data.repository.SettingsRepository
 import com.awd.teledrive.data.repository.UpdateState
+import com.awd.teledrive.domain.model.CloudBackup
 import com.awd.teledrive.ui.screens.home.HomeViewModel
 import com.awd.teledrive.ui.screens.security.SecurityViewModel
 import com.awd.teledrive.ui.theme.ThemeViewModel
@@ -131,6 +138,8 @@ fun SettingsScreen(
     val availableRelease by viewModel.availableRelease.collectAsState()
     val lastCheckStatus by viewModel.lastCheckStatus.collectAsState()
     val isThumbnailAutoDownloadEnabled by viewModel.isThumbnailAutoDownloadEnabled.collectAsState()
+    val currentLanguage by viewModel.currentLanguage.collectAsState()
+    val cloudBackups by viewModel.cloudBackups.collectAsState()
 
     val context = LocalContext.current
     val customPrefs = remember { context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE) }
@@ -178,8 +187,18 @@ fun SettingsScreen(
             (context as? android.app.Activity)?.finish()
         },
         onNavigateToBackupFolders = onNavigateToBackupFolders,
+        onNavigateToLogs = onNavigateToLogs,
         onNavigateToCacheDetails = onNavigateToCacheDetails,
         onNavigateToCloudAnalysis = onNavigateToCloudAnalysis,
+        onNavigateToAbout = onNavigateToAbout,
+        currentLanguage = currentLanguage,
+        cloudBackups = cloudBackups,
+        onSetLanguage = viewModel::setLanguage,
+        onLoadCloudBackups = viewModel::loadCloudBackups,
+        onRestoreCloudBackup = viewModel::restoreCloudBackup,
+        onTriggerCloudBackup = viewModel::triggerCloudMetadataBackup,
+        onExportMetadata = viewModel::exportMetadata,
+        onImportMetadata = viewModel::importMetadata,
         onSetDarkMode = { themeViewModel.setDarkMode(it) },
         onSetThemeColor = { themeViewModel.setThemeColor(it) },
         onSetSecurityEnabled = { securityViewModel.setSecurityEnabled(it) },
@@ -222,8 +241,18 @@ fun SettingsContent(
     onSetDeleteAfterBackup: (Boolean) -> Unit,
     onLogout: () -> Unit,
     onNavigateToBackupFolders: () -> Unit,
+    onNavigateToLogs: () -> Unit,
     onNavigateToCacheDetails: () -> Unit,
     onNavigateToCloudAnalysis: () -> Unit,
+    onNavigateToAbout: () -> Unit,
+    currentLanguage: String,
+    cloudBackups: List<CloudBackup>,
+    onSetLanguage: (String) -> Unit,
+    onLoadCloudBackups: () -> Unit,
+    onRestoreCloudBackup: (Long, (Boolean) -> Unit) -> Unit,
+    onTriggerCloudBackup: () -> Unit,
+    onExportMetadata: () -> String,
+    onImportMetadata: (String) -> Boolean,
     onSetDarkMode: (Boolean) -> Unit,
     onSetThemeColor: (Color) -> Unit,
     onSetSecurityEnabled: (Boolean) -> Unit,
@@ -246,6 +275,10 @@ fun SettingsContent(
     var showLogoutConfirm by remember { mutableStateOf(false) }
     var showThemeRestartConfirm by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
+    var showLanguageDialog by remember { mutableStateOf(false) }
+    var showLanguageChangedDialog by remember { mutableStateOf(false) }
+    var showCloudBackupsDialog by remember { mutableStateOf(false) }
+    var pendingRestoreBackup by remember { mutableStateOf<CloudBackup?>(null) }
 
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -268,6 +301,41 @@ fun SettingsContent(
             val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             context.contentResolver.takePersistableUriPermission(it, takeFlags)
             onSetDownloadUri(it.toString())
+        }
+    }
+
+    // P1-11: export the local manifest (folders + file mappings) as a JSON file.
+    val exportMetadataLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        uri?.let {
+            try {
+                context.contentResolver.openOutputStream(it)?.use { out ->
+                    out.write(onExportMetadata().toByteArray(Charsets.UTF_8))
+                }
+                Toast.makeText(context, "Metadata exported", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Export failed", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // P1-11: import a previously exported manifest JSON file.
+    val importMetadataLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            try {
+                val text = context.contentResolver.openInputStream(it)?.bufferedReader()?.use { reader -> reader.readText() } ?: ""
+                val ok = onImportMetadata(text)
+                Toast.makeText(
+                    context,
+                    if (ok) "Metadata imported" else "Import failed: invalid file",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Import failed", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -482,6 +550,110 @@ fun SettingsContent(
         )
     }
 
+    // P1-11: language picker. Only locales with a translated strings.xml exist
+    // (English = default values/, Indonesian = values-in/), so only those two
+    // are offered. setLanguage() persists the choice and applies it via
+    // AppCompatDelegate; a restart is offered so every screen picks it up.
+    if (showLanguageDialog) {
+        val languageOptions = listOf("en" to "English", "id" to "Bahasa Indonesia")
+        AlertDialog(
+            onDismissRequest = { showLanguageDialog = false },
+            title = { Text(stringResource(R.string.language)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    languageOptions.forEach { (code, label) ->
+                        ModernSelectionItem(
+                            title = label,
+                            isSelected = currentLanguage == code,
+                            onClick = {
+                                onSetLanguage(code)
+                                showLanguageDialog = false
+                                showLanguageChangedDialog = true
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    if (showLanguageChangedDialog) {
+        AlertDialog(
+            onDismissRequest = { showLanguageChangedDialog = false },
+            title = { Text(stringResource(R.string.language_changed_title)) },
+            text = { Text(stringResource(R.string.language_changed_message)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLanguageChangedDialog = false
+                    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                    intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    (context as? android.app.Activity)?.finish()
+                }) { Text(stringResource(R.string.restart_app)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLanguageChangedDialog = false }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
+
+    // P1-11: list of manifest backups stored in Saved Messages; tapping one
+    // asks for confirmation, then restores it (replaces local folders).
+    if (showCloudBackupsDialog) {
+        AlertDialog(
+            onDismissRequest = { showCloudBackupsDialog = false },
+            title = { Text("Restore from Cloud") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (cloudBackups.isEmpty()) {
+                        Text(
+                            text = "No cloud backups found",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        val format = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
+                        cloudBackups.forEach { backup ->
+                            ModernSelectionItem(
+                                title = "${format.format(Date(backup.date))} • ${backup.folderCount} folders",
+                                isSelected = false,
+                                onClick = { pendingRestoreBackup = backup }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    if (pendingRestoreBackup != null) {
+        val backup = pendingRestoreBackup!!
+        val format = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
+        AlertDialog(
+            onDismissRequest = { pendingRestoreBackup = null },
+            title = { Text("Restore backup?") },
+            text = { Text("Restore the backup from ${format.format(Date(backup.date))}? Your current folders will be replaced.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRestoreBackup = null
+                    showCloudBackupsDialog = false
+                    onRestoreCloudBackup(backup.messageId) { ok ->
+                        Toast.makeText(
+                            context,
+                            if (ok) "Backup restored" else "Restore failed",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }) { Text("Restore") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestoreBackup = null }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -660,6 +832,28 @@ fun SettingsContent(
                         modifier = Modifier.padding(start = 68.dp, bottom = 6.dp)
                     )
                 }
+                // P1-11: previously dead navigation targets — the routes and the
+                // onNavigateTo* callbacks already existed, but no row led to them.
+                ModernActionBarItem(
+                    icon = Icons.Default.Language, title = stringResource(R.string.language),
+                    accentColor = Color(0xFFEC4899),
+                    badgeText = when (currentLanguage) {
+                        "id" -> "Bahasa Indonesia"
+                        "en" -> "English"
+                        else -> currentLanguage
+                    },
+                    onClick = { showLanguageDialog = true }
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.Article, title = "View Logs",
+                    accentColor = Color(0xFFEC4899),
+                    onClick = onNavigateToLogs
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.Info, title = "About",
+                    accentColor = Color(0xFFEC4899),
+                    onClick = onNavigateToAbout
+                )
                 ModernActionBarItem(
                     icon = Icons.AutoMirrored.Filled.Logout, title = "Log Out",
                     accentColor = MaterialTheme.colorScheme.error,
@@ -668,7 +862,40 @@ fun SettingsContent(
                 )
             }
 
-            // 6. Copyright Footer
+            // 6. Data & Backup Bar Section (Teal Accent) — P1-11: wires the
+            // manifest backup / restore / export / import functions that already
+            // existed in SettingsViewModel but had no UI at all.
+            SettingsSectionBar(title = "Data & Backup", accentColor = Color(0xFF14B8A6), glowAlpha = glowAlpha) {
+                ModernActionBarItem(
+                    icon = Icons.Default.CloudUpload, title = "Back Up to Cloud",
+                    accentColor = Color(0xFF14B8A6),
+                    badgeText = "Saved Messages",
+                    onClick = {
+                        onTriggerCloudBackup()
+                        Toast.makeText(context, "Cloud backup started", Toast.LENGTH_SHORT).show()
+                    }
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.Restore, title = "Restore from Cloud",
+                    accentColor = Color(0xFF14B8A6),
+                    onClick = {
+                        onLoadCloudBackups()
+                        showCloudBackupsDialog = true
+                    }
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.FileDownload, title = "Export Metadata",
+                    accentColor = Color(0xFF14B8A6), badgeText = "JSON",
+                    onClick = { exportMetadataLauncher.launch("mycloud-metadata.json") }
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.FileUpload, title = "Import Metadata",
+                    accentColor = Color(0xFF14B8A6), badgeText = "JSON",
+                    onClick = { importMetadataLauncher.launch(arrayOf("application/json")) }
+                )
+            }
+
+            // 7. Copyright Footer
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
