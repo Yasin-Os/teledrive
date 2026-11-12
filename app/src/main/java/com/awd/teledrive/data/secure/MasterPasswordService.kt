@@ -34,7 +34,13 @@ class MasterPasswordService @Inject constructor(
         // reads the plaintext value (getStoredPassword had no callers), so
         // deleting it cannot break unlocking: the user still verifies with
         // verifyPassword(), which only needs salt + hash.
-        secureSettings.removeString(legacyRawKey)
+        // Best-effort only: if secure storage is unavailable, removeString
+        // throws and must not break startup.
+        try {
+            secureSettings.removeString(legacyRawKey)
+        } catch (e: Exception) {
+            Log.e("MasterPasswordService", "Could not delete legacy plaintext password key", e)
+        }
     }
 
     fun isPasswordSet(): Boolean {

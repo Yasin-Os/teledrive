@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -120,8 +121,35 @@ class AuthRepository @Inject constructor(
             deviceModel = android.os.Build.MODEL ?: "Android"
             systemVersion = android.os.Build.VERSION.RELEASE ?: "1.0"
             applicationVersion = "2.0"
+            // Encrypt the TDLib database (see resolveTdlibEncryptionKey).
+            encryptionKey = resolveTdlibEncryptionKey()
         }
         telegramClient.send(params) { _ -> }
+    }
+
+    /**
+     * Resolves the TDLib database encryption key. A stored key must be
+     * supplied on every launch once the TDLib database is encrypted, so a
+     * key created for a fresh database is reused afterwards. Adding a key to
+     * an EXISTING unencrypted TDLib database would make it unreadable, so
+     * existing installs keep the current behaviour (empty key) and only fresh
+     * installs get an encrypted database. If the key cannot be stored, the
+     * fresh install also falls back to the current unencrypted behaviour.
+     */
+    private fun resolveTdlibEncryptionKey(): ByteArray {
+        secureSettings.getStoredTdlibEncryptionKey()?.let { return it }
+
+        val dbDir = File("${context.filesDir.absolutePath}/tdlib")
+        val hasExistingDb = dbDir.exists() && dbDir.listFiles()?.isNotEmpty() == true
+        if (hasExistingDb) {
+            return ByteArray(0)
+        }
+        return try {
+            secureSettings.getOrCreateTdlibEncryptionKey()
+        } catch (e: Exception) {
+            android.util.Log.e("AuthRepository", "Could not store TDLib encryption key, continuing unencrypted", e)
+            ByteArray(0)
+        }
     }
 
     fun saveApiCredentials(apiId: Int, apiHash: String) {

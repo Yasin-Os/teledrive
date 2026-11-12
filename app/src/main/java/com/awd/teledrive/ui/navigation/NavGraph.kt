@@ -114,6 +114,8 @@ fun NavGraph(navController: NavHostController) {
 
     val isSafeFolderPinSet by securityViewModel.isSafeFolderPinSet.collectAsState()
     val isSafeFolderLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
+    val safePinError by securityViewModel.safePinError.collectAsState()
+    val safePinLockoutRemaining by securityViewModel.safePinLockoutRemainingSeconds.collectAsState()
 
     var showSafePinUnlockDialog by remember { mutableStateOf(false) }
     var showCreateSafePinDialog by remember { mutableStateOf(false) }
@@ -426,11 +428,13 @@ fun NavGraph(navController: NavHostController) {
             },
             confirmButton = {
                 Button(onClick = {
-                    if (securityViewModel.verifySafeFolderPin(pin)) {
+                    if (safePinLockoutRemaining > 0) {
+                        error = "Too many wrong attempts. Try again in ${safePinLockoutRemaining}s"
+                    } else if (securityViewModel.verifySafeFolderPin(pin)) {
                         showSafePinUnlockDialog = false
                         navController.navigate(Screen.SecureStorage.route)
                     } else {
-                        error = "Incorrect PIN"
+                        error = safePinError ?: "Incorrect PIN"
                     }
                 }) { Text(stringResource(R.string.unlock)) }
             },
