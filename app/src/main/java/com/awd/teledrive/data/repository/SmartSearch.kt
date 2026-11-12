@@ -212,8 +212,8 @@ fun buildSmartSearchQuery(query: String, filters: SmartSearchFilters): SupportSQ
         .append(" ORDER BY d.isFolder DESC, d.createdAt DESC LIMIT 200")
         .toString()
     val args = ArrayList<Any?>(selectArgs.size + filterArgs.size + textArgs.size)
-    args += selectArgs
-    args += filterArgs
-    args += textArgs
+    args.addAll(selectArgs)
+    args.addAll(filterArgs)
+    args.addAll(textArgs)
     return SimpleSQLiteQuery(sql, args.toTypedArray())
 }
