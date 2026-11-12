@@ -58,6 +58,7 @@ import com.awd.teledrive.ui.screens.preview.PreviewScreen
 import com.awd.teledrive.ui.screens.preview.TextViewerScreen
 import com.awd.teledrive.ui.screens.preview.VideoPlayerScreen
 import com.awd.teledrive.ui.screens.security.MasterPasswordScreen
+import com.awd.teledrive.ui.screens.security.SafeFolderUnlockDialog
 import com.awd.teledrive.ui.screens.security.SecurityViewModel
 import com.awd.teledrive.ui.screens.settings.AboutScreen
 import com.awd.teledrive.ui.screens.settings.BackupSettingsScreen
