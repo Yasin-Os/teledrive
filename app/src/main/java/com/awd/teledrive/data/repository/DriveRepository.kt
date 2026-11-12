@@ -1,5 +1,6 @@
 package com.awd.teledrive.data.repository
 
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.database.ContentObserver
@@ -593,7 +594,13 @@ class DriveRepository @Inject constructor(
         val modifiedSelectionArgs = if (watermarkSec == 0L) null
             else arrayOf(watermarkSec.toString())
 
-        val projection = arrayOf(MediaStore.MediaColumns.DATA)
+        // The deprecated DATA column is gone: reconstruct the file
+        // path from _ID + DISPLAY_NAME + RELATIVE_PATH instead.
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH
+        )
         val uris = mutableListOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -607,10 +614,17 @@ class DriveRepository @Inject constructor(
         uris.forEach { uri ->
             try {
                 context.contentResolver.query(uri, projection, modifiedSelection, modifiedSelectionArgs, null)?.use { cursor ->
-                    val dataIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                    if (dataIdx != -1) {
+                    val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                    val nameIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val relIdx = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                    if (idIdx != -1 && nameIdx != -1) {
                         while (cursor.moveToNext()) {
-                            val filePath = cursor.getString(dataIdx) ?: continue
+                            val displayName = cursor.getString(nameIdx) ?: continue
+                            // RELATIVE_PATH is null/-1 for files at the
+                            // storage root and ends with '/' otherwise.
+                            val relativePath = if (relIdx != -1) cursor.getString(relIdx).orEmpty() else ""
+                            val relDir = if (relativePath.isEmpty() || relativePath.endsWith("/")) relativePath else "$relativePath/"
+                            val filePath = File(Environment.getExternalStorageDirectory(), relDir + displayName).absolutePath
                             if (normalizedPaths.any { folder -> filePath.startsWith("$folder/") || filePath == folder }) {
                                 val f = File(filePath)
                                 if (f.exists() && f.isFile && f.length() > 0 && !f.name.startsWith(".")) {
@@ -1619,8 +1633,35 @@ class DriveRepository @Inject constructor(
         val path = file.absolutePath
         try { if (file.exists()) file.delete() } catch (e: Exception) {}
         try {
+            // The deprecated DATA column is gone: resolve the row
+            // by DISPLAY_NAME, match it by reconstructing the path from
+            // RELATIVE_PATH (null/empty = storage root), then delete by _ID.
             val externalUri = MediaStore.Files.getContentUri("external")
-            context.contentResolver.delete(externalUri, "${MediaStore.MediaColumns.DATA}=?", arrayOf(path))
+            val projection = arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.RELATIVE_PATH
+            )
+            context.contentResolver.query(
+                externalUri,
+                projection,
+                "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                arrayOf(file.name),
+                null
+            )?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                val relIdx = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                if (idIdx != -1) {
+                    while (cursor.moveToNext()) {
+                        val relativePath = if (relIdx != -1) cursor.getString(relIdx).orEmpty() else ""
+                        val relDir = if (relativePath.isEmpty() || relativePath.endsWith("/")) relativePath else "$relativePath/"
+                        val storedPath = File(Environment.getExternalStorageDirectory(), relDir + file.name).absolutePath
+                        if (storedPath == path) {
+                            val itemUri = ContentUris.withAppendedId(externalUri, cursor.getLong(idIdx))
+                            context.contentResolver.delete(itemUri, null, null)
+                        }
+                    }
+                }
+            }
         } catch (e: Exception) {}
         try { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) } catch (e: Exception) {}
     }
