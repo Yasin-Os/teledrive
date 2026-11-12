@@ -5,7 +5,13 @@ import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.repository.DriveRepository
+import com.awd.teledrive.data.repository.SearchDateFilter
+import com.awd.teledrive.data.repository.SearchScope
+import com.awd.teledrive.data.repository.SearchSizeFilter
+import com.awd.teledrive.data.repository.SearchTypeFilter
 import com.awd.teledrive.data.repository.ShareRepository
+import com.awd.teledrive.data.repository.SmartSearchFilters
+import com.awd.teledrive.data.repository.SmartSearchResult
 import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.data.secure.MasterPasswordService
 import com.awd.teledrive.data.secure.SecureSessionManager
@@ -23,6 +29,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -72,6 +79,19 @@ class HomeViewModel @Inject constructor(
     private val searchQueryDebounced = _searchQuery
         .debounce(300)
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    // Batch 7b smart search filters (filter row under the search field).
+    private val _searchTypeFilter = MutableStateFlow(SearchTypeFilter.ALL)
+    val searchTypeFilter = _searchTypeFilter.asStateFlow()
+
+    private val _searchSizeFilter = MutableStateFlow(SearchSizeFilter.ANY)
+    val searchSizeFilter = _searchSizeFilter.asStateFlow()
+
+    private val _searchDateFilter = MutableStateFlow(SearchDateFilter.ANY)
+    val searchDateFilter = _searchDateFilter.asStateFlow()
+
+    private val _searchScope = MutableStateFlow(SearchScope.EVERYWHERE)
+    val searchScope = _searchScope.asStateFlow()
 
     private val _sortOrder = MutableStateFlow(SortOrder.DATE)
     val sortOrder = _sortOrder.asStateFlow()
@@ -177,6 +197,39 @@ class HomeViewModel @Inject constructor(
             mime.contains("x-tar") || mime.contains("gzip")
     }
 
+    // Batch 7b smart search: the Home search no longer filters the
+    // in-memory list by name only. While a query (or any search filter)
+    // is active, results come from one DAO query — name FTS + content
+    // FTS + type/size/date/scope filters (DriveRepository.smartSearch).
+    // Blank query + default filters = inactive, plain empty list.
+    @OptIn(FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val smartSearchResults: StateFlow<List<SmartSearchResult>> = combine(
+        searchQueryDebounced,
+        _searchTypeFilter,
+        _searchSizeFilter,
+        _searchDateFilter,
+        _searchScope,
+        _currentVirtualFolderId
+    ) { query, type, size, date, scope, folder ->
+        SmartSearchFilters(type, size, date, scope, folder) to query
+    }.flatMapLatest { (filters, query) ->
+        if (query.isBlank() && filters.isDefault) flowOf(emptyList())
+        else driveRepository.smartSearch(query, filters)
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Ids of files whose hit came from file text, so the list can show
+    // the "in file text" label on those rows.
+    val contentMatchedIds: StateFlow<Set<Long>> = smartSearchResults
+        .map { results -> results.filter { it.matchedInContent }.map { it.item.id }.toSet() }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    val recentSearches: StateFlow<List<String>> = driveRepository.getRecentSearches()
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     // ইন-মেমোরি ০ মিলিসেকেন্ড ফিল্টারিং ইঞ্জিন (ব্যাকে আসলে বা ক্যাটাগরিতে ঢুকলে কখনোই আটকে যাবে না)
     val items: StateFlow<List<DriveItem>> = combine(
         listOf(
@@ -188,7 +241,12 @@ class HomeViewModel @Inject constructor(
             _filterType,
             _customCategory,
             _recentOpenedIds,
-            _selectedCategoryFolderId
+            _selectedCategoryFolderId,
+            _searchTypeFilter,
+            _searchSizeFilter,
+            _searchDateFilter,
+            _searchScope,
+            smartSearchResults
         )
     ) { arr ->
         @Suppress("UNCHECKED_CAST")
@@ -203,11 +261,23 @@ class HomeViewModel @Inject constructor(
         @Suppress("UNCHECKED_CAST")
         val recentIds = arr[7] as List<Long>
         val selectedCatFolder = arr[8] as String
+        val searchType = arr[9] as SearchTypeFilter
+        val searchSize = arr[10] as SearchSizeFilter
+        val searchDate = arr[11] as SearchDateFilter
+        val searchScopeValue = arr[12] as SearchScope
+        @Suppress("UNCHECKED_CAST")
+        val smartResults = arr[13] as List<SmartSearchResult>
 
-        if (query.isNotEmpty()) {
-            val matchedFolders = allFolders.filter { it.name.contains(query, ignoreCase = true) }
-            val matchedFiles = allFiles.filter { it.name.contains(query, ignoreCase = true) }
-            return@combine matchedFolders + matchedFiles
+        // Batch 7b: while searching (query or any search filter active)
+        // the list is the DAO smart-search result — name FTS + content
+        // FTS + filters — not the old in-memory name-contains filter.
+        val smartActive = query.isNotEmpty() ||
+            searchType != SearchTypeFilter.ALL ||
+            searchSize != SearchSizeFilter.ANY ||
+            searchDate != SearchDateFilter.ANY ||
+            searchScopeValue != SearchScope.EVERYWHERE
+        if (smartActive) {
+            return@combine smartResults.map { it.item }
         }
 
         if (customCat == CustomCategory.RECENTS) {
@@ -271,6 +341,51 @@ class HomeViewModel @Inject constructor(
             hasInitialSynced = true
             fetchItems()
         }
+        startSavingRecentSearches()
+    }
+
+    // Batch 7b: save the query only after the user stops typing for
+    // 1.5s, so intermediate prefixes ("r", "re", "rep") do not pollute
+    // recent searches. IME search-submit saves immediately (see
+    // saveRecentSearch, called from HomeScreen).
+    @OptIn(FlowPreview::class)
+    private fun startSavingRecentSearches() {
+        viewModelScope.launch {
+            _searchQuery.debounce(1500).collect { q ->
+                if (q.isNotBlank()) driveRepository.saveRecentSearch(q)
+            }
+        }
+    }
+
+    fun saveRecentSearch(query: String) {
+        driveRepository.saveRecentSearch(query)
+    }
+
+    fun deleteRecentSearch(query: String) {
+        driveRepository.deleteRecentSearch(query)
+    }
+
+    fun setSearchTypeFilter(type: SearchTypeFilter) {
+        _searchTypeFilter.value = type
+    }
+
+    fun setSearchSizeFilter(size: SearchSizeFilter) {
+        _searchSizeFilter.value = size
+    }
+
+    fun setSearchDateFilter(date: SearchDateFilter) {
+        _searchDateFilter.value = date
+    }
+
+    fun setSearchScope(scope: SearchScope) {
+        _searchScope.value = scope
+    }
+
+    fun clearSearchFilters() {
+        _searchTypeFilter.value = SearchTypeFilter.ALL
+        _searchSizeFilter.value = SearchSizeFilter.ANY
+        _searchDateFilter.value = SearchDateFilter.ANY
+        _searchScope.value = SearchScope.EVERYWHERE
     }
 
     fun setSortOrder(order: SortOrder) {
