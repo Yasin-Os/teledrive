@@ -338,4 +338,35 @@
     <string name="encrypting_perc">Encrypting... %d%%</string>
     <string name="decrypting_perc">Decrypting... %d%%</string>
     <string name="status_waiting">Waiting...</string>
+    <!-- Batch 7b: Vault 2.0 -->
+    <string name="vault_biometric_title">Unlock with biometrics</string>
+    <string name="vault_biometric_subtitle">Use fingerprint or face to open the Safe folder</string>
+    <string name="vault_auto_lock_title">Auto-lock Safe folder</string>
+    <string name="vault_auto_lock_subtitle">Lock again after being away from the app</string>
+    <string name="vault_auto_lock_minutes">%1$d min</string>
+    <string name="vault_auto_lock_never">Never</string>
+    <string name="vault_encrypt_on_hide_title">Encrypt on hide</string>
+    <string name="vault_encrypt_on_hide_subtitle">Also encrypt the copy saved on this device</string>
+    <string name="vault_hide_note">Hiding a file only removes it from the main list. The copy stored in Telegram is not encrypted. If “Encrypt on hide” is on, only the copy saved on this device is encrypted.</string>
+    <string name="vault_unlock_title">Safe Folder PIN</string>
+    <string name="vault_enter_pin">Enter PIN Code</string>
+    <string name="vault_incorrect_pin">Incorrect PIN</string>
+    <string name="vault_pin_locked_out">Too many wrong attempts. Try again in %1$d s</string>
+    <!-- Batch 7b: Smart search -->
+    <string name="search_matched_in_content">in file text</string>
+    <string name="search_recent_title">Recent searches</string>
+    <string name="search_filter_type">Type</string>
+    <string name="search_filter_size">Size</string>
+    <string name="search_filter_date">Date</string>
+    <string name="search_filter_scope">In</string>
+    <string name="search_size_any">Any size</string>
+    <string name="search_size_under_1mb">&lt; 1 MB</string>
+    <string name="search_size_1_100mb">1-100 MB</string>
+    <string name="search_size_over_100mb">&gt; 100 MB</string>
+    <string name="search_date_any">Any time</string>
+    <string name="search_date_today">Today</string>
+    <string name="search_date_week">This week</string>
+    <string name="search_date_month">This month</string>
+    <string name="search_scope_everywhere">Everywhere</string>
+    <string name="search_scope_current_folder">Current folder</string>
 </resources>
