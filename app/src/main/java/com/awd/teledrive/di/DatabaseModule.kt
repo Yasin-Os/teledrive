@@ -6,6 +6,7 @@ import androidx.room.Room
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.MIGRATION_5_6
 import com.awd.teledrive.data.local.MIGRATION_6_7
+import com.awd.teledrive.data.local.MIGRATION_7_8
 import com.awd.teledrive.data.local.TeleDriveDatabase
 import com.awd.teledrive.data.local.TransferDao
 import com.awd.teledrive.data.secure.SecureSettings
@@ -90,6 +91,7 @@ object DatabaseModule {
             // resort for pre-v5 installs with no migration path.
             .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration(true)
+            .addMigrations(MIGRATION_7_8) // v7 -> v8: smart-search FTS tables + recent searches
             .build()
     }
 
@@ -104,6 +106,7 @@ object DatabaseModule {
             // pre-v5 installs with no migration path.
             .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration(true)
+            .addMigrations(MIGRATION_7_8) // v7 -> v8: smart-search FTS tables + recent searches
             .build()
     }
 

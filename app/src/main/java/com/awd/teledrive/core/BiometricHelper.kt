@@ -1,10 +1,29 @@
 package com.awd.teledrive.core
 
+import android.content.Context
+import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 
 object BiometricHelper {
+    /**
+     * True only when this device can do a strong biometric check right now
+     * (hardware present, enrolled, and available). Devices without
+     * biometrics return false so callers stay on PIN-only and never crash.
+     * BIOMETRIC_STRONG only: the prompt below uses a negative button, which
+     * cannot be combined with DEVICE_CREDENTIAL.
+     */
+    fun isBiometricAvailable(context: Context): Boolean {
+        return try {
+            BiometricManager.from(context).canAuthenticate(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG
+            ) == BiometricManager.BIOMETRIC_SUCCESS
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun showPrompt(
         activity: FragmentActivity,
         title: String,

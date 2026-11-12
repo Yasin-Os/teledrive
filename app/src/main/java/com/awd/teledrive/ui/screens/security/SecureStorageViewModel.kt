@@ -1,12 +1,17 @@
 package com.awd.teledrive.ui.screens.security
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.data.repository.DriveRepository
+import com.awd.teledrive.data.secure.EncryptionManager
+import com.awd.teledrive.data.secure.SecureSessionManager
+import com.awd.teledrive.data.secure.SecureSettings
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.home.FilterType
 import com.awd.teledrive.ui.screens.home.SortOrder
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,12 +21,27 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
 class SecureStorageViewModel @Inject constructor(
-    private val driveRepository: DriveRepository
+    private val driveRepository: DriveRepository,
+    private val encryptionManager: EncryptionManager,
+    private val secureSessionManager: SecureSessionManager,
+    private val secureSettings: SecureSettings
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "SecureStorageViewModel"
+
+        // Vault 2.0: when ON, hiding a file also encrypts the copy saved on
+        // this device (AES-GCM, safe-folder PIN). Default OFF: hiding only
+        // removes the file from the main list. The copy stored in Telegram
+        // is NEVER encrypted by this — see the note on the vault screen.
+        private const val KEY_ENCRYPT_ON_HIDE = "safe_folder_encrypt_on_hide"
+    }
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
@@ -37,6 +57,17 @@ class SecureStorageViewModel @Inject constructor(
 
     private val _isInitialLoading = MutableStateFlow(false)
     val isInitialLoading = _isInitialLoading.asStateFlow()
+
+    // Vault 2.0: encrypt the local copy when hiding. Default OFF.
+    private val _isEncryptOnHideEnabled = MutableStateFlow(
+        secureSettings.getBoolean(KEY_ENCRYPT_ON_HIDE, false)
+    )
+    val isEncryptOnHideEnabled = _isEncryptOnHideEnabled.asStateFlow()
+
+    fun setEncryptOnHideEnabled(enabled: Boolean) {
+        secureSettings.saveBoolean(KEY_ENCRYPT_ON_HIDE, enabled)
+        _isEncryptOnHideEnabled.value = enabled
+    }
 
     // ক্লাউডের যে ফাইলগুলো এখনো সাধারণ ক্লাউডে আছে (Safe Folder-এ হাইড করার জন্য পিকারে দেখাবে)
     val availableCloudFiles: StateFlow<List<DriveItem.File>> = driveRepository.getAllFiles()
@@ -92,8 +123,73 @@ class SecureStorageViewModel @Inject constructor(
         }
     }
 
-    fun hideCloudFilesInSafeFolder(fileIds: List<Long>) {
-        driveRepository.setCloudItemsSafeState(fileIds, hideInSafeFolder = true)
+    fun hideCloudFilesInSafeFolder(files: List<DriveItem.File>) {
+        viewModelScope.launch {
+            if (_isEncryptOnHideEnabled.value) {
+                encryptLocalCopies(files)
+            }
+            driveRepository.setCloudItemsSafeState(files.map { it.id }, hideInSafeFolder = true)
+        }
+    }
+
+    /**
+     * Vault 2.0, encrypt-on-hide: for each file that has a local copy on
+     * this device, encrypt that copy with the safe-folder PIN (the session
+     * password — the same credential PreviewViewModel decrypts with on open)
+     * into a ".enc" file next to the original. The plaintext local copy is
+     * deleted only once the new path is recorded in the database, so a
+     * failure can never silently lose the file. Files with no local copy
+     * are hidden as before; the copy stored in Telegram is untouched.
+     * Unhide is unaffected: it only restores the main-list visibility, and
+     * an encrypted local copy still opens through the existing decrypt
+     * path (PreviewViewModel.decryptForPreview).
+     */
+    private suspend fun encryptLocalCopies(files: List<DriveItem.File>) {
+        val password = secureSessionManager.decryptedPassword.value ?: run {
+            Log.w(TAG, "Encrypt-on-hide skipped: no vault session (safe PIN) available")
+            return
+        }
+        withContext(Dispatchers.IO) {
+            for (file in files) {
+                if (file.isEncrypted) continue
+                val localPath = file.localPath ?: continue
+                val localFile = File(localPath)
+                if (!localFile.exists() || !localFile.isFile) continue
+                val encFile = File(localFile.parentFile, localFile.name + ".enc")
+                try {
+                    if (encFile.exists()) encFile.delete()
+                    encryptionManager.encryptFile(localFile, encFile, password)
+                    if (persistEncryptedLocalCopy(file, encFile.absolutePath)) {
+                        localFile.delete()
+                    } else {
+                        // The new path could not be recorded yet: roll back
+                        // so the plaintext local copy is never silently lost.
+                        encFile.delete()
+                        Log.w(TAG, "Encrypt-on-hide rolled back for ${file.name}: encrypted path not recorded")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Encrypt-on-hide failed for ${file.name}", e)
+                    if (encFile.exists()) encFile.delete()
+                }
+            }
+        }
+    }
+
+    /**
+     * Records an encrypted local copy in the database (localPath -> the
+     * ".enc" path, isEncrypted = true) and returns true on success.
+     * Wired to DriveRepository.markLocalCopyEncrypted (Batch 7b search
+     * side). False on any failure — encryptLocalCopies() then rolls back
+     * by deleting the ".enc" file so the plaintext copy is never lost.
+     */
+    private suspend fun persistEncryptedLocalCopy(file: DriveItem.File, encryptedPath: String): Boolean {
+        return try {
+            driveRepository.markLocalCopyEncrypted(file.id, file.parentChatId, encryptedPath)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "persistEncryptedLocalCopy failed for ${file.name}", e)
+            false
+        }
     }
 
     fun unhideFilesToCloud(fileIds: List<Long>) {

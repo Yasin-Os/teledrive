@@ -1,10 +1,13 @@
 package com.awd.teledrive.data.local
 
 import androidx.room.Dao
+import androidx.room.Embedded
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.RawQuery
 import androidx.room.Transaction
+import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
@@ -173,6 +176,81 @@ interface DriveDao {
 
     @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
     fun searchGlobalPage(query: String, limit: Int, offset: Int): Flow<List<DriveItemEntity>>
+
+    // ---- Batch 7b smart search ----
+
+    /**
+     * One row of a smart-search result. `matchedInContent` is 1 when the
+     * hit came from file_content_fts (file text) rather than the file name,
+     * so the UI can mark it ("in file text").
+     */
+    data class SmartSearchRow(
+        @Embedded val item: DriveItemEntity,
+        val matchedInContent: Int
+    )
+
+    /**
+     * Combined name-FTS + content-FTS + filters search. The SQL is built
+     * by DriveRepository (SimpleSQLiteQuery, bound `?` args only — user
+     * input is never concatenated into SQL) and always selects
+     * `d.*, <0|1> AS matchedInContent` from drive_items, ordered folders
+     * first then newest first, capped at 200 rows. Observed tables are
+     * drive_items (name FTS is trigger-synced from it) and
+     * file_content_fts (re-indexing re-runs the search).
+     */
+    @RawQuery(observedEntities = [DriveItemEntity::class, FileContentFts::class])
+    fun smartSearchRaw(query: SupportSQLiteQuery): Flow<List<SmartSearchRow>>
+
+    // ---- Batch 7b file-content index (standalone FTS, manual) ----
+
+    @Query("SELECT contentText FROM file_content_fts WHERE remoteUniqueId = :uniqueId LIMIT 1")
+    suspend fun getFileContentText(uniqueId: String): String?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertFileContent(row: FileContentFts)
+
+    @Query("DELETE FROM file_content_fts WHERE remoteUniqueId = :uniqueId")
+    suspend fun deleteFileContent(uniqueId: String)
+
+    /**
+     * file_content_fts has no UNIQUE constraint on remoteUniqueId (FTS
+     * tables have none), so REPLACE would not dedupe — delete first, then
+     * insert, in one transaction. At most one row per file.
+     */
+    @Transaction
+    suspend fun upsertFileContent(row: FileContentFts) {
+        deleteFileContent(row.remoteUniqueId)
+        insertFileContent(row)
+    }
+
+    // ---- Batch 7b recent searches ----
+
+    @Query("SELECT * FROM recent_searches ORDER BY timestamp DESC LIMIT 10")
+    fun getRecentSearches(): Flow<List<RecentSearch>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRecentSearch(search: RecentSearch)
+
+    @Query("DELETE FROM recent_searches WHERE query = :query")
+    suspend fun deleteRecentSearch(query: String)
+
+    @Query("DELETE FROM recent_searches WHERE query NOT IN (SELECT query FROM recent_searches ORDER BY timestamp DESC LIMIT 10)")
+    suspend fun trimRecentSearches()
+
+    /**
+     * Records a query (REPLACE bumps its timestamp) and trims the table
+     * to the 10 newest rows.
+     */
+    @Transaction
+    suspend fun saveRecentSearch(query: String) {
+        insertRecentSearch(RecentSearch(query.trim(), System.currentTimeMillis()))
+        trimRecentSearches()
+    }
+
+    // ---- Vault 2.0 encrypt-on-hide (Batch 7b vault side) ----
+
+    @Query("UPDATE drive_items SET localPath = :encryptedPath, isEncrypted = 1 WHERE id = :itemId AND parentChatId = :chatId")
+    suspend fun markLocalCopyEncrypted(itemId: Long, chatId: Long, encryptedPath: String)
 
     @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     fun getAllFiles(): Flow<List<DriveItemEntity>>

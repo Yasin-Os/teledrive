@@ -15,7 +15,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +41,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -70,6 +73,7 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InsertDriveFile
@@ -130,6 +134,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -137,6 +144,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -152,6 +160,10 @@ import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.core.FileSharingHelper
 import com.awd.teledrive.core.utils.FileUtils
 import com.awd.teledrive.data.model.TransferInfo
+import com.awd.teledrive.data.repository.SearchDateFilter
+import com.awd.teledrive.data.repository.SearchScope
+import com.awd.teledrive.data.repository.SearchSizeFilter
+import com.awd.teledrive.data.repository.SearchTypeFilter
 import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.components.DriveItemMenu
@@ -205,6 +217,12 @@ fun HomeScreen(
         transfersFlow = viewModel.transfers,
         totalStorageUsedFlow = viewModel.totalStorageUsed,
         searchQueryFlow = viewModel.searchQuery,
+        contentMatchedIdsFlow = viewModel.contentMatchedIds,
+        recentSearchesFlow = viewModel.recentSearches,
+        searchTypeFilterFlow = viewModel.searchTypeFilter,
+        searchSizeFilterFlow = viewModel.searchSizeFilter,
+        searchDateFilterFlow = viewModel.searchDateFilter,
+        searchScopeFlow = viewModel.searchScope,
         sortOrderFlow = viewModel.sortOrder,
         filterTypeFlow = viewModel.filterType,
         customCategoryFlow = viewModel.customCategory,
@@ -225,6 +243,13 @@ fun HomeScreen(
         },
         onRemoveFromRecents = viewModel::removeFromRecents,
         onSearchQueryChange = viewModel::onSearchQueryChange,
+        onSearchSubmit = viewModel::saveRecentSearch,
+        onDeleteRecentSearch = viewModel::deleteRecentSearch,
+        onSetSearchTypeFilter = viewModel::setSearchTypeFilter,
+        onSetSearchSizeFilter = viewModel::setSearchSizeFilter,
+        onSetSearchDateFilter = viewModel::setSearchDateFilter,
+        onSetSearchScope = viewModel::setSearchScope,
+        onClearSearchFilters = viewModel::clearSearchFilters,
         onToggleViewMode = viewModel::toggleViewMode,
         onSetSortOrder = viewModel::setSortOrder,
         onSetFilterType = viewModel::setFilterType,
@@ -261,6 +286,12 @@ fun HomeContent(
     transfersFlow: StateFlow<Map<String, TransferInfo>>,
     totalStorageUsedFlow: StateFlow<Long>,
     searchQueryFlow: StateFlow<String>,
+    contentMatchedIdsFlow: StateFlow<Set<Long>>,
+    recentSearchesFlow: StateFlow<List<String>>,
+    searchTypeFilterFlow: StateFlow<SearchTypeFilter>,
+    searchSizeFilterFlow: StateFlow<SearchSizeFilter>,
+    searchDateFilterFlow: StateFlow<SearchDateFilter>,
+    searchScopeFlow: StateFlow<SearchScope>,
     sortOrderFlow: StateFlow<SortOrder>,
     filterTypeFlow: StateFlow<FilterType>,
     customCategoryFlow: StateFlow<CustomCategory>,
@@ -279,6 +310,13 @@ fun HomeContent(
     onNavigateToPreview: (DriveItem.File) -> Unit,
     onRemoveFromRecents: (Long) -> Unit = {},
     onSearchQueryChange: (String) -> Unit,
+    onSearchSubmit: (String) -> Unit = {},
+    onDeleteRecentSearch: (String) -> Unit = {},
+    onSetSearchTypeFilter: (SearchTypeFilter) -> Unit = {},
+    onSetSearchSizeFilter: (SearchSizeFilter) -> Unit = {},
+    onSetSearchDateFilter: (SearchDateFilter) -> Unit = {},
+    onSetSearchScope: (SearchScope) -> Unit = {},
+    onClearSearchFilters: () -> Unit = {},
     onToggleViewMode: () -> Unit,
     onSetSortOrder: (SortOrder) -> Unit,
     onSetFilterType: (FilterType) -> Unit,
@@ -310,6 +348,12 @@ fun HomeContent(
     val items by itemsFlow.collectAsState()
     val virtualFolders by virtualFoldersFlow.collectAsState()
     val searchQuery by searchQueryFlow.collectAsState()
+    val contentMatchedIds by contentMatchedIdsFlow.collectAsState()
+    val recentSearches by recentSearchesFlow.collectAsState()
+    val searchTypeFilter by searchTypeFilterFlow.collectAsState()
+    val searchSizeFilter by searchSizeFilterFlow.collectAsState()
+    val searchDateFilter by searchDateFilterFlow.collectAsState()
+    val searchScope by searchScopeFlow.collectAsState()
     val sortOrder by sortOrderFlow.collectAsState()
     val filterType by filterTypeFlow.collectAsState()
     val customCategory by customCategoryFlow.collectAsState()
@@ -393,6 +437,14 @@ fun HomeContent(
     var newFolderName by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
 
+    // Batch 7b: when search opens, focus the field so the keyboard comes
+    // up and recent searches can show (focused + empty).
+    val searchFocusRequester = remember { FocusRequester() }
+    var searchFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(isSearchActive) {
+        if (isSearchActive) searchFocusRequester.requestFocus()
+    }
+
     val multiFilePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris ->
@@ -453,7 +505,7 @@ fun HomeContent(
     BackHandler(enabled = true) {
         when {
             showNewSheet -> showNewSheet = false
-            isSearchActive -> { isSearchActive = false; onSearchQueryChange("") }
+            isSearchActive -> { isSearchActive = false; onSearchQueryChange(""); onClearSearchFilters() }
             isSelectionMode -> selectedItems = emptySet()
             (currentFolderId != null || currentVirtualFolderId != "0" || isCategoryActive) -> onNavigateBack()
             else -> {
@@ -711,7 +763,7 @@ fun HomeContent(
                                 modifier = Modifier.fillMaxWidth().height(52.dp)
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
-                                    IconButton(onClick = { isSearchActive = false; onSearchQueryChange("") }) {
+                                    IconButton(onClick = { isSearchActive = false; onSearchQueryChange(""); onClearSearchFilters() }) {
                                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
@@ -720,6 +772,11 @@ fun HomeContent(
                                             value = searchQuery, onValueChange = onSearchQueryChange,
                                             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                                             modifier = Modifier.fillMaxWidth()
+                                                .focusRequester(searchFocusRequester)
+                                                .onFocusChanged { searchFocused = it.isFocused },
+                                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                            keyboardActions = KeyboardActions(onSearch = { onSearchSubmit(searchQuery) }),
+                                            singleLine = true
                                         )
                                         if (searchQuery.isEmpty()) Text(stringResource(R.string.search), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
@@ -730,6 +787,21 @@ fun HomeContent(
                                     }
                                 }
                             }
+                        }
+                        // Batch 7b smart search: filter row under the search
+                        // field, shown while searching.
+                        if (isSearchActive) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            SearchFilterRow(
+                                searchTypeFilter = searchTypeFilter,
+                                searchSizeFilter = searchSizeFilter,
+                                searchDateFilter = searchDateFilter,
+                                searchScope = searchScope,
+                                onSetSearchTypeFilter = onSetSearchTypeFilter,
+                                onSetSearchSizeFilter = onSetSearchSizeFilter,
+                                onSetSearchDateFilter = onSetSearchDateFilter,
+                                onSetSearchScope = onSetSearchScope
+                            )
                         }
                     }
                 }
@@ -775,7 +847,18 @@ fun HomeContent(
 
                 val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && !isCategoryActive
 
-                if (showDashboard) {
+                // Batch 7b: recent searches while the search field is
+                // focused and empty (tap re-runs, X / long-press deletes).
+                val showRecentSearches = isSearchActive && searchFocused &&
+                    searchQuery.isEmpty() && recentSearches.isNotEmpty()
+
+                if (showRecentSearches) {
+                    RecentSearchesList(
+                        recentSearches = recentSearches,
+                        onSelect = { selected -> onSearchQueryChange(selected); onSearchSubmit(selected) },
+                        onDelete = onDeleteRecentSearch
+                    )
+                } else if (showDashboard) {
                     LazyColumn(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                         modifier = Modifier.fillMaxSize()
@@ -822,6 +905,7 @@ fun HomeContent(
                         items = items,
                         transfersFlow = transfersFlow,
                         isGridView = isGridView,
+                        contentMatchedIds = contentMatchedIds,
                         selectedItems = selectedItems,
                         isSelectionMode = isSelectionMode,
                         onToggleSelection = { id -> selectedItems = if (selectedItems.contains(id)) selectedItems - id else selectedItems + id },
@@ -838,6 +922,100 @@ fun HomeContent(
                     )
                 }
             }
+        }
+    }
+}
+
+// Batch 7b smart search: filter chips under the search field, shown
+// while searching. Row 1 is the type filter; row 2 holds size, date and
+// folder-scope. Type labels reuse the existing filter/category strings.
+@Composable
+private fun SearchFilterRow(
+    searchTypeFilter: SearchTypeFilter,
+    searchSizeFilter: SearchSizeFilter,
+    searchDateFilter: SearchDateFilter,
+    searchScope: SearchScope,
+    onSetSearchTypeFilter: (SearchTypeFilter) -> Unit,
+    onSetSearchSizeFilter: (SearchSizeFilter) -> Unit,
+    onSetSearchDateFilter: (SearchDateFilter) -> Unit,
+    onSetSearchScope: (SearchScope) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.horizontalScroll(rememberScrollState())
+        ) {
+            Text(stringResource(R.string.search_filter_type), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SearchFilterChip(stringResource(R.string.filter_all), searchTypeFilter == SearchTypeFilter.ALL) { onSetSearchTypeFilter(SearchTypeFilter.ALL) }
+            SearchFilterChip(stringResource(R.string.category_images), searchTypeFilter == SearchTypeFilter.IMAGES) { onSetSearchTypeFilter(SearchTypeFilter.IMAGES) }
+            SearchFilterChip(stringResource(R.string.filter_videos), searchTypeFilter == SearchTypeFilter.VIDEOS) { onSetSearchTypeFilter(SearchTypeFilter.VIDEOS) }
+            SearchFilterChip(stringResource(R.string.filter_audio), searchTypeFilter == SearchTypeFilter.AUDIO) { onSetSearchTypeFilter(SearchTypeFilter.AUDIO) }
+            SearchFilterChip(stringResource(R.string.filter_documents), searchTypeFilter == SearchTypeFilter.DOCUMENTS) { onSetSearchTypeFilter(SearchTypeFilter.DOCUMENTS) }
+            SearchFilterChip(stringResource(R.string.category_others), searchTypeFilter == SearchTypeFilter.OTHER) { onSetSearchTypeFilter(SearchTypeFilter.OTHER) }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.horizontalScroll(rememberScrollState())
+        ) {
+            Text(stringResource(R.string.search_filter_size), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SearchFilterChip(stringResource(R.string.search_size_any), searchSizeFilter == SearchSizeFilter.ANY) { onSetSearchSizeFilter(SearchSizeFilter.ANY) }
+            SearchFilterChip(stringResource(R.string.search_size_under_1mb), searchSizeFilter == SearchSizeFilter.UNDER_1_MB) { onSetSearchSizeFilter(SearchSizeFilter.UNDER_1_MB) }
+            SearchFilterChip(stringResource(R.string.search_size_1_100mb), searchSizeFilter == SearchSizeFilter.FROM_1_TO_100_MB) { onSetSearchSizeFilter(SearchSizeFilter.FROM_1_TO_100_MB) }
+            SearchFilterChip(stringResource(R.string.search_size_over_100mb), searchSizeFilter == SearchSizeFilter.OVER_100_MB) { onSetSearchSizeFilter(SearchSizeFilter.OVER_100_MB) }
+            Text(stringResource(R.string.search_filter_date), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SearchFilterChip(stringResource(R.string.search_date_any), searchDateFilter == SearchDateFilter.ANY) { onSetSearchDateFilter(SearchDateFilter.ANY) }
+            SearchFilterChip(stringResource(R.string.search_date_today), searchDateFilter == SearchDateFilter.TODAY) { onSetSearchDateFilter(SearchDateFilter.TODAY) }
+            SearchFilterChip(stringResource(R.string.search_date_week), searchDateFilter == SearchDateFilter.THIS_WEEK) { onSetSearchDateFilter(SearchDateFilter.THIS_WEEK) }
+            SearchFilterChip(stringResource(R.string.search_date_month), searchDateFilter == SearchDateFilter.THIS_MONTH) { onSetSearchDateFilter(SearchDateFilter.THIS_MONTH) }
+            Text(stringResource(R.string.search_filter_scope), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SearchFilterChip(stringResource(R.string.search_scope_everywhere), searchScope == SearchScope.EVERYWHERE) { onSetSearchScope(SearchScope.EVERYWHERE) }
+            SearchFilterChip(stringResource(R.string.search_scope_current_folder), searchScope == SearchScope.CURRENT_FOLDER) { onSetSearchScope(SearchScope.CURRENT_FOLDER) }
+        }
+    }
+}
+
+@Composable
+private fun SearchFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(selected = selected, onClick = onClick, label = { Text(label) })
+}
+
+// Batch 7b: recent searches, shown while the search field is focused
+// and empty. Tap re-runs the query, X or long-press deletes it.
+@Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun RecentSearchesList(
+    recentSearches: List<String>,
+    onSelect: (String) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    LazyColumn(
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item(key = "recent_searches_title") {
+            Text(
+                text = stringResource(R.string.search_recent_title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+        items(recentSearches, key = { "recent_$it" }) { query ->
+            ListItem(
+                headlineContent = { Text(query, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingContent = { Icon(Icons.Default.History, contentDescription = null) },
+                trailingContent = {
+                    IconButton(onClick = { onDelete(query) }) {
+                        Icon(Icons.Default.Close, contentDescription = null)
+                    }
+                },
+                modifier = Modifier.combinedClickable(
+                    onClick = { onSelect(query) },
+                    onLongClick = { onDelete(query) }
+                )
+            )
         }
     }
 }
@@ -922,6 +1100,7 @@ private fun HomeDriveItemsList(
     items: List<DriveItem>,
     transfersFlow: StateFlow<Map<String, TransferInfo>>,
     isGridView: Boolean,
+    contentMatchedIds: Set<Long> = emptySet(),
     selectedItems: Set<Long>,
     isSelectionMode: Boolean,
     onToggleSelection: (Long) -> Unit,
@@ -950,6 +1129,7 @@ private fun HomeDriveItemsList(
                 val isSelected = selectedItems.contains(item.id)
                 DriveGridItem(
                     item = item, isSelected = isSelected, activeTransfer = findItemTransfer(transfers, item),
+                    matchedInContent = contentMatchedIds.contains(item.id),
                     onClick = {
                         if (isSelectionMode) onToggleSelection(item.id)
                         else if (item is DriveItem.File) onFileClick(item)
@@ -980,6 +1160,7 @@ private fun HomeDriveItemsList(
                 val isSelected = selectedItems.contains(item.id)
                 DriveListItem(
                     item = item, isSelected = isSelected, activeTransfer = findItemTransfer(transfers, item),
+                    matchedInContent = contentMatchedIds.contains(item.id),
                     onClick = {
                         if (isSelectionMode) onToggleSelection(item.id)
                         else if (item is DriveItem.File) onFileClick(item)
@@ -1813,6 +1994,7 @@ fun DriveListItem(
     item: DriveItem,
     isSelected: Boolean,
     activeTransfer: TransferInfo? = null,
+    matchedInContent: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onStarClick: () -> Unit,
@@ -1851,7 +2033,7 @@ fun DriveListItem(
                 Text(
                     text = if (isDownloaded) stringResource(R.string.downloaded_size, FileUtils.formatSize(item.size)) else FileUtils.formatSize(item.size),
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (isDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (matchedInContent || isDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
                 Text(stringResource(R.string.folder), style = MaterialTheme.typography.bodySmall)
@@ -1927,6 +2109,7 @@ fun DriveGridItem(
     item: DriveItem,
     isSelected: Boolean,
     activeTransfer: TransferInfo? = null,
+    matchedInContent: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onStarClick: () -> Unit,
@@ -2014,6 +2197,15 @@ fun DriveGridItem(
                             onDeleteClick = onDeleteClick
                         )
                     }
+                }
+                if (matchedInContent) {
+                    // Batch 7b: content hits are marked "in file text".
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = stringResource(R.string.search_matched_in_content),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
             if (isSelected) {
