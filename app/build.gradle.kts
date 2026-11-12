@@ -71,10 +71,10 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Shipped locales are the default strings (English) and values-in
-        // (Indonesian). There is no values-bn, so "bn" must NOT be listed
-        // here — resConfigs would strip the Indonesian strings. (P1-20)
-        resConfigs("en", "in")
+        // Shipped locales are the default strings (English) and values-bn
+        // (Bengali). resConfigs keeps both; any other locale's strings are
+        // stripped from the build. (P1-20)
+        resConfigs("en", "bn")
 
     }
 
