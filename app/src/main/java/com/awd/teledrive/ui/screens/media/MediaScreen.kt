@@ -122,12 +122,23 @@ fun MediaContent(
     var showCreateAlbumDialog by remember { mutableStateOf(false) }
     var newAlbumName by remember { mutableStateOf("") }
 
-    val topAlbums = remember(mediaItems) {
+    val topAlbums = remember(mediaItems, folders) {
         val allPhotos = mediaItems.filter { it.mimeType.startsWith("image/") }
         val videos = mediaItems.filter { it.mimeType.startsWith("video/") }
-        val camera = mediaItems.filter {
-            val n = it.name.lowercase()
-            n.startsWith("img_") || n.startsWith("vid_") || n.startsWith("pxl_") || n.startsWith("dcim") || n.matches(Regex("^20\\d{6}_.*"))
+        // Camera: "Camera"/"DCIM" নামের ফোল্ডারের ফাইল আগে; না পেলে ফাইলের নামের
+        // প্যাটার্ন (IMG_/VID_/PXL_) দিয়ে ফলব্যাক
+        val cameraFolderIds = folders
+            .filter { it.name.equals("camera", ignoreCase = true) || it.name.equals("dcim", ignoreCase = true) }
+            .mapNotNull { it.virtualId }
+            .toSet()
+        val cameraFromFolder = mediaItems.filter { file ->
+            file.virtualParentId?.let { it in cameraFolderIds } == true
+        }
+        val camera = cameraFromFolder.ifEmpty {
+            mediaItems.filter {
+                val n = it.name.lowercase()
+                n.startsWith("img_") || n.startsWith("vid_") || n.startsWith("pxl_") || n.startsWith("dcim") || n.matches(Regex("^20\\d{6}_.*"))
+            }
         }
         val screenshots = mediaItems.filter { it.name.contains("screenshot", ignoreCase = true) }
         val screenRecordings = mediaItems.filter {
@@ -136,7 +147,7 @@ fun MediaContent(
         }
 
         listOf(
-            MediaAlbum("all_photos", "All Photos", allPhotos.ifEmpty { mediaItems }),
+            MediaAlbum("all_photos", "All Photos", allPhotos),
             MediaAlbum("camera", "Camera", camera),
             MediaAlbum("videos", "Videos", videos, isVideoPlaceholder = true),
             MediaAlbum("screenshots", "Screenshots", screenshots),
@@ -146,8 +157,22 @@ fun MediaContent(
 
     val moreAlbums = remember(mediaItems, folders) {
         val list = mutableListOf<MediaAlbum>()
-        val fbItems = mediaItems.filter { it.name.contains("fb_", true) || it.name.contains("facebook", true) || it.name.contains("received_", true) }
-        val waItems = mediaItems.filter { it.name.contains("wa0", true) || it.name.contains("whatsapp", true) }
+        // Facebook/WhatsApp: ফাইলের নামের সাবস্ট্রিং দিয়ে নয় — নামে "facebook"/
+        // "whatsapp" থাকা ফোল্ডারের ভেতরের ফাইল দিয়ে মেলাও
+        val facebookFolderIds = folders
+            .filter { it.name.contains("facebook", ignoreCase = true) }
+            .mapNotNull { it.virtualId }
+            .toSet()
+        val whatsappFolderIds = folders
+            .filter { it.name.contains("whatsapp", ignoreCase = true) }
+            .mapNotNull { it.virtualId }
+            .toSet()
+        val fbItems = mediaItems.filter { file ->
+            file.virtualParentId?.let { it in facebookFolderIds } == true
+        }
+        val waItems = mediaItems.filter { file ->
+            file.virtualParentId?.let { it in whatsappFolderIds } == true
+        }
         val dlItems = mediaItems.filter { (it.virtualParentId ?: "0") == "0" }
 
         list.add(MediaAlbum("downloads", "Downloads", dlItems, isVideoPlaceholder = true))
