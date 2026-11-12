@@ -205,13 +205,21 @@ class HomeViewModel @Inject constructor(
     // Blank query + default filters = inactive, plain empty list.
     @OptIn(FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val smartSearchResults: StateFlow<List<SmartSearchResult>> = combine(
-        searchQueryDebounced,
-        _searchTypeFilter,
-        _searchSizeFilter,
-        _searchDateFilter,
-        _searchScope,
-        _currentVirtualFolderId
-    ) { query, type, size, date, scope, folder ->
+        listOf(
+            searchQueryDebounced,
+            _searchTypeFilter,
+            _searchSizeFilter,
+            _searchDateFilter,
+            _searchScope,
+            _currentVirtualFolderId
+        )
+    ) { arr ->
+        val query = arr[0] as String
+        val type = arr[1] as SearchTypeFilter
+        val size = arr[2] as SearchSizeFilter
+        val date = arr[3] as SearchDateFilter
+        val scope = arr[4] as SearchScope
+        val folder = arr[5] as String
         SmartSearchFilters(type, size, date, scope, folder) to query
     }.flatMapLatest { (filters, query) ->
         if (query.isBlank() && filters.isDefault) flowOf(emptyList())
