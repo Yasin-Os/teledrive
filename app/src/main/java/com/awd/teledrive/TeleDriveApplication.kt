@@ -7,12 +7,32 @@ import coil.decode.VideoFrameDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
+import com.awd.teledrive.data.worker.TeleDriveWorkerManager
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.HiltAndroidApp
+import dagger.hilt.components.SingletonComponent
 
 @HiltAndroidApp
 class TeleDriveApplication : Application(), ImageLoaderFactory {
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface CoreRefreshEntryPoint {
+        fun workerManager(): TeleDriveWorkerManager
+    }
+
     override fun onCreate() {
         super.onCreate()
+        // P1-14: 6-ঘণ্টার core refresh (BackupWorker) আগে কেউ
+        // schedule করত না। KEEP নীতি বলে একবারই এনকিউ হবে; ব্যর্থ
+        // হলে অ্যাপ চালুতে বাধা দেওয়া যাবে না।
+        try {
+            EntryPointAccessors.fromApplication(this, CoreRefreshEntryPoint::class.java)
+                .workerManager()
+                .scheduleCoreRefresh()
+        } catch (e: Exception) {
+        }
     }
 
     override fun newImageLoader(): ImageLoader {
