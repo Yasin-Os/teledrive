@@ -2029,10 +2029,8 @@ fun DriveListItem(
                     )
                 }
             } else if (item is DriveItem.File) {
-                // Batch 7b: content hits are marked "in file text".
-                val sizeText = if (isDownloaded) stringResource(R.string.downloaded_size, FileUtils.formatSize(item.size)) else FileUtils.formatSize(item.size)
                 Text(
-                    text = if (matchedInContent) "$sizeText • ${stringResource(R.string.search_matched_in_content)}" else sizeText,
+                    text = if (isDownloaded) stringResource(R.string.downloaded_size, FileUtils.formatSize(item.size)) else FileUtils.formatSize(item.size),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (matchedInContent || isDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
