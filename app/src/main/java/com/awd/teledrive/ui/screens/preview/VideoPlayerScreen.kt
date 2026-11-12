@@ -23,6 +23,7 @@ import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.annotation.OptIn as AndroidOptIn
@@ -795,6 +796,7 @@ fun VideoPlayerScreen(
     var isBuffering by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
+    var lastNotificationUpdateMs by remember { mutableLongStateOf(0L) }
     var controlsVisible by remember { mutableStateOf(true) }
     var isLocked by remember { mutableStateOf(false) }
     var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
@@ -854,12 +856,23 @@ fun VideoPlayerScreen(
     }
 
     // ব্যাকগ্রাউন্ডে অডিও মোড চালু থাকলে প্রতি সেকেন্ডে মিডিয়া নোটিফিকেশনের সিকবার আপডেট হবে
-    LaunchedEffect(isAudioPlayerMode, isPlaying, currentPosition, duration, fileName) {
-        if (isAudioPlayerMode) {
-            BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
-            BackgroundAudioEngine.updateNotification(context)
-        } else {
+    // (পজিশন টিকে আর রিবিল্ড হয় না — শুধু মোড/প্লে-স্টেট/ফাইল বদলালে, আর প্লে চলাকালীন
+    // সর্বোচ্চ সেকেন্ডে একবার)
+    LaunchedEffect(isAudioPlayerMode, isPlaying, fileName) {
+        if (!isAudioPlayerMode) {
             BackgroundAudioEngine.hideNotification(context)
+            return@LaunchedEffect
+        }
+        BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
+        BackgroundAudioEngine.updateNotification(context)
+        lastNotificationUpdateMs = SystemClock.elapsedRealtime()
+        while (isPlaying) {
+            delay(1000)
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastNotificationUpdateMs >= 1000L) {
+                BackgroundAudioEngine.updateNotification(context)
+                lastNotificationUpdateMs = now
+            }
         }
     }
 
@@ -893,12 +906,17 @@ fun VideoPlayerScreen(
                 onBack()
                 break
             }
-            if (activeGestureMode != GestureMode.SEEK) {
-                currentPosition = active.currentPosition.coerceAtLeast(0L)
-            }
-            if (active.duration > 0) duration = active.duration
             isPlaying = active.isPlaying
-            delay(250)
+            if (active.isPlaying) {
+                if (activeGestureMode != GestureMode.SEEK) {
+                    currentPosition = active.currentPosition.coerceAtLeast(0L)
+                }
+                if (active.duration > 0) duration = active.duration
+                delay(250)
+            } else {
+                // পজ অবস্থায় পজিশন পড়ার দরকার নেই — ব্যাটারি বাঁচাতে ধীরে পোল করো
+                delay(1000)
+            }
         }
     }
 
@@ -1096,7 +1114,7 @@ fun VideoPlayerScreen(
 
         if (isBuffering && activeGestureMode == GestureMode.NONE) {
             CircularProgressIndicator(
-                color = Color(0xFF2ECC71),
+                color = MaterialTheme.colorScheme.primary,
                 strokeWidth = 3.5.dp,
                 modifier = Modifier.size(46.dp).align(Alignment.Center)
             )
@@ -1284,7 +1302,7 @@ fun VideoPlayerScreen(
                                 resetWindowBrightness(activity)
                                 isAudioPlayerMode = true
                             },
-                            color = Color(0xFF1DB954),
+                            color = MaterialTheme.colorScheme.primary,
                             shape = RoundedCornerShape(20.dp),
                             modifier = Modifier
                                 .align(Alignment.End)
@@ -1417,7 +1435,7 @@ fun VideoPlayerScreen(
                             },
                             colors = SliderDefaults.colors(
                                 thumbColor = Color.White,
-                                activeTrackColor = Color(0xFF2ECC71),
+                                activeTrackColor = MaterialTheme.colorScheme.primary,
                                 inactiveTrackColor = Color.White.copy(alpha = 0.3f)
                             ),
                             modifier = Modifier
@@ -1565,25 +1583,36 @@ private fun PlayItVinylAudioPlayerUI(
     onShare: () -> Unit
 ) {
     val context = LocalContext.current
-    val infiniteTransition = rememberInfiniteTransition(label = "VinylRotation")
-    val discAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 9000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "DiscAngle"
-    )
-    val eqPhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "EqPhase"
-    )
+    // পজ অবস্থায় অ্যানিমেশন পুরোপুরি থামিয়ে দাও: infinite transition শুধু
+    // প্লে চলাকালীনই তৈরি হয়, পজ হলে কোণ/ফেজ স্থির 0 থাকে; আবার প্লে করলে
+    // ঘূর্ণন শুরু থেকে শুরু হয়
+    val accentColor = MaterialTheme.colorScheme.primary
+    val discAngle: Float
+    val eqPhase: Float
+    if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "VinylRotation")
+        discAngle = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 9000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "DiscAngle"
+        ).value
+        eqPhase = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2 * PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 800, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "EqPhase"
+        ).value
+    } else {
+        discAngle = 0f
+        eqPhase = 0f
+    }
 
     Column(
         modifier = Modifier
@@ -1660,7 +1689,7 @@ private fun PlayItVinylAudioPlayerUI(
                     val ey = cy + (barStartRadius + len) * sin(angleRad)
 
                     drawLine(
-                        color = Color(0xFF2ECC71),
+                        color = accentColor,
                         start = Offset(sx, sy),
                         end = Offset(ex, ey),
                         strokeWidth = 4.2f,
