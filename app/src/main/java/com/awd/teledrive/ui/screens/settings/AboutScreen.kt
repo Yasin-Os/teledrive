@@ -193,7 +193,7 @@ fun AboutScreen(
                     subtitle = "ইয়াসিন.পাতা.বাংলা",
                     accentColor = Color(0xFF3B82F6),
                     onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, stringResource(R.string.official_website_url).toUri())
+                        val intent = Intent(Intent.ACTION_VIEW, context.getString(R.string.official_website_url).toUri())
                         context.startActivity(intent)
                     }
                 )
