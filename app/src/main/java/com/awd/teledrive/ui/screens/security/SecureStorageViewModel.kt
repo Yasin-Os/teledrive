@@ -178,18 +178,18 @@ class SecureStorageViewModel @Inject constructor(
     /**
      * Records an encrypted local copy in the database (localPath -> the
      * ".enc" path, isEncrypted = true) and returns true on success.
-     *
-     * TODO(Vault 2.0): no public DriveRepository API can do this yet — the
-     * DAO has updateLocalPath (by telegramFileId) but no isEncrypted update
-     * and the repository exposes neither. Needs:
-     *   fun markLocalCopyEncrypted(itemId: Long, chatId: Long, encryptedPath: String)
-     * (suspend, updates localPath + isEncrypted = 1 for that row). Until it
-     * lands this returns false and encryptLocalCopies() rolls back, so the
-     * toggle is inert and hiding behaves exactly as before.
+     * Wired to DriveRepository.markLocalCopyEncrypted (Batch 7b search
+     * side). False on any failure — encryptLocalCopies() then rolls back
+     * by deleting the ".enc" file so the plaintext copy is never lost.
      */
-    private fun persistEncryptedLocalCopy(file: DriveItem.File, encryptedPath: String): Boolean {
-        Log.w(TAG, "persistEncryptedLocalCopy not wired yet for ${file.name}: needs DriveRepository.markLocalCopyEncrypted")
-        return false
+    private suspend fun persistEncryptedLocalCopy(file: DriveItem.File, encryptedPath: String): Boolean {
+        return try {
+            driveRepository.markLocalCopyEncrypted(file.id, file.parentChatId, encryptedPath)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "persistEncryptedLocalCopy failed for ${file.name}", e)
+            false
+        }
     }
 
     fun unhideFilesToCloud(fileIds: List<Long>) {
