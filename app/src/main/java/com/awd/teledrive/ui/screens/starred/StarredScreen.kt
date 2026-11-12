@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
@@ -50,6 +51,11 @@ import org.drinkless.tdlib.TdApi
 fun StarredScreen(
     onBack: () -> Unit,
     onNavigateToPreview: (DriveItem.File) -> Unit,
+    // P1-15: same signature as HomeScreen's onNavigateToFolder (chatId, virtualId,
+    // name). Defaults to a no-op so existing call sites keep compiling; the
+    // NavGraph must pass the real handler (pop back to Home and open the
+    // folder there) for folder taps to actually navigate.
+    onNavigateToFolder: (Long?, String?, String?) -> Unit = { _, _, _ -> },
     viewModel: StarredViewModel = hiltViewModel()
 ) {
     val items by viewModel.starredItems.collectAsState()
@@ -66,6 +72,7 @@ fun StarredScreen(
         onToggleViewMode = viewModel::toggleViewMode,
         onBack = onBack,
         onNavigateToPreview = onNavigateToPreview,
+        onNavigateToFolder = onNavigateToFolder,
         onToggleStarred = viewModel::toggleStarred,
         onDownloadClick = { id, chatId, name -> viewModel.downloadFile(id, chatId, name) },
         onBulkDownload = {
@@ -91,6 +98,7 @@ fun StarredContent(
     onToggleViewMode: () -> Unit,
     onBack: () -> Unit,
     onNavigateToPreview: (DriveItem.File) -> Unit,
+    onNavigateToFolder: (Long?, String?, String?) -> Unit = { _, _, _ -> },
     onToggleStarred: (DriveItem) -> Unit,
     onDownloadClick: (Long, Long, String) -> Unit,
     onBulkDownload: () -> Unit,
@@ -147,6 +155,11 @@ fun StarredContent(
                 CenterAlignedTopAppBar(
                     title = { Text(stringResource(R.string.starred)) },
                     modifier = Modifier.statusBarsPadding(),
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
+                        }
+                    },
                     actions = {
                         IconButton(onClick = onToggleViewMode) {
                             Icon(if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView, contentDescription = null)
@@ -179,6 +192,7 @@ fun StarredContent(
                                     onSelectionChange(if (isSelected) selectedItems - item.id else selectedItems + item.id)
                                 } else {
                                     if (item is DriveItem.File) onNavigateToPreview(item)
+                                    else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                                 }
                             },
                             onLongClick = {
@@ -204,6 +218,7 @@ fun StarredContent(
                                     onSelectionChange(if (isSelected) selectedItems - item.id else selectedItems + item.id)
                                 } else {
                                     if (item is DriveItem.File) onNavigateToPreview(item)
+                                    else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                                 }
                             },
                             onLongClick = {
