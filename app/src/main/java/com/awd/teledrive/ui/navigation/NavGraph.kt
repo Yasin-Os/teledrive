@@ -121,8 +121,6 @@ fun NavGraph(navController: NavHostController) {
 
     val isSafeFolderPinSet by securityViewModel.isSafeFolderPinSet.collectAsState()
     val isSafeFolderLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
-    val safePinError by securityViewModel.safePinError.collectAsState()
-    val safePinLockoutRemaining by securityViewModel.safePinLockoutRemainingSeconds.collectAsState()
 
     var showSafePinUnlockDialog by remember { mutableStateOf(false) }
     var showCreateSafePinDialog by remember { mutableStateOf(false) }
@@ -431,48 +429,15 @@ fun NavGraph(navController: NavHostController) {
         )
     }
 
-    // Safe Folder পিন আনলক ডায়ালগ (শুধুমাত্র পিন কোড)
+    // Safe Folder আনলক ডায়ালগ — PIN + বায়োমেট্রিক (Vault 2.0)
     if (showSafePinUnlockDialog) {
-        var pin by remember { mutableStateOf("") }
-        var error by remember { mutableStateOf<String?>(null) }
-        
-        AlertDialog(
-            onDismissRequest = { showSafePinUnlockDialog = false },
-            title = { Text("Safe Folder PIN") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = pin,
-                        onValueChange = { input ->
-                            val clean = input.filter { it.isDigit() }.take(6)
-                            pin = clean
-                            error = null
-                        },
-                        label = { Text("Enter PIN Code") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        isError = error != null,
-                        supportingText = error?.let { { Text(it) } },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+        SafeFolderUnlockDialog(
+            onUnlocked = {
+                showSafePinUnlockDialog = false
+                navController.navigate(Screen.SecureStorage.route)
             },
-            confirmButton = {
-                Button(onClick = {
-                    if (safePinLockoutRemaining > 0) {
-                        error = "Too many wrong attempts. Try again in ${safePinLockoutRemaining}s"
-                    } else if (securityViewModel.verifySafeFolderPin(pin)) {
-                        showSafePinUnlockDialog = false
-                        navController.navigate(Screen.SecureStorage.route)
-                    } else {
-                        error = safePinError ?: "Incorrect PIN"
-                    }
-                }) { Text(stringResource(R.string.unlock)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSafePinUnlockDialog = false }) { Text(stringResource(R.string.cancel)) }
-            }
+            onDismiss = { showSafePinUnlockDialog = false },
+            securityViewModel = securityViewModel
         )
     }
 
