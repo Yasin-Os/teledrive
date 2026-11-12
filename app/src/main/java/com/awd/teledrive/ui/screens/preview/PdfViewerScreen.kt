@@ -250,7 +250,7 @@ fun PdfViewerContent(
 }
 
 @Composable
-fun PdfPageItem(renderer: PdfRenderer?, index: Int, pageCache: PdfPageCache) {
+private fun PdfPageItem(renderer: PdfRenderer?, index: Int, pageCache: PdfPageCache) {
     var bitmap by remember(renderer, index) { mutableStateOf<Bitmap?>(null) }
     val context = LocalContext.current
 
