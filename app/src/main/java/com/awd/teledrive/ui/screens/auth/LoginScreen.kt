@@ -1309,7 +1309,10 @@ fun LoginContent(
                                             onValueChange = { input ->
                                                 val filtered = input.filter { it.isDigit() }.take(6)
                                                 code = filtered
-                                                if (filtered.length in 5..6 && !isProcessing) {
+                                                // Auto-submit only at 6 digits: a 5-digit code is
+                                                // submitted with Done / the Verify button, so typing
+                                                // a 6-digit code is not cut off at the 5th digit.
+                                                if (filtered.length == 6 && !isProcessing) {
                                                     abortRetryCount = 0
                                                     onCodeSubmit(filtered)
                                                 }
