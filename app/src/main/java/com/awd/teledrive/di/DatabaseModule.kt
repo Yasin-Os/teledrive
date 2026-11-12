@@ -6,6 +6,7 @@ import androidx.room.Room
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.MIGRATION_5_6
 import com.awd.teledrive.data.local.MIGRATION_6_7
+import com.awd.teledrive.data.local.MIGRATION_7_8
 import com.awd.teledrive.data.local.TeleDriveDatabase
 import com.awd.teledrive.data.local.TransferDao
 import com.awd.teledrive.data.secure.SecureSettings
