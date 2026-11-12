@@ -23,7 +23,28 @@ val MIGRATION_5_6: Migration = object : Migration(5, 6) {
 }
 
 /**
- * Batch 7b smart search (v6 -> v7): FTS name index, file-content index
+ * Adds DriveItemEntity.contentHash (nullable, so existing rows are untouched)
+ * with its index, plus the file_hashes table that remembers content hashes
+ * across history re-syncs. The index name and table columns match exactly
+ * what Room expects for the version 7 schema.
+ */
+val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE drive_items ADD COLUMN contentHash TEXT")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_contentHash ON drive_items (contentHash)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS file_hashes (" +
+                "remoteUniqueId TEXT NOT NULL, " +
+                "contentHash TEXT NOT NULL, " +
+                "size INTEGER NOT NULL, " +
+                "updatedAt INTEGER NOT NULL, " +
+                "PRIMARY KEY(remoteUniqueId))"
+        )
+    }
+}
+
+/**
+ * Batch 7b smart search (v7 -> v8): FTS name index, file-content index
  * and recent searches.
  *
  * The drive_items_fts SQL below is byte-for-byte what Room 2.8.4
@@ -48,16 +69,15 @@ val MIGRATION_5_6: Migration = object : Migration(5, 6) {
  * writes, so without it every pre-existing file would be invisible to
  * name search until its row is re-written.
  *
- * REGISTRATION REQUIRED (not in this file): DatabaseModule builds the
- * database with `.addMigrations(MIGRATION_5_6)` in both builders — add
- * MIGRATION_6_7 there too, or Room has no 6->7 path and the
- * fallbackToDestructiveMigration(true) will WIPE the database on upgrade.
+ * REGISTRATION: DatabaseModule registers MIGRATION_5_6, MIGRATION_6_7
+ * and MIGRATION_7_8 in both builders — without the 7->8 path Room's
+ * fallbackToDestructiveMigration(true) would WIPE the database on upgrade.
  *
- * COLLISION NOTE: PR #13 (Batch 7a, unmerged) also adds a Migration(6, 7)
- * on its branch. Whoever merges second must be renumbered (7 -> 8,
- * version 8) at rebase time.
+ * Renumbered at rebase: PR #13 (Batch 7a) merged first with its own
+ * Migration(6, 7), so this one became Migration(7, 8) and the database
+ * version is 8 (migration chain 6 -> 7 -> 8).
  */
-val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+val MIGRATION_7_8: Migration = object : Migration(7, 8) {
     override fun migrate(db: SupportSQLiteDatabase) {
         // 1. External-content FTS4 mirror of drive_items.name.
         db.execSQL(
@@ -110,11 +130,12 @@ val MIGRATION_6_7: Migration = object : Migration(6, 7) {
     entities = [
         DriveItemEntity::class,
         TransferEntity::class,
+        FileHashEntity::class,
         DriveItemFts::class,
         FileContentFts::class,
         RecentSearch::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class TeleDriveDatabase : RoomDatabase() {
