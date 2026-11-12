@@ -252,7 +252,7 @@ class DriveRepository @Inject constructor(
                 current.add(fileKey)
                 customPrefs.edit().putStringSet("backed_up_paths_v3", current).apply()
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("DriveRepo", "markFileBackedUp failed", e) }
     }
 
     private fun extractTdFileFromMessage(msg: TdApi.Message): TdApi.File? {
@@ -637,7 +637,7 @@ class DriveRepository @Inject constructor(
                         }
                     }
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { Log.w("DriveRepo", "collectTargetBackupFiles failed", e) }
         }
 
         rawFolders.filter { it.startsWith("content://") }.forEach { uriStr ->
@@ -647,7 +647,7 @@ class DriveRepository @Inject constructor(
                 if (docDir != null && docDir.exists()) {
                     scanDocumentTreeFallback(docDir, backedUpSet, foundFiles)
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { Log.w("DriveRepo", "collectTargetBackupFiles failed", e) }
         }
 
         return foundFiles.values.sortedBy { it.lastModified() }
@@ -687,7 +687,7 @@ class DriveRepository @Inject constructor(
                         if (tempFile.exists() && tempFile.length() > 0) {
                             out[key] = tempFile
                         }
-                    } catch (e: Exception) {}
+                    } catch (e: Exception) { Log.w("DriveRepo", "scanDocumentTreeFallback failed", e) }
                 }
             }
         }
@@ -828,7 +828,7 @@ class DriveRepository @Inject constructor(
                     try {
                         val m = json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex).trim())
                         mergedManifest = mergeManifests(mergedManifest, m)
-                    } catch (e: Exception) {}
+                    } catch (e: Exception) { Log.w("DriveRepo", "processManifestMessages failed", e) }
                 }
             }
         }
@@ -1177,7 +1177,7 @@ class DriveRepository @Inject constructor(
                         }
                         syncVirtualFoldersToDb()
                     }
-                } catch (e: Exception) { }
+                } catch (e: Exception) { Log.w("DriveRepo", "processManifestMessages: manifest parse failed", e) }
             } else if (text.startsWith(FILE_META_PREFIX)) {
                 try {
                     val jsonStartIndex = text.indexOf('{')
@@ -1201,7 +1201,7 @@ class DriveRepository @Inject constructor(
                             scope.launch { driveDao.updateVirtualParent(meta.messageId, vId) }
                         }
                     }
-                } catch (e: Exception) { }
+                } catch (e: Exception) { Log.w("DriveRepo", "processManifestMessages: manifest parse failed", e) }
             }
         }
 
@@ -1527,7 +1527,7 @@ class DriveRepository @Inject constructor(
                         uploadReadyFile = copyTarget
                         tempCopyFile = copyTarget
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) { Log.w("DriveRepo", "uploadSinglePart encryption failed", e) }
             }
 
             var finalPath = uploadReadyFile.absolutePath
@@ -1548,7 +1548,7 @@ class DriveRepository @Inject constructor(
                 } catch (e: Exception) {
                     if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
                     transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
-                    try { onUploadCompleted(false) } catch (_: Exception) {}
+                    try { onUploadCompleted(false) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
                     return@enqueueTransfer 
                 }
             } else {
@@ -1624,14 +1624,14 @@ class DriveRepository @Inject constructor(
                 if (!completedSuccess && backupTrackingKey != null) {
                     inFlightBackupKeys.remove(backupTrackingKey)
                 }
-            } catch (e: Exception) {}
-            try { onUploadCompleted(completedSuccess) } catch (_: Exception) {}
+            } catch (e: Exception) { Log.w("DriveRepo", "upload completion cleanup failed", e) }
+            try { onUploadCompleted(completedSuccess) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
         }
     }
 
     private fun deletePhoneFileCompletely(file: File) {
         val path = file.absolutePath
-        try { if (file.exists()) file.delete() } catch (e: Exception) {}
+        try { if (file.exists()) file.delete() } catch (e: Exception) { Log.w("DriveRepo", "deletePhoneFileCompletely: file delete failed", e) }
         try {
             // The deprecated DATA column is gone: resolve the row
             // by DISPLAY_NAME, match it by reconstructing the path from
@@ -1662,8 +1662,8 @@ class DriveRepository @Inject constructor(
                     }
                 }
             }
-        } catch (e: Exception) {}
-        try { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("DriveRepo", "deletePhoneFileCompletely: MediaStore delete failed", e) }
+        try { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) } catch (e: Exception) { Log.w("DriveRepo", "deletePhoneFileCompletely: media scan failed", e) }
     }
 
     private fun sendSplitMasterMetadata(groupId: String, name: String, size: Long, mime: String, parts: Int, vfId: String?, enc: Boolean, ids: List<Long>) {
@@ -1775,7 +1775,7 @@ class DriveRepository @Inject constructor(
                         encryptionManager.decryptFile(source, dest, password) { }
                     }
                     scope.launch(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.save_success), Toast.LENGTH_SHORT).show() }
-                } catch (e: Exception) { }
+                } catch (e: Exception) { Log.w("DriveRepo", "saveToPublicStorage failed", e) }
             }
         } else {
             transferRepository.saveToPublicDownloads(source.absolutePath, file.name)
@@ -1922,7 +1922,7 @@ class DriveRepository @Inject constructor(
         try {
             val files = directory.listFiles() ?: return 0L
             for (file in files) size += if (file.isDirectory) calculateDirectorySize(file) else file.length()
-        } catch (e: Exception) { }
+        } catch (e: Exception) { Log.w("DriveRepo", "calculateDirectorySize failed", e) }
         return size
     }
 
@@ -1964,7 +1964,7 @@ class DriveRepository @Inject constructor(
             val intent = Intent(context, com.awd.teledrive.data.service.TransferService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
             else context.startService(intent)
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("DriveRepo", "startTransferService failed", e) }
     }
 
     private fun parseSplitMetadata(caption: String): SplitMetadata? {
