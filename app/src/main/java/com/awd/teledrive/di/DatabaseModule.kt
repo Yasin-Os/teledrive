@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.room.Room
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.MIGRATION_5_6
+import com.awd.teledrive.data.local.MIGRATION_6_7
 import com.awd.teledrive.data.local.TeleDriveDatabase
 import com.awd.teledrive.data.local.TransferDao
 import com.awd.teledrive.data.secure.SecureSettings
@@ -87,7 +88,7 @@ object DatabaseModule {
             // Current v5 installs upgrade to v6 through MIGRATION_5_6 and keep
             // their data; fallbackToDestructiveMigration stays only as a last
             // resort for pre-v5 installs with no migration path.
-            .addMigrations(MIGRATION_5_6)
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration(true)
             .build()
     }
@@ -101,7 +102,7 @@ object DatabaseModule {
             // Same as the encrypted builder: v5 -> v6 goes through the
             // migration and keeps data; destructive fallback is only for
             // pre-v5 installs with no migration path.
-            .addMigrations(MIGRATION_5_6)
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration(true)
             .build()
     }
