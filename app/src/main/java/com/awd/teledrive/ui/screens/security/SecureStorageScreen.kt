@@ -1,6 +1,7 @@
 package com.awd.teledrive.ui.screens.security
 
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,9 +21,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -66,6 +69,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -82,8 +87,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
+import com.awd.teledrive.core.BiometricHelper
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.home.DriveListItem
 import com.awd.teledrive.ui.screens.home.FilterSortRow
@@ -109,8 +117,32 @@ fun SecureStorageScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsState()
 
     val isSafePinLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
+    val isSafeFolderPinSet by securityViewModel.isSafeFolderPinSet.collectAsState()
+    val isSafeFolderBiometricEnabled by securityViewModel.isSafeFolderBiometricEnabled.collectAsState()
+    val safeFolderAutoLockMinutes by securityViewModel.safeFolderAutoLockMinutes.collectAsState()
+    val isEncryptOnHideEnabled by viewModel.isEncryptOnHideEnabled.collectAsState()
 
     val context = LocalContext.current
+    val biometricAvailable = remember(context) { BiometricHelper.isBiometricAvailable(context) }
+
+    // Vault 2.0 auto-lock: if the app was in the background longer than the
+    // timeout, lock the vault when this screen (re)appears and go back.
+    // Never fires while the vault is in the foreground.
+    val activity = context as? ComponentActivity
+    DisposableEffect(activity) {
+        if (activity == null) return@DisposableEffect onDispose {}
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (securityViewModel.checkVaultAutoLock()) onBack()
+            }
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose { activity.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(Unit) {
+        if (securityViewModel.checkVaultAutoLock()) onBack()
+    }
+
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showCloudPickerSheet by remember { mutableStateOf(false) }
     var showSafeLockSettingsDialog by remember { mutableStateOf(false) }
@@ -129,7 +161,10 @@ fun SecureStorageScreen(
             onDismissRequest = { showSafeLockSettingsDialog = false },
             title = { Text("Safe Folder Lock Settings") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -142,6 +177,62 @@ fun SecureStorageScreen(
                         Switch(
                             checked = isSafePinLockEnabled,
                             onCheckedChange = { securityViewModel.setSafeFolderLockEnabled(it) }
+                        )
+                    }
+                    // Vault 2.0: biometric unlock (only on devices that have it).
+                    if (biometricAvailable && isSafeFolderPinSet) {
+                        HorizontalDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(stringResource(R.string.vault_biometric_title), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
+                                Text(stringResource(R.string.vault_biometric_subtitle), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(
+                                checked = isSafeFolderBiometricEnabled,
+                                onCheckedChange = { securityViewModel.setSafeFolderBiometricEnabled(it) }
+                            )
+                        }
+                    }
+                    // Vault 2.0: auto-lock after leaving the app.
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(stringResource(R.string.vault_auto_lock_title), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
+                        Text(stringResource(R.string.vault_auto_lock_subtitle), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        val autoLockOptions = listOf(
+                            1 to stringResource(R.string.vault_auto_lock_minutes, 1),
+                            5 to stringResource(R.string.vault_auto_lock_minutes, 5),
+                            15 to stringResource(R.string.vault_auto_lock_minutes, 15),
+                            30 to stringResource(R.string.vault_auto_lock_minutes, 30),
+                            SecurityViewModel.AUTO_LOCK_NEVER to stringResource(R.string.vault_auto_lock_never)
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(autoLockOptions) { (minutes, label) ->
+                                FilterChip(
+                                    selected = safeFolderAutoLockMinutes == minutes,
+                                    onClick = { securityViewModel.setSafeFolderAutoLockMinutes(minutes) },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+                    }
+                    // Vault 2.0: encrypt the on-device copy when hiding.
+                    HorizontalDivider()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(stringResource(R.string.vault_encrypt_on_hide_title), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
+                            Text(stringResource(R.string.vault_encrypt_on_hide_subtitle), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = isEncryptOnHideEnabled,
+                            onCheckedChange = { viewModel.setEncryptOnHideEnabled(it) }
                         )
                     }
                     HorizontalDivider()
@@ -315,7 +406,9 @@ fun SecureStorageScreen(
                     if (pickedIds.isNotEmpty()) {
                         Button(
                             onClick = {
-                                viewModel.hideCloudFilesInSafeFolder(pickedIds.toList())
+                                viewModel.hideCloudFilesInSafeFolder(
+                                    filteredCloudFiles.filter { it.id in pickedIds }
+                                )
                                 showCloudPickerSheet = false
                                 Toast.makeText(context, "${pickedIds.size} files hidden in Safe folder", Toast.LENGTH_SHORT).show()
                             }
@@ -584,7 +677,10 @@ fun SecureStorageScreen(
         ) {
             if (items.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    ) {
                         Icon(
                             Icons.Default.Lock,
                             contentDescription = null,
@@ -595,6 +691,12 @@ fun SecureStorageScreen(
                         Text("Safe folder is empty", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(modifier = Modifier.height(4.dp))
                         Text("Tap 'Add from Cloud' to hide cloud videos, photos or audio", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            stringResource(R.string.vault_hide_note),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             } else {
@@ -603,6 +705,17 @@ fun SecureStorageScreen(
                     contentPadding = PaddingValues(bottom = 88.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
+                    // Vault 2.0: honest note — hiding is not encryption.
+                    item {
+                        Text(
+                            stringResource(R.string.vault_hide_note),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 8.dp)
+                        )
+                    }
                     items(items, key = { it.id }) { item ->
                         val isSelected = selectedSafeItems.contains(item.id)
                         DriveListItem(
