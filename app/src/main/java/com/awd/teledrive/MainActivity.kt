@@ -174,6 +174,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 } else if (event == Lifecycle.Event.ON_PAUSE) {
                     lastPauseTime = System.currentTimeMillis()
+                    // Vault 2.0: the safe-folder auto-lock timer measures
+                    // from here (persisted, so it survives process death).
+                    securityViewModel.recordVaultBackgroundedAt()
                 }
             },
         )
