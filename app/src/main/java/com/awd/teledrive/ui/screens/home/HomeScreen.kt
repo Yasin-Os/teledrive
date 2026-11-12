@@ -2365,7 +2365,7 @@ fun ShareDialog(
                     onClick = {
                         inviteLink?.let { link ->
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("TeleDrive invite link", link))
+                            clipboard.setPrimaryClip(ClipData.newPlainText("MyCloud invite link", link))
                             Toast.makeText(context, context.getString(R.string.copy_success), Toast.LENGTH_SHORT).show()
                             onDismiss()
                         }
