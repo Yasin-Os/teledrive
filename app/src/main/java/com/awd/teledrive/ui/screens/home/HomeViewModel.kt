@@ -126,9 +126,10 @@ class HomeViewModel @Inject constructor(
 
         val playedMedia = recentIds.mapNotNull { mediaMap[it] }
         val downloadedMedia = mediaOnly.filter { !it.localPath.isNullOrEmpty() }
-        val recentUploadedMedia = mediaOnly.take(15)
 
-        (playedMedia + downloadedMedia + recentUploadedMedia).distinctBy { it.id }
+        // Recents-এ শুধু আসলেই প্লে/ডাউনলোড করা মিডিয়া — কখনো না-খোলা ফাইল
+        // (recentUploadedMedia ফিলার) আর ঢোকানো হয় না
+        (playedMedia + downloadedMedia).distinctBy { it.id }
     }
     .flowOn(Dispatchers.Default)
     .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -193,7 +194,9 @@ class HomeViewModel @Inject constructor(
             val fileMap = mediaOnly.associateBy { it.id }
             val played = recentIds.mapNotNull { fileMap[it] }
             val downloaded = mediaOnly.filter { !it.localPath.isNullOrEmpty() }
-            val combined = (played + downloaded + mediaOnly.take(15)).distinctBy { it.id }
+            // Recents-এ শুধু আসলেই প্লে/ডাউনলোড করা মিডিয়া — কখনো না-খোলা ফাইল
+            // (mediaOnly.take(15) ফিলার) আর ঢোকানো হয় না
+            val combined = (played + downloaded).distinctBy { it.id }
             return@combine if (selectedCatFolder == "ALL") combined else combined.filter { (it.virtualParentId ?: "0") == selectedCatFolder }
         }
 
