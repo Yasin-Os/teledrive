@@ -26,6 +26,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.view.WindowManager
 import android.widget.Toast
+import android.util.Log
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -267,7 +268,7 @@ object BackgroundAudioEngine {
             }
             ContextCompat.registerReceiver(appCtx, controlReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
             receiverRegistered = true
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "registerReceiverIfNeeded failed", e) }
     }
 
     private fun ensureMediaSession(appCtx: Context) {
@@ -455,19 +456,19 @@ object BackgroundAudioEngine {
             val nm = context.applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.cancel(NOTIF_ID)
             mediaSession?.isActive = false
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "hideNotification failed", e) }
     }
 
     fun stopAndRelease(context: Context) {
         hideNotification(context)
         try {
             mediaSession?.release()
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "stopAndRelease failed", e) }
         mediaSession = null
         try {
             activePlayer?.stop()
             activePlayer?.release()
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "stopAndRelease failed", e) }
         activePlayer = null
         activeUrl = null
     }
@@ -748,7 +749,7 @@ class ZeroLagTdlibDataSource(
         opened = false
         try {
             raf?.close()
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("VideoPlayerScreen", "TdStream close failed", e) }
         raf = null
         openedFilePath = null
     }
@@ -1549,7 +1550,7 @@ fun VideoPlayerScreen(
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                     try {
                                         activity?.enterPictureInPictureMode(PictureInPictureParams.Builder().build())
-                                    } catch (e: Exception) {}
+                                    } catch (e: Exception) { Log.w("VideoPlayerScreen", "enterPictureInPictureMode failed", e) }
                                 }
                             },
                             modifier = Modifier.size(32.dp)
