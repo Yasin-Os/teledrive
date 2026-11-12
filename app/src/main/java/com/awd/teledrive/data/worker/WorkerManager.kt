@@ -37,11 +37,19 @@ class TeleDriveWorkerManager @Inject constructor(
                 .putLong("last_backup_time", lastBackupTime)
                 .build()
 
+            // Wi-Fi Only চালু থাকলে শুধু unmetered (সাধারণত Wi-Fi)
+            // নেটওয়ার্কে ব্যাকআপ চলবে; বন্ধ থাকলে যেকোনো সংযোগে চলবে।
+            val requiredNetworkType = if (settingsRepository.isBackupWifiOnlyEnabled.value) {
+                NetworkType.UNMETERED
+            } else {
+                NetworkType.CONNECTED
+            }
+
             val backupRequest = PeriodicWorkRequestBuilder<MediaBackupWorker>(1, TimeUnit.HOURS)
                 .setInputData(data)
                 .setConstraints(
                     Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .setRequiredNetworkType(requiredNetworkType)
                         .build()
                 )
                 .build()
@@ -61,12 +69,15 @@ class TeleDriveWorkerManager @Inject constructor(
 
     fun triggerOneTimeBackup() {
         try {
-            // ওয়ার্কারের জন্য অপেক্ষা না করে সাথে সাথে সরাসরি ব্যাকআপ ও আপলোড শুরু করবে
-            driveRepository.runImmediateFolderBackup()
+            // ওয়ার্কারের জন্য অপেক্ষা না করে সাথে সাথে সরাসরি ব্যাকআপ ও আপলোড শুরু করবে।
+            // এটি ম্যানুয়াল "Backup Now" — ব্যবহারকারীর স্পষ্ট নির্দেশ বলে
+            // Auto Backup টগল ও Wi-Fi Only এখানে প্রযোজ্য নয়।
+            driveRepository.runImmediateFolderBackup(manual = true)
 
             val lastBackupTime = secureSettings.getLong("last_backup_time", 0L)
             val data = Data.Builder()
                 .putLong("last_backup_time", lastBackupTime)
+                .putBoolean("manual", true)
                 .build()
 
             val backupRequest = OneTimeWorkRequestBuilder<MediaBackupWorker>()
