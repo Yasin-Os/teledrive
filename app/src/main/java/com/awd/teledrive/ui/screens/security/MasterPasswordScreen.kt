@@ -53,6 +53,7 @@ fun MasterPasswordScreen(
     val isPasswordSet by viewModel.isPasswordSet.collectAsState()
     val isBiometricEnabled by viewModel.isBiometricEnabled.collectAsState()
     val error by viewModel.error.collectAsState()
+    val lockoutRemaining by viewModel.appPinLockoutRemainingSeconds.collectAsState()
     val context = LocalContext.current
 
     val triggerBiometric = {
@@ -80,6 +81,7 @@ fun MasterPasswordScreen(
         isPasswordSet = isPasswordSet,
         isBiometricEnabled = isBiometricEnabled,
         externalError = error,
+        lockoutRemainingSeconds = lockoutRemaining,
         onVerifyPin = { pin ->
             if (viewModel.verifyPassword(pin)) {
                 onSuccess()
@@ -99,6 +101,7 @@ fun PinLockScreenContent(
     isPasswordSet: Boolean,
     isBiometricEnabled: Boolean,
     externalError: String?,
+    lockoutRemainingSeconds: Long = 0,
     onVerifyPin: (String) -> Boolean,
     onSetPin: (String) -> Unit,
     onBiometricClick: () -> Unit
@@ -109,8 +112,11 @@ fun PinLockScreenContent(
     var localError by remember { mutableStateOf<String?>(null) }
 
     val handleDigit: (String) -> Unit = { digit ->
-        localError = null
-        if (pin.length < 4) {
+        if (lockoutRemainingSeconds > 0) {
+            localError = "Too many wrong attempts. Try again in ${lockoutRemainingSeconds}s"
+        } else {
+            localError = null
+            if (pin.length < 4) {
             val nextPin = pin + digit
             pin = nextPin
             if (nextPin.length == 4) {
@@ -135,6 +141,7 @@ fun PinLockScreenContent(
                         }
                     }
                 }
+            }
             }
         }
     }
