@@ -128,18 +128,22 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.FileSharingHelper
+import com.awd.teledrive.core.utils.FileUtils
 import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.domain.model.DriveItem
+import com.awd.teledrive.ui.components.getFileIconAndColor
+import com.awd.teledrive.ui.theme.AccentCyan
+import com.awd.teledrive.ui.theme.DeleteRed
+import com.awd.teledrive.ui.theme.PreviewBackground
+import com.awd.teledrive.ui.theme.PreviewPanelDark
+import com.awd.teledrive.ui.theme.StarGold
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.log10
-import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -271,7 +275,7 @@ fun PreviewPager(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.name_label, currentFile.name), style = MaterialTheme.typography.bodyMedium)
-                    Text(stringResource(R.string.size_label, formatSize(currentFile.size)), style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.size_label, FileUtils.formatSize(currentFile.size)), style = MaterialTheme.typography.bodyMedium)
                     Text(stringResource(R.string.type_label, currentFile.mimeType), style = MaterialTheme.typography.bodyMedium)
                 }
             },
@@ -381,7 +385,7 @@ fun PreviewPager(
                 ) {
                     GalleryActionButton(
                         icon = Icons.Default.Share,
-                        label = "Share",
+                        label = stringResource(R.string.share),
                         enabled = currentDisplayPath != null,
                         onClick = {
                             currentDisplayPath?.let {
@@ -393,7 +397,7 @@ fun PreviewPager(
                     if (currentFile.mimeType.startsWith("image/")) {
                         GalleryActionButton(
                             icon = Icons.Default.Edit,
-                            label = "Edit",
+                            label = stringResource(R.string.edit),
                             enabled = currentDisplayPath != null,
                             onClick = {
                                 editingImagePath = currentDisplayPath
@@ -403,14 +407,14 @@ fun PreviewPager(
 
                     GalleryActionButton(
                         icon = if (currentFile.isStarred) Icons.Default.Star else Icons.Outlined.StarOutline,
-                        label = "Favorite",
-                        tint = if (currentFile.isStarred) Color(0xFFFFD54F) else Color.White,
+                        label = stringResource(R.string.favorite),
+                        tint = if (currentFile.isStarred) StarGold else Color.White,
                         onClick = { onToggleStarred(currentFile) }
                     )
 
                     GalleryActionButton(
                         icon = Icons.Default.Download,
-                        label = "Save",
+                        label = stringResource(R.string.save),
                         enabled = currentDisplayPath != null,
                         onClick = {
                             onSaveToDevice(currentFile)
@@ -419,8 +423,8 @@ fun PreviewPager(
 
                     GalleryActionButton(
                         icon = Icons.Default.Delete,
-                        label = "Delete",
-                        tint = Color(0xFFEF5350),
+                        label = stringResource(R.string.delete),
+                        tint = DeleteRed,
                         onClick = { showDeleteConfirm = true }
                     )
                 }
@@ -512,7 +516,7 @@ fun PhotoEditorScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0B0E14))
+            .background(PreviewBackground)
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
@@ -546,7 +550,7 @@ fun PhotoEditorScreen(
                         )
                         val outFile = saveBitmapToGalleryAndCache(context, finalBmp, "Edited_$fileName")
                         withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "Saved to Gallery!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.saved_to_gallery), Toast.LENGTH_SHORT).show()
                             if (outFile != null) onSaveEdited(outFile) else onCancel()
                         }
                     }
@@ -554,7 +558,7 @@ fun PhotoEditorScreen(
             ) {
                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Save")
+                Text(stringResource(R.string.save))
             }
         }
 
@@ -613,7 +617,7 @@ fun PhotoEditorScreen(
                     val rectH = bottomPx - topPx
 
                     drawRect(
-                        color = Color(0xFF00E5FF),
+                        color = AccentCyan,
                         topLeft = Offset(leftPx, topPx),
                         size = Size(rectW, rectH),
                         style = Stroke(width = 2.5.dp.toPx())
@@ -654,7 +658,7 @@ fun PhotoEditorScreen(
         }
 
         Surface(
-            color = Color(0xFF141923),
+            color = PreviewPanelDark,
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -668,7 +672,7 @@ fun PhotoEditorScreen(
                             FilterChip(
                                 selected = false,
                                 onClick = { cropLeft = 0f; cropTop = 0f; cropRight = 1f; cropBottom = 1f },
-                                label = { Text("Full") }
+                                label = { Text(stringResource(R.string.aspect_full)) }
                             )
                             FilterChip(
                                 selected = false,
@@ -694,19 +698,19 @@ fun PhotoEditorScreen(
                             OutlinedButton(onClick = { rotationDegrees = (rotationDegrees + 90f) % 360f }) {
                                 Icon(Icons.AutoMirrored.Filled.RotateRight, contentDescription = null)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Rotate 90°")
+                                Text(stringResource(R.string.rotate_90))
                             }
                             OutlinedButton(onClick = { flipHorizontal = !flipHorizontal }) {
                                 Icon(Icons.Default.Flip, contentDescription = null)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Flip")
+                                Text(stringResource(R.string.flip))
                             }
                         }
                     }
                     1 -> {
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Brightness", color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
+                                Text(stringResource(R.string.brightness), color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
                                 Slider(
                                     value = brightness,
                                     onValueChange = { brightness = it },
@@ -715,7 +719,7 @@ fun PhotoEditorScreen(
                                 )
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Contrast", color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
+                                Text(stringResource(R.string.contrast), color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
                                 Slider(
                                     value = contrast,
                                     onValueChange = { contrast = it },
@@ -724,7 +728,7 @@ fun PhotoEditorScreen(
                                 )
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Saturation", color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
+                                Text(stringResource(R.string.saturation), color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
                                 Slider(
                                     value = saturation,
                                     onValueChange = { saturation = it },
@@ -760,25 +764,25 @@ fun PhotoEditorScreen(
                 ) {
                     GalleryActionButton(
                         icon = Icons.Default.Crop,
-                        label = "Crop & Rotate",
-                        tint = if (activeTab == 0) Color(0xFF00E5FF) else Color.White,
+                        label = stringResource(R.string.crop_rotate),
+                        tint = if (activeTab == 0) AccentCyan else Color.White,
                         onClick = { activeTab = 0 }
                     )
                     GalleryActionButton(
                         icon = Icons.Default.Tune,
-                        label = "Adjust",
-                        tint = if (activeTab == 1) Color(0xFF00E5FF) else Color.White,
+                        label = stringResource(R.string.adjust),
+                        tint = if (activeTab == 1) AccentCyan else Color.White,
                         onClick = { activeTab = 1 }
                     )
                     GalleryActionButton(
                         icon = Icons.Default.AutoAwesome,
-                        label = "Filters",
-                        tint = if (activeTab == 2) Color(0xFF00E5FF) else Color.White,
+                        label = stringResource(R.string.filters),
+                        tint = if (activeTab == 2) AccentCyan else Color.White,
                         onClick = { activeTab = 2 }
                     )
                     GalleryActionButton(
                         icon = Icons.Default.Refresh,
-                        label = "Reset",
+                        label = stringResource(R.string.reset),
                         onClick = {
                             rotationDegrees = 0f
                             flipHorizontal = false
@@ -1083,7 +1087,7 @@ fun PreviewContent(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = formatSize(file.size),
+                    text = FileUtils.formatSize(file.size),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.65f)
                 )
@@ -1097,7 +1101,7 @@ fun PreviewContent(
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Play Media")
+                        Text(stringResource(R.string.play_media))
                     }
                 } else if (displayPath != null) {
                     val isInternalDoc = file.mimeType == "application/pdf" || file.mimeType.startsWith("text/") || file.name.endsWith(".txt", true)
@@ -1124,7 +1128,7 @@ fun PreviewContent(
                     ) {
                         Icon(Icons.Default.CloudDownload, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (isLoading) "Downloading... ${((transfer?.progress ?: 0f) * 100).toInt()}%" else "Download File")
+                        Text(if (isLoading) stringResource(R.string.downloading_percentage, ((transfer?.progress ?: 0f) * 100).toInt()) else stringResource(R.string.download_file))
                     }
                 }
             }
@@ -1155,23 +1159,4 @@ fun SplitFilePreviewPlaceholder(file: DriveItem.File) {
     }
 }
 
-private fun formatSize(size: Long): String {
-    if (size <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt()
-    return String.format(Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
-}
 
-@Composable
-private fun getFileIconAndColor(file: DriveItem.File): Pair<ImageVector, Color> {
-    return when {
-        file.mimeType.startsWith("image/") -> Icons.Default.Image to Color(0xFF4CAF50)
-        file.mimeType.startsWith("video/") -> Icons.Default.VideoFile to Color(0xFFE91E63)
-        file.mimeType.startsWith("audio/") -> Icons.Default.AudioFile to Color(0xFFFF9800)
-        file.mimeType == "application/pdf" -> Icons.Default.PictureAsPdf to Color(0xFFF44336)
-        file.mimeType.contains("zip") || file.mimeType.contains("rar") || file.mimeType.contains("7z") -> Icons.Default.FolderZip to Color(0xFF9C27B0)
-        file.mimeType.contains("text/") -> Icons.AutoMirrored.Filled.Article to Color(0xFF607D8B)
-        file.mimeType.contains("android.package-archive") -> Icons.Default.Android to Color(0xFF3DDC84)
-        else -> Icons.AutoMirrored.Filled.InsertDriveFile to Color.LightGray
-    }
-}
