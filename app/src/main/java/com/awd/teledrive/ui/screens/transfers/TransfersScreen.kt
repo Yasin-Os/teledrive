@@ -89,7 +89,7 @@ fun TransfersContent(
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
-                items(transfers) { transfer ->
+                items(transfers, key = { it.remoteUniqueId }) { transfer ->
                     ListItem(
                         headlineContent = { Text(transfer.fileName) },
                         supportingContent = {
