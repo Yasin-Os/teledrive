@@ -85,11 +85,12 @@ object DatabaseModule {
             ENCRYPTED_DB_NAME
         )
             .openHelperFactory(SupportOpenHelperFactory(passphrase))
-            // Current v5 installs upgrade to v6 through MIGRATION_5_6 and
-            // v6 to v7 through MIGRATION_6_7, keeping their data;
+            // Current v5 installs upgrade to v6 through MIGRATION_5_6,
+            // v6 to v7 through MIGRATION_6_7 and v7 to v8 through
+            // MIGRATION_7_8, keeping their data;
             // fallbackToDestructiveMigration stays only as a last resort
             // for pre-v5 installs with no migration path.
-            .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .fallbackToDestructiveMigration(true)
             .build()
     }
@@ -100,10 +101,11 @@ object DatabaseModule {
             TeleDriveDatabase::class.java,
             LEGACY_PLAIN_DB_NAME
         )
-            // Same as the encrypted builder: v5 -> v6 and v6 -> v7 go
-            // through the migrations and keep data; destructive fallback
-            // is only for pre-v5 installs with no migration path.
-            .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+            // Same as the encrypted builder: v5 -> v6, v6 -> v7 and
+            // v7 -> v8 go through the migrations and keep data;
+            // destructive fallback is only for pre-v5 installs with no
+            // migration path.
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .fallbackToDestructiveMigration(true)
             .build()
     }
