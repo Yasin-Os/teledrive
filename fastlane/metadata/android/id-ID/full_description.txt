@@ -1,4 +1,4 @@
-TeleDrive mengubah akun Telegram Anda menjadi drive penyimpanan awan pribadi yang aman dan tidak terbatas. Kelola file, otomatisasi pencadangan latar belakang, dan navigasi direktori media Anda melalui antarmuka Material 3 modern.
+MyCloud mengubah akun Telegram Anda menjadi drive penyimpanan awan pribadi yang aman dan tidak terbatas. Kelola file, otomatisasi pencadangan latar belakang, dan navigasi direktori media Anda melalui antarmuka Material 3 modern.
 
 Fitur Utama:
 - Penyimpanan Awan Tak Terbatas: Manfaatkan infrastruktur Telegram untuk file Anda.
