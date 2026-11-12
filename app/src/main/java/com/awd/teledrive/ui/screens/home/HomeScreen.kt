@@ -984,6 +984,7 @@ private fun SearchFilterChip(label: String, selected: Boolean, onClick: () -> Un
 // Batch 7b: recent searches, shown while the search field is focused
 // and empty. Tap re-runs the query, X or long-press deletes it.
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 private fun RecentSearchesList(
     recentSearches: List<String>,
     onSelect: (String) -> Unit,
