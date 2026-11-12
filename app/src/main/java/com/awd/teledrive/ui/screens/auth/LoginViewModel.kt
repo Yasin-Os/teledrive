@@ -131,8 +131,8 @@ class LoginViewModel @Inject constructor(
     }
 
     fun onCodeSubmit(code: String) {
-        if (code.length < 5) {
-            _authError.value = "Enter a valid 5-digit code"
+        if (code.length !in 5..6) {
+            _authError.value = "Enter a valid 5 or 6-digit code"
             return
         }
         _isProcessing.value = true
