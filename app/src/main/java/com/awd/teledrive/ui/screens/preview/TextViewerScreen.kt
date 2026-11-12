@@ -93,7 +93,7 @@ fun TextViewerScreen(
                 actions = {
                     IconButton(onClick = {
                         scope.launch {
-                            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("TeleDrive Content", content)))
+                            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("MyCloud Content", content)))
                         }
                     }) {
                         Icon(Icons.Default.ContentCopy, contentDescription = stringResource(R.string.copy))
