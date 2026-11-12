@@ -35,11 +35,26 @@ class TransferService : Service() {
     companion object {
         const val ACTION_CANCEL_TRANSFER = "com.awd.teledrive.ACTION_CANCEL_TRANSFER"
         const val ACTION_CANCEL_ALL = "com.awd.teledrive.ACTION_CANCEL_ALL"
+        const val ACTION_UPDATE_DOWNLOAD_FINISHED = "com.awd.teledrive.ACTION_UPDATE_DOWNLOAD_FINISHED"
         const val EXTRA_UNIQUE_ID = "extra_unique_id"
+        // Set by UpdateRepository when it starts this service as a keep-alive
+        // for an in-app update download. An update download is NOT a
+        // TransferRepository transfer, so without this the service would see
+        // an empty transfer list and stop itself mid-download (P1-16).
+        const val EXTRA_KEEP_ALIVE_FOR_UPDATE = "extra_keep_alive_for_update"
     }
+
+    // True while an in-app update APK download is in progress. Only set from
+    // the start intent (EXTRA_KEEP_ALIVE_FOR_UPDATE) and cleared by the
+    // ACTION_UPDATE_DOWNLOAD_FINISHED intent sent by UpdateRepository.
+    @Volatile
+    private var updateDownloadActive = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_UPDATE_DOWNLOAD_FINISHED -> {
+                updateDownloadActive = false
+            }
             ACTION_CANCEL_TRANSFER -> {
                 val uniqueId = intent.getStringExtra(EXTRA_UNIQUE_ID)
                 if (uniqueId != null) {
@@ -51,6 +66,12 @@ class TransferService : Service() {
                     .filter { it.status == TransferRepository.Status.DOWNLOADING || it.status == TransferRepository.Status.UPLOADING || it.status == TransferRepository.Status.QUEUED }
                     .forEach { transferRepository.cancelTransfer(it.remoteUniqueId) }
             }
+        }
+        // Only ever sets the flag: an intent without this extra (e.g. a
+        // normal transfer start from DriveRepository) must not clear an
+        // update download that is still in progress.
+        if (intent?.getBooleanExtra(EXTRA_KEEP_ALIVE_FOR_UPDATE, false) == true) {
+            updateDownloadActive = true
         }
         return START_STICKY
     }
@@ -78,15 +99,39 @@ class TransferService : Service() {
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 
                 if (transferring.isEmpty()) {
-                    delay(3000)
-                    val stillEmpty = transferRepository.transfers.value.values.none {
-                        it.status != TransferRepository.Status.COMPLETED &&
-                        it.status != TransferRepository.Status.CANCELLED &&
-                        !it.status.startsWith(TransferRepository.Status.FAILED)
-                    }
-                    if (stillEmpty) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                    // No transfers are running. Normally the service stops
+                    // here, but an in-app update download is NOT a
+                    // TransferRepository transfer, so the list stays empty
+                    // for the whole download — stopping here is what used to
+                    // kill the download after ~4s (P1-16). Wait out the
+                    // update download instead; UpdateRepository clears the
+                    // flag when the download finishes or is cancelled, and
+                    // the service then stops as before. The loop (rather
+                    // than a single check) also covers the race where an
+                    // update download starts while the 3s grace delay below
+                    // is already running.
+                    var doneWaiting = false
+                    while (!doneWaiting) {
+                        while (updateDownloadActive) {
+                            delay(3000)
+                        }
+                        delay(3000)
+                        val stillEmpty = transferRepository.transfers.value.values.none {
+                            it.status != TransferRepository.Status.COMPLETED &&
+                            it.status != TransferRepository.Status.CANCELLED &&
+                            !it.status.startsWith(TransferRepository.Status.FAILED)
+                        }
+                        if (stillEmpty && !updateDownloadActive) {
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf()
+                            doneWaiting = true
+                        } else if (!stillEmpty) {
+                            // A transfer appeared; collectLatest re-emits and
+                            // re-runs this block, so stop waiting here.
+                            doneWaiting = true
+                        }
+                        // Otherwise an update download started while we
+                        // waited: loop and wait it out instead of stopping.
                     }
                 } else {
                     val activeItem = transferring.firstOrNull { 
