@@ -506,7 +506,7 @@ class UpdateRepository @Inject constructor(
         try {
             getUpdateDir().listFiles()?.forEach { it.delete() }
             File(context.cacheDir, "updates").listFiles()?.forEach { it.delete() }
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("UpdateRepository", "cleanupOldUpdateApks failed", e) }
     }
 
     fun downloadAndInstall(release: GitHubRelease, runInBackground: Boolean = true) {
@@ -629,7 +629,7 @@ class UpdateRepository @Inject constructor(
                                     }
                                 }
                                 output.flush()
-                                try { output.fd.sync() } catch (e: Exception) {}
+                                try { output.fd.sync() } catch (e: Exception) { Log.w("UpdateRepository", "download fd.sync failed", e) }
                             }
                         }
                         activeConn.disconnect()
@@ -819,7 +819,7 @@ class UpdateRepository @Inject constructor(
             } else {
                 context.startService(intent)
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("UpdateRepository", "startKeepAliveService failed", e) }
     }
 
     private fun createUpdateNotificationChannel() {
@@ -853,7 +853,7 @@ class UpdateRepository @Inject constructor(
                 .setContentIntent(pendingIntent)
                 .build()
             notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("UpdateRepository", "updateProgressNotification failed", e) }
     }
 
     private fun showReadyToInstallNotification(apkFile: File, tagName: String) {
@@ -876,13 +876,13 @@ class UpdateRepository @Inject constructor(
                 .setContentIntent(pendingIntent)
                 .build()
             notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("UpdateRepository", "showReadyToInstallNotification failed", e) }
     }
 
     private fun cancelNotification() {
         try {
             notificationManager.cancel(UPDATE_NOTIFICATION_ID)
-        } catch (e: Exception) {}
+        } catch (e: Exception) { Log.w("UpdateRepository", "cancelNotification failed", e) }
     }
 
     private fun formatSpeed(bytesPerSec: Long): String {
