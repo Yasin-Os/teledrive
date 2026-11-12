@@ -130,6 +130,7 @@
     <string name="no_starred_items">No starred items found</string>
     <string name="language_changed_title">Language Changed</string>
     <string name="language_changed_message">The language has been updated. Please restart the app to apply changes fully.</string>
+    <string name="restart_app">Restart app</string>
     <string name="scanning_media">Scanning for new media...</string>
     <string name="backing_up_media_count">Backing up media: %1$d / %2$d</string>
     <string name="uploading_file">Uploading: %s</string>
