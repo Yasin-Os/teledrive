@@ -38,10 +38,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -54,6 +56,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Restore
@@ -114,6 +117,9 @@ fun SettingsScreen(
     onNavigateToLogs: () -> Unit,
     onNavigateToCacheDetails: () -> Unit,
     onNavigateToCloudAnalysis: () -> Unit,
+    onNavigateToStorageAnalyzer: () -> Unit,
+    onNavigateToDuplicateFinder: () -> Unit,
+    onNavigateToBackupHealth: () -> Unit,
     onNavigateToAbout: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
     themeViewModel: ThemeViewModel = hiltViewModel(),
@@ -190,6 +196,9 @@ fun SettingsScreen(
         onNavigateToLogs = onNavigateToLogs,
         onNavigateToCacheDetails = onNavigateToCacheDetails,
         onNavigateToCloudAnalysis = onNavigateToCloudAnalysis,
+        onNavigateToStorageAnalyzer = onNavigateToStorageAnalyzer,
+        onNavigateToDuplicateFinder = onNavigateToDuplicateFinder,
+        onNavigateToBackupHealth = onNavigateToBackupHealth,
         onNavigateToAbout = onNavigateToAbout,
         currentLanguage = currentLanguage,
         cloudBackups = cloudBackups,
@@ -244,6 +253,9 @@ fun SettingsContent(
     onNavigateToLogs: () -> Unit,
     onNavigateToCacheDetails: () -> Unit,
     onNavigateToCloudAnalysis: () -> Unit,
+    onNavigateToStorageAnalyzer: () -> Unit,
+    onNavigateToDuplicateFinder: () -> Unit,
+    onNavigateToBackupHealth: () -> Unit,
     onNavigateToAbout: () -> Unit,
     currentLanguage: String,
     cloudBackups: List<CloudBackup>,
@@ -710,6 +722,10 @@ fun SettingsContent(
                     icon = Icons.Default.CloudUpload, title = "Sync Now",
                     accentColor = Color(0xFF10B981), onClick = onTriggerManualBackup
                 )
+                ModernActionBarItem(
+                    icon = Icons.Default.MonitorHeart, title = stringResource(R.string.backup_health),
+                    accentColor = Color(0xFF10B981), onClick = onNavigateToBackupHealth
+                )
             }
 
             // 2. Storage & Cache Bar Section (Cyan Accent)
@@ -718,6 +734,14 @@ fun SettingsContent(
                     icon = Icons.Default.Cloud, title = "Cloud Usage",
                     accentColor = Color(0xFF0EA5E9), badgeText = formatSize(totalStorageUsed),
                     onClick = onNavigateToCloudAnalysis
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.Analytics, title = stringResource(R.string.storage_analyzer),
+                    accentColor = Color(0xFF0EA5E9), onClick = onNavigateToStorageAnalyzer
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.ContentCopy, title = stringResource(R.string.duplicate_finder),
+                    accentColor = Color(0xFF0EA5E9), onClick = onNavigateToDuplicateFinder
                 )
                 ModernActionBarItem(
                     icon = Icons.Default.Storage, title = "Local Cache",
