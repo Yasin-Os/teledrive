@@ -1,6 +1,7 @@
 package com.awd.teledrive.data.local
 
 import androidx.room.Entity
+import androidx.room.Fts4
 import androidx.room.Index
 
 @Entity(
@@ -71,4 +72,38 @@ data class TransferEntity(
     val downloadedSize: Long,
     val localPath: String? = null,
     val createdAt: Long = System.currentTimeMillis()
+)
+
+// Batch 7b smart search: external-content FTS4 mirror of drive_items.name.
+// Room keeps it in sync with drive_items through generated triggers
+// (room_fts_content_sync_drive_items_fts_*); writes must go to
+// drive_items, never to this table directly. Only `name` is mirrored —
+// an FTS content table can only mirror columns that exist on the
+// content entity (DriveItemEntity).
+@Entity(tableName = "drive_items_fts")
+@Fts4(contentEntity = DriveItemEntity::class)
+data class DriveItemFts(
+    val name: String
+)
+
+// Batch 7b smart search: standalone FTS4 table for indexed file text.
+// NOT a content table — managed manually via DriveDao (delete-then-insert
+// per remoteUniqueId). One row per file at most; a file with no local
+// copy, an encrypted file, or a non-text file has no row here.
+// PDFs have no row: the app has no PDF text-extraction library
+// (PdfRenderer only renders bitmaps), so PDFs are searchable by name only.
+@Entity(tableName = "file_content_fts")
+@Fts4
+data class FileContentFts(
+    val remoteUniqueId: String,
+    val contentText: String
+)
+
+// Batch 7b smart search: recent search queries, newest first.
+// `query` is the primary key so re-running a query bumps it instead of
+// duplicating it; DriveDao trims the table to the 10 newest rows.
+@Entity(tableName = "recent_searches")
+data class RecentSearch(
+    @androidx.room.PrimaryKey val query: String,
+    val timestamp: Long = System.currentTimeMillis()
 )
