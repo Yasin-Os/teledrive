@@ -81,8 +81,8 @@
 
 ## [1.0.0] - 2026-05-01
 ### Added / Ditambahkan
-- **EN:** Initial release of TeleDrive Android.
-- **ID:** Rilis awal TeleDrive Android.
+- **EN:** Initial release of MyCloud Android.
+- **ID:** Rilis awal MyCloud Android.
 - **EN:** Basic file management (Upload, Download, Rename, Delete).
 - **ID:** Manajemen file dasar (Unggah, Unduh, Ganti Nama, Hapus).
 - **EN:** Automatic background backup for media folders.
