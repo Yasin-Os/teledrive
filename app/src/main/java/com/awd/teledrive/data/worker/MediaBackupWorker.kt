@@ -4,6 +4,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
@@ -12,6 +14,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.awd.teledrive.R
 import com.awd.teledrive.data.repository.DriveRepository
+import com.awd.teledrive.data.repository.SettingsRepository
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -36,19 +39,36 @@ class MediaBackupWorker(
     interface MediaBackupWorkerEntryPoint {
         fun driveRepository(): DriveRepository
         fun secureSettings(): SecureSettings
+        fun settingsRepository(): SettingsRepository
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             setForeground(createForegroundInfo(0, 0))
-            
+
             val entryPoint = EntryPointAccessors.fromApplication(
                 applicationContext,
                 MediaBackupWorkerEntryPoint::class.java
             )
             val driveRepository = entryPoint.driveRepository()
             val secureSettings = entryPoint.secureSettings()
-            
+
+            // শিডিউল করা (অটোমেটিক) রান Auto Backup টগল ও Wi-Fi Only
+            // মানবে; ম্যানুয়াল "Backup Now" রান (inputData manual=true)
+            // ব্যবহারকারীর স্পষ্ট নির্দেশ বলে এগুলো বাইপাস করে।
+            // ওয়ার্কারের constraints-ই প্রথম প্রতিরক্ষা; এটি দ্বিতীয়
+            // স্তর — যাতে পুরোনো constraint-এ এনকিউ হওয়া রানও মোবাইল
+            // ডাটা খরচ করতে না পারে।
+            if (!inputData.getBoolean("manual", false)) {
+                val settingsRepository = entryPoint.settingsRepository()
+                if (!settingsRepository.isAutoBackupEnabled.value) {
+                    return@withContext Result.success()
+                }
+                if (settingsRepository.isBackupWifiOnlyEnabled.value && !isNetworkUnmetered()) {
+                    return@withContext Result.success()
+                }
+            }
+
             val backupFolders = secureSettings.getStringList("backup_folders")
             if (backupFolders.isEmpty()) return@withContext Result.success()
 
@@ -92,6 +112,17 @@ class MediaBackupWorker(
             Result.success()
         } catch (e: Exception) {
             Result.retry()
+        }
+    }
+
+    private fun isNetworkUnmetered(): Boolean {
+        return try {
+            val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        } catch (e: Exception) {
+            false
         }
     }
 
