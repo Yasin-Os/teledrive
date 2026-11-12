@@ -16,6 +16,12 @@ class BackupWorker(
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
+    companion object {
+        // P1-14: ব্যর্থতা চিরকাল retry হবে না — 3 চেষ্টার পর failure,
+        // যাতে WorkManager backoff শেষে কাজটা ছেড়ে দেয়।
+        private const val MAX_RETRY_ATTEMPTS = 3
+    }
+
     @EntryPoint
     @InstallIn(SingletonComponent::class)
     interface BackupWorkerEntryPoint {
@@ -29,13 +35,16 @@ class BackupWorker(
                 BackupWorkerEntryPoint::class.java
             )
             val driveRepository = entryPoint.driveRepository()
-            
+
             // Refresh files to update cache
             driveRepository.fetchFiles()
-            
+
             Result.success()
         } catch (e: Exception) {
-            Result.retry()
+            retryOrFail()
         }
     }
+
+    private fun retryOrFail(): Result =
+        if (runAttemptCount >= MAX_RETRY_ATTEMPTS) Result.failure() else Result.retry()
 }
