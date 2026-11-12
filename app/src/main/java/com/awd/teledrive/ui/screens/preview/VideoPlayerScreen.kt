@@ -1739,25 +1739,36 @@ private fun PlayItVinylAudioPlayerUI(
     onShare: () -> Unit,
     onCycleSleepTimer: () -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "VinylRotation")
-    val discAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 9000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "DiscAngle"
-    )
-    val eqPhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "EqPhase"
-    )
+    // পজ অবস্থায় অ্যানিমেশন পুরোপুরি থামিয়ে দাও: infinite transition শুধু
+    // প্লে চলাকালীনই তৈরি হয়, পজ হলে কোণ/ফেজ স্থির 0 থাকে; আবার প্লে করলে
+    // ঘূর্ণন শুরু থেকে শুরু হয়
+    val accentColor = MaterialTheme.colorScheme.primary
+    val discAngle: Float
+    val eqPhase: Float
+    if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "VinylRotation")
+        discAngle = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 9000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "DiscAngle"
+        ).value
+        eqPhase = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2 * PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 800, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "EqPhase"
+        ).value
+    } else {
+        discAngle = 0f
+        eqPhase = 0f
+    }
 
     Column(
         modifier = Modifier
@@ -1834,7 +1845,7 @@ private fun PlayItVinylAudioPlayerUI(
                     val ey = cy + (barStartRadius + len) * sin(angleRad)
 
                     drawLine(
-                        color = Color.White,
+                        color = accentColor,
                         start = Offset(sx, sy),
                         end = Offset(ex, ey),
                         strokeWidth = 4.2f,
