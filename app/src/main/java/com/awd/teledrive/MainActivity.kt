@@ -331,9 +331,9 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
     val shapes = remember { IconShapes() }
     val progress = remember { Animatable(0f) }
 
-    // সংক্ষিপ্ত ৭০০ মিলিসেকেন্ডের ড্রয়িং এনিমেশন (P1-9: স্প্ল্যাশ সর্বোচ্চ ~৮০০ মিলিসেকেন্ড)
+    // ১৫০০ মিলিসেকেন্ডের ড্রয়িং এনিমেশন — লোগো আঁকার অ্যানিমেশনটা একটু ধীরে চলে
     LaunchedEffect(Unit) {
-        progress.animateTo(1f, tween(durationMillis = 700, easing = LinearEasing))
+        progress.animateTo(1f, tween(durationMillis = 1500, easing = LinearEasing))
         delay(100)
         onFinished()
     }
