@@ -1,4 +1,4 @@
-TeleDrive transforms your Telegram account into an unlimited, secure personal cloud storage drive. Manage files, automate background backups, and navigate your media directory through a modern Material 3 interface.
+MyCloud transforms your Telegram account into an unlimited, secure personal cloud storage drive. Manage files, automate background backups, and navigate your media directory through a modern Material 3 interface.
 
 Key Features:
 - Unlimited Cloud Storage: Leverage Telegram's infrastructure for your files.
