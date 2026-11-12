@@ -547,11 +547,11 @@ fun SettingsContent(
     }
 
     // P1-11: language picker. Only locales with a translated strings.xml exist
-    // (English = default values/, Indonesian = values-in/), so only those two
+    // (English = default values/, Bengali = values-bn/), so only those two
     // are offered. setLanguage() persists the choice and applies it via
     // AppCompatDelegate; a restart is offered so every screen picks it up.
     if (showLanguageDialog) {
-        val languageOptions = listOf("en" to "English", "id" to "Bahasa Indonesia")
+        val languageOptions = listOf("en" to "English", "bn" to "বাংলা")
         AlertDialog(
             onDismissRequest = { showLanguageDialog = false },
             title = { Text(stringResource(R.string.language)) },
@@ -846,7 +846,7 @@ fun SettingsContent(
                     icon = Icons.Default.Language, title = stringResource(R.string.language),
                     accentColor = Color(0xFFEC4899),
                     badgeText = when (currentLanguage) {
-                        "id" -> "Bahasa Indonesia"
+                        "bn" -> "বাংলা"
                         "en" -> "English"
                         else -> currentLanguage
                     },
