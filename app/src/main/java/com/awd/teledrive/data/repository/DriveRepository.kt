@@ -28,6 +28,7 @@ import com.awd.teledrive.R
 import com.awd.teledrive.core.utils.FileUtils
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.DriveItemEntity
+import com.awd.teledrive.data.local.FileHashEntity
 import com.awd.teledrive.data.remote.TelegramClient
 import com.awd.teledrive.data.secure.EncryptionManager
 import com.awd.teledrive.data.secure.SecureSessionManager
@@ -45,6 +46,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,13 +54,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.drinkless.tdlib.TdApi
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.URLDecoder
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -253,6 +261,35 @@ class DriveRepository @Inject constructor(
                 val current = customPrefs.getStringSet("backed_up_paths_v3", emptySet())?.toMutableSet() ?: mutableSetOf()
                 current.add(fileKey)
                 customPrefs.edit().putStringSet("backed_up_paths_v3", current).apply()
+                // A file that just succeeded is no longer failed.
+                val failed = customPrefs.getStringSet("backup_failed_v1", emptySet())?.toMutableSet() ?: mutableSetOf()
+                if (failed.remove(fileKey)) {
+                    customPrefs.edit().putStringSet("backup_failed_v1", failed).apply()
+                }
+            }
+            // Last *successful* backup: only stamped when a file really
+            // finished uploading (unlike last_backup_time, which is also
+            // stamped after a run where nothing succeeded).
+            val now = System.currentTimeMillis()
+            secureSettings.saveLong("last_successful_backup_time", now)
+            // Data uploaded this month (key "path_length" carries the size).
+            fileKey.substringAfterLast("_").toLongOrNull()?.let { size ->
+                val month = SimpleDateFormat("yyyy-MM", Locale.US).format(Date(now))
+                val bytesKey = "backup_bytes_$month"
+                secureSettings.saveLong(bytesKey, secureSettings.getLong(bytesKey, 0L) + size)
+            }
+        } catch (e: Exception) {}
+    }
+
+    /** Remember a backup file key ("path_length") that failed to upload, so the backup health dashboard can offer a retry. */
+    private fun recordBackupFailed(fileKey: String) {
+        try {
+            val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            synchronized(this) {
+                val failed = customPrefs.getStringSet("backup_failed_v1", emptySet())?.toMutableSet() ?: mutableSetOf()
+                if (failed.add(fileKey)) {
+                    customPrefs.edit().putStringSet("backup_failed_v1", failed).apply()
+                }
             }
         } catch (e: Exception) { Log.w("DriveRepo", "markFileBackedUp failed", e) }
     }
@@ -1394,6 +1431,7 @@ class DriveRepository @Inject constructor(
                             uploadSinglePart(
                                 part.absolutePath, cleanName, targetChatId, caption, virtualFolderId,
                                 deleteSourceAfter = true,
+                                computeContentHash = false,
                                 onMessageSent = { messageId ->
                                     if (messageId != 0L) partMessageIds.add(messageId)
                                 },
@@ -1416,7 +1454,10 @@ class DriveRepository @Inject constructor(
                                             }
                                             if (autoDeleteEnabled) deletePhoneFileCompletely(sourceFile)
                                         } else {
-                                            if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
+                                            if (backupTrackingKey != null) {
+                                                inFlightBackupKeys.remove(backupTrackingKey)
+                                                recordBackupFailed(backupTrackingKey)
+                                            }
                                             Log.w("DriveRepo", "Split upload incomplete for $cleanName; phone original kept")
                                         }
                                     }
@@ -1424,7 +1465,10 @@ class DriveRepository @Inject constructor(
                             )
                         }
                     } catch (e: Exception) {
-                        if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
+                        if (backupTrackingKey != null) {
+                            inFlightBackupKeys.remove(backupTrackingKey)
+                            recordBackupFailed(backupTrackingKey)
+                        }
                         transferRepository.updateTransferManual(placeholderId, 0f, TransferRepository.Status.FAILED)
                     }
                 }
@@ -1489,6 +1533,7 @@ class DriveRepository @Inject constructor(
         virtualFolderId: String? = null,
         deleteSourceAfter: Boolean = false,
         backupTrackingKey: String? = null,
+        computeContentHash: Boolean = true,
         onMessageSent: (Long) -> Unit = {},
         onUploadCompleted: (Boolean) -> Unit = {}
     ) {
@@ -1532,6 +1577,15 @@ class DriveRepository @Inject constructor(
                 } catch (e: Exception) { Log.w("DriveRepo", "uploadSinglePart encryption failed", e) }
             }
 
+            // Duplicate finder: hash the file's content while it uploads, so
+            // sending is never delayed by hashing. Secure files are skipped:
+            // their ciphertext differs on every upload, so its hash could
+            // never match anything. Split parts are skipped too (their
+            // content is only a slice of the original file).
+            val contentHashDeferred = if (computeContentHash && !isSecure) {
+                scope.async { computeFileSha256(uploadReadyFile) }
+            } else null
+
             var finalPath = uploadReadyFile.absolutePath
             var finalCaption = caption ?: originalFileName
             var tempEncFile: File? = null
@@ -1548,7 +1602,10 @@ class DriveRepository @Inject constructor(
                     finalCaption = if (caption != null) "$caption [ENC]" else "$originalFileName [ENC]"
                     transferRepository.updateRemoteUniqueId(tempId, tempId, 0, finalPath)
                 } catch (e: Exception) {
-                    if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
+                    if (backupTrackingKey != null) {
+                        inFlightBackupKeys.remove(backupTrackingKey)
+                        recordBackupFailed(backupTrackingKey)
+                    }
                     transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
                     try { onUploadCompleted(false) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
                     return@enqueueTransfer 
@@ -1590,6 +1647,20 @@ class DriveRepository @Inject constructor(
                     val file = extractTdFileFromMessage(result)
                     if (file != null) {
                         transferRepository.updateRemoteUniqueId(tempId, file.remote.uniqueId, file.id, finalPath)
+                        // The content hash (computed concurrently) is stored
+                        // under the file's Telegram unique id, so the
+                        // duplicate finder can group by it after the next sync.
+                        contentHashDeferred?.let { deferred ->
+                            scope.launch {
+                                try {
+                                    val hash = deferred.await()
+                                    if (hash != null) {
+                                        driveDao.saveFileHash(FileHashEntity(file.remote.uniqueId, hash, originalSourceFile.length()))
+                                        driveDao.updateContentHash(file.remote.uniqueId, hash)
+                                    }
+                                } catch (e: Exception) {}
+                            }
+                        }
                         if (file.remote.isUploadingCompleted) {
                             transferRepository.completeAndCleanupTransfer(file.remote.uniqueId, tempId, file.id, success = true)
                             if (backupTrackingKey != null) {
@@ -1603,11 +1674,17 @@ class DriveRepository @Inject constructor(
                             }
                         }
                     } else {
-                        if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
+                        if (backupTrackingKey != null) {
+                            inFlightBackupKeys.remove(backupTrackingKey)
+                            recordBackupFailed(backupTrackingKey)
+                        }
                         transferRepository.completeAndCleanupTransfer(tempId, success = false)
                     }
                 } else {
-                    if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
+                    if (backupTrackingKey != null) {
+                        inFlightBackupKeys.remove(backupTrackingKey)
+                        recordBackupFailed(backupTrackingKey)
+                    }
                     transferRepository.completeAndCleanupTransfer(tempId, success = false)
                 }
             }
@@ -1625,6 +1702,7 @@ class DriveRepository @Inject constructor(
                 }
                 if (!completedSuccess && backupTrackingKey != null) {
                     inFlightBackupKeys.remove(backupTrackingKey)
+                    recordBackupFailed(backupTrackingKey)
                 }
             } catch (e: Exception) { Log.w("DriveRepo", "upload completion cleanup failed", e) }
             try { onUploadCompleted(completedSuccess) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
@@ -2112,7 +2190,183 @@ class DriveRepository @Inject constructor(
     }
 
     fun getCloudFileTypeStats(): Flow<List<DriveDao.FileTypeStat>> = driveDao.getCloudFileTypeStats()
-    
+
+    // ---- Combo insights: storage analyzer / duplicate finder / backup health ----
+
+    /** DriveItemEntity -> DriveItem.File, same mapping as the home/preview lists use. */
+    fun entityToFile(entity: DriveItemEntity): DriveItem.File = DriveItem.File(
+        entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId,
+        verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath),
+        entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts,
+        entity.virtualParentId, entity.isEncrypted
+    )
+
+    /** SHA-256 hex of a file's content, streamed so large files never load into memory. Null on any read error. */
+    private suspend fun computeFileSha256(file: File): String? = withContext(Dispatchers.IO) {
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { input ->
+                val buffer = ByteArray(512 * 1024)
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) {
+                    digest.update(buffer, 0, read)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun getLargestFiles(limit: Int = 20): Flow<List<DriveItemEntity>> = driveDao.getLargestFiles(limit)
+
+    fun getDuplicateGroups(): Flow<List<DriveDao.DuplicateGroup>> = driveDao.getDuplicateGroups()
+
+    suspend fun getDuplicateGroupItems(hash: String, size: Long): List<DriveItemEntity> =
+        driveDao.getDuplicateGroupItems(hash, size)
+
+    /**
+     * Hashes every downloaded file that has no content hash yet, so the
+     * duplicate finder can group files uploaded before hashing existed.
+     * Returns how many files were hashed. Progress is reported as
+     * (done, total) on each file.
+     */
+    suspend fun scanDownloadedFilesForHashes(onProgress: (Int, Int) -> Unit = { _, _ -> }): Int =
+        withContext(Dispatchers.IO) {
+            val items = driveDao.getUnhashedDownloadedFiles()
+            var hashed = 0
+            items.forEachIndexed { index, entity ->
+                val uniqueId = entity.remoteUniqueId
+                val file = verifyOfflinePath(entity.localPath)?.let { File(it) }
+                if (uniqueId != null && file != null && file.exists() && file.length() > 0L) {
+                    computeFileSha256(file)?.let { hash ->
+                        driveDao.saveFileHash(FileHashEntity(uniqueId, hash, entity.size))
+                        driveDao.updateContentHash(uniqueId, hash)
+                        hashed++
+                    }
+                }
+                onProgress(index + 1, items.size)
+            }
+            hashed
+        }
+
+    /** Deletes the given entities (Telegram + local), reusing the normal delete path. */
+    fun deleteDuplicateItems(entities: List<DriveItemEntity>) {
+        if (entities.isEmpty()) return
+        permanentlyDeleteItems(entities.map { entityToFile(it) })
+    }
+
+    fun getBackupFolders(): List<String> = secureSettings.getStringList("backup_folders")
+
+    /** Last time a file actually finished backing up (falls back to the last run's end time for older installs). */
+    fun getLastSuccessfulBackupTime(): Long {
+        val v = secureSettings.getLong("last_successful_backup_time", 0L)
+        return if (v != 0L) v else secureSettings.getLong("last_backup_time", 0L)
+    }
+
+    /** Bytes uploaded in the current calendar month. */
+    fun getMonthlyBackupBytes(): Long {
+        val month = SimpleDateFormat("yyyy-MM", Locale.US).format(Date(System.currentTimeMillis()))
+        return secureSettings.getLong("backup_bytes_$month", 0L)
+    }
+
+    /** One-shot snapshot for the backup health dashboard (does a folder scan, so call it off the main thread). */
+    suspend fun getBackupHealthSnapshot(): BackupHealthSnapshot = withContext(Dispatchers.IO) {
+        val folders = secureSettings.getStringList("backup_folders")
+        val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+        val backedUpSet = customPrefs.getStringSet("backed_up_paths_v3", emptySet()) ?: emptySet()
+        val failedKeys = customPrefs.getStringSet("backup_failed_v1", emptySet()) ?: emptySet()
+
+        val pendingFiles = collectTargetBackupFiles(folders)
+        val pendingInfos = pendingFiles.map { f ->
+            BackupFileInfo("${f.absolutePath}_${f.length()}", f.absolutePath, f.name, f.length())
+        }
+
+        val folderStatuses = (folders + "Other").distinct().map { folder ->
+            val norm = if (folder == "Other") null else normalizeFolderPath(folder)
+            val inFolder: (String) -> Boolean = { path ->
+                if (norm == null) {
+                    folders.none { f ->
+                        val n = normalizeFolderPath(f)
+                        path == n || path.startsWith("$n/")
+                    }
+                } else {
+                    path == norm || path.startsWith("$norm/")
+                }
+            }
+            val backedUp = backedUpSet.count { key -> inFolder(backupKeyPath(key)) }
+            val pending = pendingInfos.count { inFolder(it.path) }
+            val failed = failedKeys.count { key -> inFolder(backupKeyPath(key)) }
+            BackupFolderStatus(folder, backedUp, pending, failed)
+        }.filter { it.backedUpCount > 0 || it.pendingCount > 0 || it.failedCount > 0 || it.folder != "Other" }
+
+        BackupHealthSnapshot(
+            folders = folderStatuses,
+            pendingFiles = pendingInfos,
+            failedFiles = failedKeys.map { backupKeyToInfo(it) },
+            lastSuccessfulBackupTime = getLastSuccessfulBackupTime(),
+            monthlyBackupBytes = getMonthlyBackupBytes(),
+            totalBackedUpCount = backedUpSet.size
+        )
+    }
+
+    /** The file path part of a backup key ("path_length" or "doc_<uri>_length"). */
+    private fun backupKeyPath(key: String): String {
+        return if (key.startsWith("doc_")) key.removePrefix("doc_").substringBeforeLast("_") else key.substringBeforeLast("_")
+    }
+
+    private fun backupKeyToInfo(key: String): BackupFileInfo {
+        val size = key.substringAfterLast("_").toLongOrNull() ?: 0L
+        return if (key.startsWith("doc_")) {
+            val uriPart = key.removePrefix("doc_").substringBeforeLast("_")
+            val name = try {
+                URLDecoder.decode(uriPart.substringAfterLast("%2F", uriPart.substringAfterLast("/")), "UTF-8")
+            } catch (e: Exception) {
+                uriPart.substringAfterLast("/")
+            }
+            BackupFileInfo(key, uriPart, name, size)
+        } else {
+            val path = key.substringBeforeLast("_")
+            BackupFileInfo(key, path, File(path).name, size)
+        }
+    }
+
+    /** Re-uploads one failed backup file (identified by its backup key). Runs in the caller's coroutine. */
+    suspend fun retryFailedBackup(fileKey: String) {
+        try {
+            val deleteEnabled = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+                .getBoolean("delete_after_backup", false)
+            if (fileKey.startsWith("doc_")) {
+                val uriStr = fileKey.removePrefix("doc_").substringBeforeLast("_")
+                val name = backupKeyToInfo(fileKey).name
+                val tempFile = File(context.cacheDir, name)
+                context.contentResolver.openInputStream(Uri.parse(uriStr))?.use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        input.copyTo(output, bufferSize = 512 * 1024)
+                    }
+                }
+                if (tempFile.exists() && tempFile.length() > 0) {
+                    uploadFileAndWait(tempFile.absolutePath, name, forceDeleteSource = false, backupTrackingKey = fileKey)
+                }
+            } else {
+                val path = fileKey.substringBeforeLast("_")
+                val f = File(path)
+                if (f.exists() && f.length() > 0) {
+                    uploadFileAndWait(f.absolutePath, f.name, forceDeleteSource = deleteEnabled, backupTrackingKey = fileKey)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("DriveRepo", "Retry backup failed: ${e.message}")
+        }
+    }
+
+    /** Re-uploads every failed backup file, one after another, in the caller's coroutine. */
+    suspend fun retryAllFailedBackups() {
+        val keys = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            .getStringSet("backup_failed_v1", emptySet())?.toList() ?: emptyList()
+        keys.forEach { retryFailedBackup(it) }
+    }
+
     fun getTotalStorageUsed(): Flow<Long> = driveDao.getFileSizeRows().map { rows ->
         var totalSize = 0L
         val processedGroups = mutableSetOf<String>()
@@ -2169,3 +2423,32 @@ class DriveRepository @Inject constructor(
 
     private data class SplitMetadata(val groupId: String, val partIndex: Int, val totalParts: Int, val originalName: String)
 }
+
+/** One backup folder's health, as shown on the backup health dashboard. */
+data class BackupFolderStatus(
+    val folder: String,
+    val backedUpCount: Int,
+    val pendingCount: Int,
+    val failedCount: Int
+) {
+    /** Short name shown in the UI ("DCIM" instead of the full path; "Other" as-is). */
+    val displayName: String get() = if (folder == "Other") folder else File(folder).name.ifEmpty { folder }
+}
+
+/** A single pending/failed backup file. [key] is the "path_length" backup key used to retry it. */
+data class BackupFileInfo(
+    val key: String,
+    val path: String,
+    val name: String,
+    val size: Long
+)
+
+/** One-shot snapshot for the backup health dashboard. */
+data class BackupHealthSnapshot(
+    val folders: List<BackupFolderStatus>,
+    val pendingFiles: List<BackupFileInfo>,
+    val failedFiles: List<BackupFileInfo>,
+    val lastSuccessfulBackupTime: Long,
+    val monthlyBackupBytes: Long,
+    val totalBackedUpCount: Int
+)

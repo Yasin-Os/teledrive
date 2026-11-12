@@ -12,7 +12,8 @@ import androidx.room.Index
         Index(value = ["remoteUniqueId"], name = "index_drive_items_remoteUniqueId"),
         Index(value = ["virtualId"], name = "index_drive_items_virtualId"),
         Index(value = ["splitGroupId"], name = "index_drive_items_splitGroupId"),
-        Index(value = ["isStarred"], name = "index_drive_items_isStarred")
+        Index(value = ["isStarred"], name = "index_drive_items_isStarred"),
+        Index(value = ["contentHash"], name = "index_drive_items_contentHash")
     ]
 )
 data class DriveItemEntity(
@@ -37,7 +38,25 @@ data class DriveItemEntity(
     val virtualId: String? = null,
     val virtualParentId: String? = "0",
     val isSecure: Boolean = false,
-    val isEncrypted: Boolean = false
+    val isEncrypted: Boolean = false,
+    // SHA-256 hex of the file content, filled at upload time (or by the
+    // duplicate-finder scan for downloaded files). Null for files whose
+    // content was never hashed (legacy items, split parts, secure files).
+    val contentHash: String? = null
+)
+
+/**
+ * Content hash of an uploaded file, keyed by the Telegram remote unique id.
+ * Kept in its own table so the hash survives history re-syncs (which rebuild
+ * DriveItemEntity rows): the DAO fills DriveItemEntity.contentHash from here
+ * whenever items are inserted.
+ */
+@Entity(tableName = "file_hashes", primaryKeys = ["remoteUniqueId"])
+data class FileHashEntity(
+    val remoteUniqueId: String,
+    val contentHash: String,
+    val size: Long,
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "transfers")

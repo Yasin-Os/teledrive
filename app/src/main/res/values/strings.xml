@@ -335,6 +335,38 @@
     <string name="status_queued">Queued</string>
     <string name="encrypting_perc">Encrypting... %d%%</string>
     <string name="decrypting_perc">Decrypting... %d%%</string>
+    <!-- Combo insights: storage analyzer / duplicate finder / backup health -->
+    <string name="storage_analyzer">Storage Analyzer</string>
+    <string name="duplicate_finder">Duplicate Finder</string>
+    <string name="backup_health">Backup Health</string>
+    <string name="largest_files">Largest files</string>
+    <string name="free_up_space">Free up space</string>
+    <string name="duplicates_wasted">%1$s wasted in duplicates</string>
+    <string name="scan_for_duplicates">Scan for duplicates</string>
+    <string name="scanning_files">Scanning %1$d of %2$d…</string>
+    <string name="scan_finished">Hashed %1$d files</string>
+    <string name="no_duplicates">No duplicates found</string>
+    <string name="no_duplicates_hint">Tap Scan to hash your downloaded files and look for copies with identical content.</string>
+    <string name="keep_newest_delete_rest">Keep newest, delete the rest</string>
+    <string name="delete_all_duplicates">Delete all duplicates</string>
+    <string name="delete_duplicates_confirm">Delete %1$d duplicate copies? The newest copy of each file is kept.</string>
+    <string name="duplicates_note">Only files with a verified content hash are shown. New uploads are hashed automatically; files over 2 GB and encrypted files are not included.</string>
+    <string name="last_successful_backup">Last successful backup</string>
+    <string name="data_this_month">Data uploaded this month</string>
+    <string name="next_backup">Next scheduled backup</string>
+    <string name="not_scheduled">Not scheduled</string>
+    <string name="never_backed_up">Never</string>
+    <string name="failed_files">Failed files</string>
+    <string name="pending_files">Pending files</string>
+    <string name="enabled">Enabled</string>
+    <string name="disabled">Disabled</string>
+    <string name="retry">Retry</string>
+    <string name="retry_all">Retry all</string>
+    <string name="no_backup_folders_set">No backup folders selected yet.</string>
+    <string name="backed_up_count">%1$d backed up</string>
+    <string name="pending_count">%1$d pending</string>
+    <string name="failed_count">%1$d failed</string>
+    <string name="tap_to_open">Tap a file to open it</string>
     <string name="status_waiting">Waiting...</string>
 
     <!-- P2-2: strings moved out of hardcoded UI text in Home/Preview/Settings screens -->

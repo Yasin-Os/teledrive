@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -54,6 +55,7 @@ import com.awd.teledrive.ui.theme.CategoryPurple
 @Composable
 fun CloudAnalysisScreen(
     onBack: () -> Unit,
+    onNavigateToStorageAnalyzer: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val cloudStats by viewModel.cloudStats.collectAsState()
@@ -185,6 +187,15 @@ fun CloudAnalysisScreen(
                 description = stringResource(R.string.category_others_desc)
             )
             
+            Button(
+                onClick = onNavigateToStorageAnalyzer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Text(stringResource(R.string.storage_analyzer))
+            }
+
             Spacer(modifier = Modifier.height(32.dp))
         }
     }
