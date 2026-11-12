@@ -107,10 +107,14 @@ class SettingsViewModel @Inject constructor(
         _showCacheWarning.value = false
     }
 
+    // Indonesian ("in"/"id") was replaced by Bengali: a previously saved
+    // Indonesian choice migrates to Bengali instead of breaking.
     private val _currentLanguage = MutableStateFlow(
-        secureSettings.getString("app_language") ?:
-        AppCompatDelegate.getApplicationLocales().get(0)?.language ?:
-        Locale.getDefault().language
+        normalizeLanguageCode(
+            secureSettings.getString("app_language") ?:
+            AppCompatDelegate.getApplicationLocales().get(0)?.language ?:
+            Locale.getDefault().language
+        )
     )
     val currentLanguage = _currentLanguage.asStateFlow()
 
@@ -132,11 +136,22 @@ class SettingsViewModel @Inject constructor(
         _downloadUri.value = uri
     }
 
+    // Maps a stored Indonesian code to Bengali ("bn"); anything else passes
+    // through unchanged. Keeps users who had Indonesian selected working
+    // after Indonesian was removed.
+    private fun normalizeLanguageCode(code: String): String {
+        return when (code) {
+            "in", "id" -> "bn"
+            else -> code
+        }
+    }
+
     fun setLanguage(languageCode: String) {
-        val appLocale: LocaleListCompat = LocaleListCompat.forLanguageTags(languageCode)
+        val code = normalizeLanguageCode(languageCode)
+        val appLocale: LocaleListCompat = LocaleListCompat.forLanguageTags(code)
         AppCompatDelegate.setApplicationLocales(appLocale)
-        secureSettings.saveString("app_language", languageCode)
-        _currentLanguage.value = languageCode
+        secureSettings.saveString("app_language", code)
+        _currentLanguage.value = code
     }
 
     fun logout() {
