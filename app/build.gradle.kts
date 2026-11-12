@@ -76,9 +76,6 @@ android {
         // here — resConfigs would strip the Indonesian strings. (P1-20)
         resConfigs("en", "in")
 
-        ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
-        }
     }
 
     // One APK per ABI (arm64-v8a + armeabi-v7a): the native .so files
