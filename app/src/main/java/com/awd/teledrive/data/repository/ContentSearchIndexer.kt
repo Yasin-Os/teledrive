@@ -14,7 +14,7 @@ import java.io.File
  * Rules (all best-effort — indexing must never throw or break preview):
  *  - only when a local copy exists (localPath non-null and the file is
  *    really there);
- *  - only text files: mimeType text/*, or a text-like extension
+ *  - only text files: mimeType starting with "text/", or a text-like extension
  *    (.txt/.md/.json/.csv and friends);
  *  - only the first ~200 KB, read on Dispatchers.IO;
  *  - encrypted files are NEVER indexed: their local bytes are ciphertext
