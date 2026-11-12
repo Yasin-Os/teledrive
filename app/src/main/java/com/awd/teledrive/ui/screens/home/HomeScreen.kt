@@ -141,6 +141,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Size
 import com.awd.teledrive.R
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.core.FileSharingHelper
@@ -149,6 +151,7 @@ import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.domain.model.DriveItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.drinkless.tdlib.TdApi
@@ -176,44 +179,28 @@ fun HomeScreen(
     onNavigateToPreview: (DriveItem.File) -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
-    val items by viewModel.items.collectAsState()
-    val allCloudFiles by viewModel.allCloudFiles.collectAsState()
-    val virtualFolders by viewModel.virtualFolders.collectAsState()
-    val recentFiles by viewModel.recentFiles.collectAsState()
-    val transfers by viewModel.transfers.collectAsState()
-    val totalStorageUsed by viewModel.totalStorageUsed.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val sortOrder by viewModel.sortOrder.collectAsState()
-    val filterType by viewModel.filterType.collectAsState()
-    val customCategory by viewModel.customCategory.collectAsState()
-    val selectedCategoryFolderId by viewModel.selectedCategoryFolderId.collectAsState()
-    val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val isInitialLoading by viewModel.isInitialLoading.collectAsState()
-    val currentFolderId by viewModel.currentFolderId.collectAsState()
-    val currentFolderName by viewModel.currentFolderName.collectAsState()
-    val currentVirtualFolderId by viewModel.currentVirtualFolderId.collectAsState()
-    val isGridView by viewModel.isGridView.collectAsState()
-    val connectivityStatus by viewModel.connectivityStatus.collectAsState()
-
+    // P1-12: এখানে আর collect করা হয় না — StateFlow গুলো নিচে HomeContent ও
+    // সাব-কম্পোজেবলে পাঠানো হয়, প্রতিটি state সেখানেই collect হয় যেখানে সেটা লাগে।
+    // বিশেষ করে transfers (প্রোগ্রেস টিক) আর পুরো স্ক্রিনকে recompose করায় না।
     HomeContent(
-        items = items,
-        allCloudFiles = allCloudFiles,
-        virtualFolders = virtualFolders,
-        recentFiles = recentFiles,
-        transfers = transfers,
-        totalStorageUsed = totalStorageUsed,
-        searchQuery = searchQuery,
-        sortOrder = sortOrder,
-        filterType = filterType,
-        customCategory = customCategory,
-        selectedCategoryFolderId = selectedCategoryFolderId,
-        isRefreshing = isRefreshing,
-        isInitialLoading = isInitialLoading,
-        currentFolderId = currentFolderId,
-        currentVirtualFolderId = currentVirtualFolderId,
-        currentFolderName = currentFolderName,
-        isGridView = isGridView,
-        connectivityStatus = connectivityStatus,
+        itemsFlow = viewModel.items,
+        allCloudFilesFlow = viewModel.allCloudFiles,
+        virtualFoldersFlow = viewModel.virtualFolders,
+        recentFilesFlow = viewModel.recentFiles,
+        transfersFlow = viewModel.transfers,
+        totalStorageUsedFlow = viewModel.totalStorageUsed,
+        searchQueryFlow = viewModel.searchQuery,
+        sortOrderFlow = viewModel.sortOrder,
+        filterTypeFlow = viewModel.filterType,
+        customCategoryFlow = viewModel.customCategory,
+        selectedCategoryFolderIdFlow = viewModel.selectedCategoryFolderId,
+        isRefreshingFlow = viewModel.isRefreshing,
+        isInitialLoadingFlow = viewModel.isInitialLoading,
+        currentFolderIdFlow = viewModel.currentFolderId,
+        currentVirtualFolderIdFlow = viewModel.currentVirtualFolderId,
+        currentFolderNameFlow = viewModel.currentFolderName,
+        isGridViewFlow = viewModel.isGridView,
+        connectivityStatusFlow = viewModel.connectivityStatus,
         onNavigateToStarred = onNavigateToStarred,
         onNavigateToSafeFolder = onNavigateToSafeFolder,
         onNavigateToCloudAnalysis = onNavigateToCloudAnalysis,
@@ -252,24 +239,25 @@ fun HomeScreen(
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun HomeContent(
-    items: List<DriveItem>,
-    allCloudFiles: List<DriveItem.File> = emptyList(),
-    virtualFolders: List<DriveItem.Folder> = emptyList(),
-    recentFiles: List<DriveItem.File> = emptyList(),
-    transfers: Map<String, TransferInfo> = emptyMap(),
-    totalStorageUsed: Long,
-    searchQuery: String,
-    sortOrder: SortOrder,
-    filterType: FilterType,
-    customCategory: CustomCategory = CustomCategory.NONE,
-    selectedCategoryFolderId: String = "ALL",
-    isRefreshing: Boolean,
-    isInitialLoading: Boolean,
-    currentFolderId: Long?,
-    currentVirtualFolderId: String,
-    currentFolderName: String?,
-    isGridView: Boolean,
-    connectivityStatus: ConnectivityObserver.Status,
+    itemsFlow: StateFlow<List<DriveItem>>,
+    allCloudFilesFlow: StateFlow<List<DriveItem.File>>,
+    virtualFoldersFlow: StateFlow<List<DriveItem.Folder>>,
+    recentFilesFlow: StateFlow<List<DriveItem.File>>,
+    transfersFlow: StateFlow<Map<String, TransferInfo>>,
+    totalStorageUsedFlow: StateFlow<Long>,
+    searchQueryFlow: StateFlow<String>,
+    sortOrderFlow: StateFlow<SortOrder>,
+    filterTypeFlow: StateFlow<FilterType>,
+    customCategoryFlow: StateFlow<CustomCategory>,
+    selectedCategoryFolderIdFlow: StateFlow<String>,
+    isRefreshingFlow: StateFlow<Boolean>,
+    // P1-12: বর্তমানে এই স্ক্রিনে ব্যবহৃত হয় না, তবে API সামঞ্জস্যের জন্য রাখা হয়েছে
+    @Suppress("UNUSED_PARAMETER") isInitialLoadingFlow: StateFlow<Boolean>,
+    currentFolderIdFlow: StateFlow<Long?>,
+    currentVirtualFolderIdFlow: StateFlow<String>,
+    currentFolderNameFlow: StateFlow<String?>,
+    isGridViewFlow: StateFlow<Boolean>,
+    connectivityStatusFlow: StateFlow<ConnectivityObserver.Status>,
     onNavigateToStarred: () -> Unit = {},
     onNavigateToSafeFolder: () -> Unit = {},
     onNavigateToCloudAnalysis: () -> Unit = {},
@@ -300,6 +288,24 @@ fun HomeContent(
     onGetMembers: (Long, (List<TdApi.User>) -> Unit) -> Unit,
     onShareFile: (String, Long, (Boolean, String?) -> Unit) -> Unit
 ) {
+    // P1-12: শুধু এই বডিতে সরাসরি লাগে এমন state গুলোই এখানে collect হয়।
+    // transfers / allCloudFiles / recentFiles / totalStorageUsed নিচের
+    // সাব-কম্পোজেবলে (TransferPopups, TransferBarItem, Dashboard, DriveItemsList)
+    // collect হয়, তাই প্রোগ্রেস টিক পুরো HomeContent-কে recompose করায় না।
+    val items by itemsFlow.collectAsState()
+    val virtualFolders by virtualFoldersFlow.collectAsState()
+    val searchQuery by searchQueryFlow.collectAsState()
+    val sortOrder by sortOrderFlow.collectAsState()
+    val filterType by filterTypeFlow.collectAsState()
+    val customCategory by customCategoryFlow.collectAsState()
+    val selectedCategoryFolderId by selectedCategoryFolderIdFlow.collectAsState()
+    val isRefreshing by isRefreshingFlow.collectAsState()
+    val currentFolderId by currentFolderIdFlow.collectAsState()
+    val currentFolderName by currentFolderNameFlow.collectAsState()
+    val currentVirtualFolderId by currentVirtualFolderIdFlow.collectAsState()
+    val isGridView by isGridViewFlow.collectAsState()
+    val connectivityStatus by connectivityStatusFlow.collectAsState()
+
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState()
@@ -307,15 +313,17 @@ fun HomeContent(
     var showUploadPopup by remember { mutableStateOf(false) }
     var showDownloadPopup by remember { mutableStateOf(false) }
 
-    val uploadTransfers = remember(transfers) { transfers.values.filter { !it.isDownload } }
-    val downloadTransfers = remember(transfers) { transfers.values.filter { it.isDownload } }
-
-    val uploadProgress = remember(uploadTransfers) {
-        if (uploadTransfers.isEmpty()) null else (uploadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
-    }
-    val downloadProgress = remember(downloadTransfers) {
-        if (downloadTransfers.isEmpty()) null else (downloadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
-    }
+    TransferPopups(
+        transfersFlow = transfersFlow,
+        showUploads = showUploadPopup,
+        showDownloads = showDownloadPopup,
+        onDismissUploads = { showUploadPopup = false },
+        onDismissDownloads = { showDownloadPopup = false },
+        onPauseTransfer = onPauseTransfer,
+        onResumeTransfer = onResumeTransfer,
+        onCancelTransfer = onCancelTransfer,
+        onClearCompleted = onClearCompletedTransfers
+    )
 
     val isOffline = connectivityStatus == ConnectivityObserver.Status.Unavailable || connectivityStatus == ConnectivityObserver.Status.Lost
     var selectedItems by remember { mutableStateOf(setOf<Long>()) }
@@ -339,24 +347,6 @@ fun HomeContent(
                 Toast.makeText(context, "Downloading ${file.name}...", Toast.LENGTH_SHORT).show()
             }
         }
-    }
-
-    if (showUploadPopup) {
-        TransferPositionedPopup(
-            title = "Uploads", isDownloadPopup = false, transferList = uploadTransfers,
-            onDismiss = { showUploadPopup = false }, onPauseTransfer = onPauseTransfer,
-            onResumeTransfer = onResumeTransfer, onCancelTransfer = onCancelTransfer,
-            onClearCompleted = onClearCompletedTransfers
-        )
-    }
-
-    if (showDownloadPopup) {
-        TransferPositionedPopup(
-            title = "Downloads", isDownloadPopup = true, transferList = downloadTransfers,
-            onDismiss = { showDownloadPopup = false }, onPauseTransfer = onPauseTransfer,
-            onResumeTransfer = onResumeTransfer, onCancelTransfer = onCancelTransfer,
-            onClearCompleted = onClearCompletedTransfers
-        )
     }
 
     if (itemToRename != null) {
@@ -669,9 +659,8 @@ fun HomeContent(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SplitTransferBarItem(
-                                    icon = Icons.Default.ArrowUpward, percentage = downloadProgress,
-                                    hasActiveOrHistory = downloadTransfers.isNotEmpty(), onClick = { showDownloadPopup = true }
+                                DownloadTransferBarItem(
+                                    transfersFlow = transfersFlow, onClick = { showDownloadPopup = true }
                                 )
 
                                 Surface(
@@ -695,9 +684,8 @@ fun HomeContent(
                                     }
                                 }
 
-                                SplitTransferBarItem(
-                                    icon = Icons.Default.ArrowDownward, percentage = uploadProgress,
-                                    hasActiveOrHistory = uploadTransfers.isNotEmpty(), onClick = { showUploadPopup = true }
+                                UploadTransferBarItem(
+                                    transfersFlow = transfersFlow, onClick = { showUploadPopup = true }
                                 )
                             }
                         } else {
@@ -778,10 +766,10 @@ fun HomeContent(
                     ) {
                         item(key = "dashboard_main") {
                             GoogleFilesDashboardSection(
-                                totalStorageUsed = totalStorageUsed,
-                                allFiles = allCloudFiles,
-                                recentFiles = recentFiles,
-                                transfers = transfers,
+                                totalStorageUsedFlow = totalStorageUsedFlow,
+                                allFilesFlow = allCloudFilesFlow,
+                                recentFilesFlow = recentFilesFlow,
+                                transfersFlow = transfersFlow,
                                 onSelectFilter = onSetFilterType,
                                 onSelectCustom = onSetCustomCategory,
                                 onOpenFile = handleFileItemClick,
@@ -814,79 +802,187 @@ fun HomeContent(
                         }
                     }
                 } else {
-                    if (isGridView) {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            contentPadding = PaddingValues(16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(items, key = { it.id }) { item ->
-                                val isSelected = selectedItems.contains(item.id)
-                                val itemTransfer = if (item is DriveItem.File) {
-                                    transfers[item.remoteUniqueId] ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
-                                } else null
-
-                                DriveGridItem(
-                                    item = item, isSelected = isSelected, activeTransfer = itemTransfer,
-                                    onClick = {
-                                        if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                        else if (item is DriveItem.File) handleFileItemClick(item)
-                                        else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                    },
-                                    onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
-                                    onStarClick = { onToggleStarred(item) },
-                                    onShareClick = { shareItem = item },
-                                    onDownloadClick = {
-                                        if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
-                                        else if (item is DriveItem.Folder) folderToDownload = item
-                                    },
-                                    onSaveAsPhoneClick = {
-                                        if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
-                                    },
-                                    onMoveClick = null,
-                                    onRenameClick = { itemToRename = item; renameValue = item.name },
-                                    onDeleteClick = { showDeleteConfirm = listOf(item) }
-                                )
-                            }
-                        }
-                    } else {
-                        LazyColumn(
-                            contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(items, key = { it.id }) { item ->
-                                val isSelected = selectedItems.contains(item.id)
-                                val itemTransfer = if (item is DriveItem.File) {
-                                    transfers[item.remoteUniqueId] ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
-                                } else null
-
-                                DriveListItem(
-                                    item = item, isSelected = isSelected, activeTransfer = itemTransfer,
-                                    onClick = {
-                                        if (isSelectionMode) selectedItems = if (isSelected) selectedItems - item.id else selectedItems + item.id
-                                        else if (item is DriveItem.File) handleFileItemClick(item)
-                                        else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
-                                    },
-                                    onLongClick = { if (!isSelectionMode) selectedItems = setOf(item.id) },
-                                    onStarClick = { onToggleStarred(item) },
-                                    onShareClick = { shareItem = item },
-                                    onDownloadClick = {
-                                        if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
-                                        else if (item is DriveItem.Folder) folderToDownload = item
-                                    },
-                                    onSaveAsPhoneClick = {
-                                        if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
-                                    },
-                                    onMoveClick = null,
-                                    onRenameClick = { itemToRename = item; renameValue = item.name },
-                                    onDeleteClick = { showDeleteConfirm = listOf(item) }
-                                )
-                            }
-                        }
-                    }
+                    HomeDriveItemsList(
+                        items = items,
+                        transfersFlow = transfersFlow,
+                        isGridView = isGridView,
+                        selectedItems = selectedItems,
+                        isSelectionMode = isSelectionMode,
+                        onToggleSelection = { id -> selectedItems = if (selectedItems.contains(id)) selectedItems - id else selectedItems + id },
+                        onSelectOnly = { id -> selectedItems = setOf(id) },
+                        onFileClick = handleFileItemClick,
+                        onNavigateToFolder = onNavigateToFolder,
+                        onToggleStarred = onToggleStarred,
+                        onShareClick = { shareItem = it },
+                        onDownloadFile = onDownloadFile,
+                        onDownloadFolderContents = { folderToDownload = it },
+                        onSaveAsPhone = onSaveAsPhone,
+                        onRenameClick = { itemToRename = it; renameValue = it.name },
+                        onDeleteClick = { showDeleteConfirm = listOf(it) }
+                    )
                 }
+            }
+        }
+    }
+}
+
+// P1-12: transfers state শুধু এই ছোট কম্পোজেবলগুলোতেই collect হয়, তাই
+// প্রোগ্রেস টিক পুরো Home স্ক্রিনকে recompose করায় না।
+@Composable
+private fun TransferPopups(
+    transfersFlow: StateFlow<Map<String, TransferInfo>>,
+    showUploads: Boolean,
+    showDownloads: Boolean,
+    onDismissUploads: () -> Unit,
+    onDismissDownloads: () -> Unit,
+    onPauseTransfer: (String) -> Unit,
+    onResumeTransfer: (String) -> Unit,
+    onCancelTransfer: (String) -> Unit,
+    onClearCompleted: () -> Unit
+) {
+    val transfers by transfersFlow.collectAsState()
+    if (!showUploads && !showDownloads) return
+    val uploadTransfers = remember(transfers) { transfers.values.filter { !it.isDownload } }
+    val downloadTransfers = remember(transfers) { transfers.values.filter { it.isDownload } }
+
+    if (showUploads) {
+        TransferPositionedPopup(
+            title = "Uploads", isDownloadPopup = false, transferList = uploadTransfers,
+            onDismiss = onDismissUploads, onPauseTransfer = onPauseTransfer,
+            onResumeTransfer = onResumeTransfer, onCancelTransfer = onCancelTransfer,
+            onClearCompleted = onClearCompleted
+        )
+    }
+    if (showDownloads) {
+        TransferPositionedPopup(
+            title = "Downloads", isDownloadPopup = true, transferList = downloadTransfers,
+            onDismiss = onDismissDownloads, onPauseTransfer = onPauseTransfer,
+            onResumeTransfer = onResumeTransfer, onCancelTransfer = onCancelTransfer,
+            onClearCompleted = onClearCompleted
+        )
+    }
+}
+
+@Composable
+private fun DownloadTransferBarItem(
+    transfersFlow: StateFlow<Map<String, TransferInfo>>,
+    onClick: () -> Unit
+) {
+    val transfers by transfersFlow.collectAsState()
+    val downloadTransfers = remember(transfers) { transfers.values.filter { it.isDownload } }
+    val downloadProgress = remember(downloadTransfers) {
+        if (downloadTransfers.isEmpty()) null else (downloadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
+    }
+    SplitTransferBarItem(
+        icon = Icons.Default.ArrowUpward, percentage = downloadProgress,
+        hasActiveOrHistory = downloadTransfers.isNotEmpty(), onClick = onClick
+    )
+}
+
+@Composable
+private fun UploadTransferBarItem(
+    transfersFlow: StateFlow<Map<String, TransferInfo>>,
+    onClick: () -> Unit
+) {
+    val transfers by transfersFlow.collectAsState()
+    val uploadTransfers = remember(transfers) { transfers.values.filter { !it.isDownload } }
+    val uploadProgress = remember(uploadTransfers) {
+        if (uploadTransfers.isEmpty()) null else (uploadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
+    }
+    SplitTransferBarItem(
+        icon = Icons.Default.ArrowDownward, percentage = uploadProgress,
+        hasActiveOrHistory = uploadTransfers.isNotEmpty(), onClick = onClick
+    )
+}
+
+private fun findItemTransfer(transfers: Map<String, TransferInfo>, item: DriveItem): TransferInfo? {
+    if (item !is DriveItem.File) return null
+    return transfers[item.remoteUniqueId]
+        ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
+}
+
+@Composable
+private fun HomeDriveItemsList(
+    items: List<DriveItem>,
+    transfersFlow: StateFlow<Map<String, TransferInfo>>,
+    isGridView: Boolean,
+    selectedItems: Set<Long>,
+    isSelectionMode: Boolean,
+    onToggleSelection: (Long) -> Unit,
+    onSelectOnly: (Long) -> Unit,
+    onFileClick: (DriveItem.File) -> Unit,
+    onNavigateToFolder: (Long?, String?, String?) -> Unit,
+    onToggleStarred: (DriveItem) -> Unit,
+    onShareClick: (DriveItem) -> Unit,
+    onDownloadFile: (Long, Long, String) -> Unit,
+    onDownloadFolderContents: (DriveItem.Folder) -> Unit,
+    onSaveAsPhone: (String, String) -> Unit,
+    onRenameClick: (DriveItem) -> Unit,
+    onDeleteClick: (DriveItem) -> Unit
+) {
+    // P1-12: transfers এখানেই collect হয় — টিক শুধু এই লিস্টটুকু recompose করে
+    val transfers by transfersFlow.collectAsState()
+    if (isGridView) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            contentPadding = PaddingValues(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(items, key = { it.id }) { item ->
+                val isSelected = selectedItems.contains(item.id)
+                DriveGridItem(
+                    item = item, isSelected = isSelected, activeTransfer = findItemTransfer(transfers, item),
+                    onClick = {
+                        if (isSelectionMode) onToggleSelection(item.id)
+                        else if (item is DriveItem.File) onFileClick(item)
+                        else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
+                    },
+                    onLongClick = { if (!isSelectionMode) onSelectOnly(item.id) },
+                    onStarClick = { onToggleStarred(item) },
+                    onShareClick = { onShareClick(item) },
+                    onDownloadClick = {
+                        if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
+                        else if (item is DriveItem.Folder) onDownloadFolderContents(item)
+                    },
+                    onSaveAsPhoneClick = {
+                        if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
+                    },
+                    onMoveClick = null,
+                    onRenameClick = { onRenameClick(item) },
+                    onDeleteClick = { onDeleteClick(item) }
+                )
+            }
+        }
+    } else {
+        LazyColumn(
+            contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(items, key = { it.id }) { item ->
+                val isSelected = selectedItems.contains(item.id)
+                DriveListItem(
+                    item = item, isSelected = isSelected, activeTransfer = findItemTransfer(transfers, item),
+                    onClick = {
+                        if (isSelectionMode) onToggleSelection(item.id)
+                        else if (item is DriveItem.File) onFileClick(item)
+                        else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
+                    },
+                    onLongClick = { if (!isSelectionMode) onSelectOnly(item.id) },
+                    onStarClick = { onToggleStarred(item) },
+                    onShareClick = { onShareClick(item) },
+                    onDownloadClick = {
+                        if (item is DriveItem.File) onDownloadFile(item.id, item.parentChatId, item.name)
+                        else if (item is DriveItem.Folder) onDownloadFolderContents(item)
+                    },
+                    onSaveAsPhoneClick = {
+                        if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
+                    },
+                    onMoveClick = null,
+                    onRenameClick = { onRenameClick(item) },
+                    onDeleteClick = { onDeleteClick(item) }
+                )
             }
         }
     }
@@ -1129,10 +1225,10 @@ fun CategoryFolderTabsRow(
 
 @Composable
 fun GoogleFilesDashboardSection(
-    totalStorageUsed: Long,
-    allFiles: List<DriveItem.File>,
-    recentFiles: List<DriveItem.File>,
-    transfers: Map<String, TransferInfo>,
+    totalStorageUsedFlow: StateFlow<Long>,
+    allFilesFlow: StateFlow<List<DriveItem.File>>,
+    recentFilesFlow: StateFlow<List<DriveItem.File>>,
+    transfersFlow: StateFlow<Map<String, TransferInfo>>,
     onSelectFilter: (FilterType) -> Unit,
     onSelectCustom: (CustomCategory) -> Unit,
     onOpenFile: (DriveItem.File) -> Unit,
@@ -1145,6 +1241,12 @@ fun GoogleFilesDashboardSection(
     onNavigateToSafeFolder: () -> Unit,
     onNavigateToCloudAnalysis: () -> Unit
 ) {
+    // P1-12: এই সেকশনে লাগে এমন state গুলো এখানেই collect হয়
+    val totalStorageUsed by totalStorageUsedFlow.collectAsState()
+    val allFiles by allFilesFlow.collectAsState()
+    val recentFiles by recentFilesFlow.collectAsState()
+    val transfers by transfersFlow.collectAsState()
+
     // মেমোরি ক্যাশড সাইজ ক্যালকুলেশন (মেইন থ্রেডে কোনো File.exists() কল হবে না)
     val sizes = remember(allFiles) {
         var vid = 0L
@@ -1371,7 +1473,15 @@ fun RecentOpenedFileCard(
         Box(modifier = Modifier.fillMaxSize()) {
             if (thumbnailModel != null) {
                 AsyncImage(
-                    model = thumbnailModel, contentDescription = file.name,
+                    // P1-13: thumbnailPath-ই মডেল (উপরে ঠিক করা আছে); ছোট সাইজে ডিকোড + placeholder/error
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(thumbnailModel)
+                        .size(Size(360, 440))
+                        .placeholder(R.drawable.ic_mycloud_logo)
+                        .error(R.drawable.ic_mycloud_logo)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = file.name,
                     modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                 )
                 Box(
@@ -1745,7 +1855,15 @@ fun DriveListItem(
                     if (thumbnailModel != null) {
                         Icon(imageVector = icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
                         AsyncImage(
-                            model = thumbnailModel, contentDescription = null,
+                            // P1-13: ছোট সাইজে ডিকোড + placeholder/error
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(thumbnailModel)
+                                .size(Size(128, 128))
+                                .placeholder(R.drawable.ic_mycloud_logo)
+                                .error(R.drawable.ic_mycloud_logo)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = null,
                             modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)),
                             contentScale = ContentScale.Crop
                         )
@@ -1869,7 +1987,15 @@ fun DriveGridItem(
                     if (thumbnailModel != null) {
                         Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = color)
                         AsyncImage(
-                            model = thumbnailModel, contentDescription = null,
+                            // P1-13: ছোট সাইজে ডিকোড + placeholder/error
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(thumbnailModel)
+                                .size(Size(192, 192))
+                                .placeholder(R.drawable.ic_mycloud_logo)
+                                .error(R.drawable.ic_mycloud_logo)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = null,
                             modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)),
                             contentScale = ContentScale.Crop
                         )
