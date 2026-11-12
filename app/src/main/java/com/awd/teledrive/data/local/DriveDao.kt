@@ -13,6 +13,9 @@ interface DriveDao {
     @Query("SELECT * FROM drive_items WHERE parentChatId = :chatId AND (splitGroupId IS NULL OR partIndex = 0) AND virtualParentId = :virtualParentId ORDER BY createdAt DESC")
     fun getItemsFlow(chatId: Long, virtualParentId: String): Flow<List<DriveItemEntity>>
 
+    @Query("SELECT * FROM drive_items WHERE parentChatId = :chatId AND (splitGroupId IS NULL OR partIndex = 0) AND virtualParentId = :virtualParentId ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
+    fun getItemsPage(chatId: Long, virtualParentId: String, limit: Int, offset: Int): Flow<List<DriveItemEntity>>
+
     @Query("SELECT * FROM drive_items WHERE parentChatId = :chatId AND (splitGroupId IS NULL OR partIndex = 0) AND virtualParentId = :virtualParentId")
     fun getItemsByVirtualParent(chatId: Long, virtualParentId: String): Flow<List<DriveItemEntity>>
 
@@ -27,6 +30,9 @@ interface DriveDao {
 
     @Query("SELECT * FROM drive_items WHERE id = :id AND parentChatId = :chatId LIMIT 1")
     suspend fun getItemById(id: Long, chatId: Long): DriveItemEntity?
+
+    @Query("SELECT * FROM drive_items WHERE parentChatId = :chatId AND id IN (:ids)")
+    suspend fun getItemsByIds(ids: List<Long>, chatId: Long): List<DriveItemEntity>
 
     @Query("SELECT * FROM drive_items WHERE remoteUniqueId = :uniqueId LIMIT 1")
     suspend fun getItemByUniqueId(uniqueId: String): DriveItemEntity?
@@ -78,8 +84,13 @@ interface DriveDao {
 
     @Transaction
     suspend fun insertItemsPreservingStarred(items: List<DriveItemEntity>) {
+        // P1-19: একবারে ব্যাচ লোড — প্রতি আইটেমে আলাদা getItemById (N+1)
+        // নয়; চ্যাট ধরে গ্রুপ করে একটি করে WHERE id IN (...) কোয়েরি।
+        val existingMap = items.groupBy { it.parentChatId }.flatMap { (chatId, group) ->
+            getItemsByIds(group.map { it.id }, chatId)
+        }.associateBy { it.id to it.parentChatId }
         val updatedItems = items.map { item ->
-            val existing = getItemById(item.id, item.parentChatId)
+            val existing = existingMap[item.id to item.parentChatId]
             val savedLocalPath = item.localPath ?: existing?.localPath?.takeIf { File(it).exists() }
             val savedThumbPath = item.thumbnailPath ?: existing?.thumbnailPath?.takeIf { File(it).exists() }
             val preservedParent = if (existing?.virtualParentId == "vf_safe_space") "vf_safe_space" else item.virtualParentId
@@ -114,6 +125,21 @@ interface DriveDao {
     @Query("UPDATE drive_items SET localPath = :path WHERE telegramFileId = :fileId")
     suspend fun updateLocalPath(fileId: Int, path: String)
 
+    /**
+     * Single call replacing the three separate local-path updates previously
+     * done at call sites: always updates by telegram file id, and when a
+     * remote unique id is known also updates the local and thumbnail paths
+     * matched by that unique id.
+     */
+    @Transaction
+    suspend fun updateFileLocalPaths(fileId: Int, uniqueId: String, path: String) {
+        updateLocalPath(fileId, path)
+        if (uniqueId.isNotEmpty()) {
+            updateLocalPathByUniqueId(uniqueId, path)
+            updateThumbnailPathByUniqueId(uniqueId, path)
+        }
+    }
+
     @Query("UPDATE drive_items SET localPath = NULL")
     suspend fun clearAllLocalPaths()
 
@@ -138,11 +164,30 @@ interface DriveDao {
     @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     fun searchGlobal(query: String): Flow<List<DriveItemEntity>>
 
+    @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
+    fun searchGlobalPage(query: String, limit: Int, offset: Int): Flow<List<DriveItemEntity>>
+
     @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     fun getAllFiles(): Flow<List<DriveItemEntity>>
 
+    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
+    fun getAllFilesPage(limit: Int, offset: Int): Flow<List<DriveItemEntity>>
+
+    @Query("SELECT * FROM drive_items WHERE (virtualParentId = 'vf_safe_space' OR isEncrypted = 1 OR isSecure = 1) AND isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0)")
+    fun getSafeFolderFiles(): Flow<List<DriveItemEntity>>
+
     @Query("SELECT SUM(size) FROM drive_items WHERE isFolder = 0")
     fun getTotalSize(): Flow<Long?>
+
+    data class FileSizeRow(
+        val id: Long,
+        val size: Long,
+        val splitGroupId: String?,
+        val totalParts: Int
+    )
+
+    @Query("SELECT id, size, splitGroupId, totalParts FROM drive_items WHERE isFolder = 0")
+    fun getFileSizeRows(): Flow<List<FileSizeRow>>
 
     @Query("SELECT * FROM drive_items WHERE splitGroupId = :groupId ORDER BY partIndex ASC")
     suspend fun getSplitFileParts(groupId: String): List<DriveItemEntity>
