@@ -105,7 +105,7 @@ class AuthRepository @Inject constructor(
                 "Telegram API credentials are not configured; waiting for the user to enter their own API ID and API hash"
             )
             _authState.value = AuthState.Error(
-                "Telegram API ID and API hash are not set. Enter your own credentials from my.telegram.org to continue."
+                "Enter your API ID and API hash to continue."
             )
             return
         }
