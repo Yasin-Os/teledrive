@@ -100,6 +100,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -139,6 +140,8 @@ import com.awd.teledrive.ui.theme.PreviewBackground
 import com.awd.teledrive.ui.theme.PreviewPanelDark
 import com.awd.teledrive.ui.theme.StarGold
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -473,8 +476,16 @@ fun PhotoEditorScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val originalBitmap = remember(imagePath) {
-        BitmapFactory.decodeFile(imagePath)
+    // Preview only ever displays the image at screen size, so decode a sampled
+    // bitmap that fits the screen instead of the full-resolution file. The
+    // full-resolution bitmap is decoded only when saving (see the Save button).
+    val displayMetrics = context.resources.displayMetrics
+    val previewSourceBitmap = remember(imagePath) {
+        decodeSampledBitmap(
+            imagePath,
+            maxWidth = displayMetrics.widthPixels,
+            maxHeight = displayMetrics.heightPixels
+        )
     }
 
     var activeTab by remember { mutableIntStateOf(0) }
@@ -485,6 +496,22 @@ fun PhotoEditorScreen(
     var contrast by remember { mutableFloatStateOf(1f) }
     var saturation by remember { mutableFloatStateOf(1f) }
 
+    // Slider ticks move the thumb immediately, but the bitmap re-render waits
+    // until the user pauses ~100 ms, so dragging a slider no longer renders
+    // a full bitmap on every tick.
+    var debouncedBrightness by remember { mutableFloatStateOf(brightness) }
+    var debouncedContrast by remember { mutableFloatStateOf(contrast) }
+    var debouncedSaturation by remember { mutableFloatStateOf(saturation) }
+    LaunchedEffect(Unit) {
+        snapshotFlow { Triple(brightness, contrast, saturation) }
+            .debounce(100)
+            .collect { (b, c, s) ->
+                debouncedBrightness = b
+                debouncedContrast = c
+                debouncedSaturation = s
+            }
+    }
+
     var selectedFilter by remember { mutableStateOf("Original") }
 
     var cropLeft by remember { mutableFloatStateOf(0.05f) }
@@ -493,22 +520,22 @@ fun PhotoEditorScreen(
     var cropBottom by remember { mutableFloatStateOf(0.95f) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
 
-    val previewBitmap = remember(originalBitmap, rotationDegrees, flipHorizontal, brightness, contrast, saturation, selectedFilter) {
-        originalBitmap?.let { src ->
+    val previewBitmap = remember(previewSourceBitmap, rotationDegrees, flipHorizontal, debouncedBrightness, debouncedContrast, debouncedSaturation, selectedFilter) {
+        previewSourceBitmap?.let { src ->
             renderEditedBitmap(
                 source = src,
                 rotation = rotationDegrees,
                 flipH = flipHorizontal,
-                brightness = brightness,
-                contrast = contrast,
-                saturation = saturation,
+                brightness = debouncedBrightness,
+                contrast = debouncedContrast,
+                saturation = debouncedSaturation,
                 filterName = selectedFilter,
                 cropRect = null
             )
         }
     }
 
-    if (originalBitmap == null) {
+    if (previewSourceBitmap == null) {
         LaunchedEffect(Unit) { onCancel() }
         return
     }
@@ -538,20 +565,35 @@ fun PhotoEditorScreen(
             Button(
                 onClick = {
                     scope.launch(Dispatchers.IO) {
-                        val finalBmp = renderEditedBitmap(
-                            source = originalBitmap,
-                            rotation = rotationDegrees,
-                            flipH = flipHorizontal,
-                            brightness = brightness,
-                            contrast = contrast,
-                            saturation = saturation,
-                            filterName = selectedFilter,
-                            cropRect = Rect(cropLeft, cropTop, cropRight, cropBottom)
-                        )
-                        val outFile = saveBitmapToGalleryAndCache(context, finalBmp, "Edited_$fileName")
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, context.getString(R.string.saved_to_gallery), Toast.LENGTH_SHORT).show()
-                            if (outFile != null) onSaveEdited(outFile) else onCancel()
+                        // Full resolution only when saving: decode the original
+                        // file here on IO instead of holding it in memory
+                        // for the whole editing session.
+                        val fullBitmap = BitmapFactory.decodeFile(imagePath)
+                        if (fullBitmap == null) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Could not load image", Toast.LENGTH_SHORT).show()
+                                onCancel()
+                            }
+                            return@launch
+                        }
+                        try {
+                            val finalBmp = renderEditedBitmap(
+                                source = fullBitmap,
+                                rotation = rotationDegrees,
+                                flipH = flipHorizontal,
+                                brightness = brightness,
+                                contrast = contrast,
+                                saturation = saturation,
+                                filterName = selectedFilter,
+                                cropRect = Rect(cropLeft, cropTop, cropRight, cropBottom)
+                            )
+                            val outFile = saveBitmapToGalleryAndCache(context, finalBmp, "Edited_$fileName")
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Saved to Gallery!", Toast.LENGTH_SHORT).show()
+                                if (outFile != null) onSaveEdited(outFile) else onCancel()
+                            }
+                        } finally {
+                            fullBitmap.recycle()
                         }
                     }
                 }
@@ -797,6 +839,28 @@ fun PhotoEditorScreen(
             }
         }
     }
+}
+
+/**
+ * Decodes [imagePath] sampled down with [BitmapFactory.Options.inSampleSize]
+ * so its longest side fits [maxWidth]/[maxHeight] (screen size). Returns null
+ * if the file cannot be decoded.
+ */
+private fun decodeSampledBitmap(imagePath: String, maxWidth: Int, maxHeight: Int): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(imagePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    val reqWidth = maxWidth.coerceAtLeast(1)
+    val reqHeight = maxHeight.coerceAtLeast(1)
+    val ratio = maxOf(
+        bounds.outWidth / reqWidth.toFloat(),
+        bounds.outHeight / reqHeight.toFloat()
+    )
+    var inSampleSize = 1
+    while (inSampleSize * 2 <= ratio) inSampleSize *= 2
+    return BitmapFactory.decodeFile(imagePath, BitmapFactory.Options().apply {
+        this.inSampleSize = inSampleSize
+    })
 }
 
 private fun renderEditedBitmap(
