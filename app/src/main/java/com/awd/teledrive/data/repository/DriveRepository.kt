@@ -110,7 +110,7 @@ class DriveRepository @Inject constructor(
                 delay(3000)
                 while (true) {
                     val folders = secureSettings.getStringList("backup_folders")
-                    if (folders.isNotEmpty() && isNetworkConnected()) {
+                    if (folders.isNotEmpty() && isAutomaticBackupAllowed()) {
                         runImmediateFolderBackup()
                     }
                     delay(20000)
@@ -195,7 +195,7 @@ class DriveRepository @Inject constructor(
                     watcherDebounceJob = scope.launch {
                         delay(1500)
                         val folders = secureSettings.getStringList("backup_folders")
-                        if (folders.isNotEmpty() && isNetworkConnected()) {
+                        if (folders.isNotEmpty() && isAutomaticBackupAllowed()) {
                             runImmediateFolderBackup()
                         }
                     }
@@ -223,6 +223,34 @@ class DriveRepository @Inject constructor(
         } catch (e: Exception) {
             true
         }
+    }
+
+    /**
+     * Wi-Fi Only সম্মান করে: Wi-Fi Only চালু থাকলে শুধু unmetered
+     * (সাধারণত Wi-Fi) নেটওয়ার্কেই ব্যাকআপ চলবে। নেটওয়ার্কের ধরন
+     * জানা না গেলে সাবধানে মোবাইল ডাটা ধরে নেওয়া হয় (false)।
+     */
+    private fun isBackupNetworkAllowed(): Boolean {
+        if (!isNetworkConnected()) return false
+        if (!settingsRepository.isBackupWifiOnlyEnabled.value) return true
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** ম্যানুয়াল ("Backup Now") নাকি অটোমেটিক — সেই অনুযায়ী নেটওয়ার্ক যাচাই। */
+    private fun isBackupNetworkAllowedFor(manual: Boolean): Boolean {
+        return if (manual) isNetworkConnected() else isBackupNetworkAllowed()
+    }
+
+    /** অটোমেটিক ব্যাকআপ (লুপ/ওয়ার্কার/ওয়াচার) এখন চালানো যাবে কি না। */
+    private fun isAutomaticBackupAllowed(): Boolean {
+        return settingsRepository.isAutoBackupEnabled.value && isBackupNetworkAllowed()
     }
 
     private fun markFileBackedUp(fileKey: String) {
@@ -636,11 +664,20 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    fun runImmediateFolderBackup(onFinished: (() -> Unit)? = null) {
+    /**
+     * ফোল্ডার ব্যাকআপ চালায়। [manual] = true হলে এটি ব্যবহারকারীর স্পষ্ট
+     * "Backup Now" নির্দেশ — তখন Auto Backup টগল ও Wi-Fi Only দেখা হয় না।
+     * অটোমেটিক কলের ক্ষেত্রে দুটি সেটিংই মানা হয়।
+     */
+    fun runImmediateFolderBackup(manual: Boolean = false, onFinished: (() -> Unit)? = null) {
+        if (!manual && !isAutomaticBackupAllowed()) {
+            onFinished?.invoke()
+            return
+        }
         if (!isBackupRunning.compareAndSet(false, true)) return
         scope.launch {
             try {
-                if (!isNetworkConnected()) return@launch
+                if (!isBackupNetworkAllowedFor(manual)) return@launch
                 val chatId = awaitSavedMessagesChatId()
                 if (chatId == 0L) return@launch
 
@@ -654,7 +691,7 @@ class DriveRepository @Inject constructor(
                 if (filesToUpload.isEmpty()) return@launch
 
                 for (file in filesToUpload) {
-                    if (!isNetworkConnected()) break
+                    if (!isBackupNetworkAllowedFor(manual)) break
                     if (!file.exists() || file.length() <= 0L) continue
 
                     val bKey = "${file.absolutePath}_${file.length()}"
@@ -1051,6 +1088,11 @@ class DriveRepository @Inject constructor(
     private fun mapMessageToEntity(chatId: Long, message: TdApi.Message): DriveItemEntity? {
         val isSecureFolder = currentManifest.secureFolderChatIds.contains(chatId)
         val content = message.content
+
+        // "Auto-Load Thumbnails" বন্ধ থাকলে থাম্বনেইল নিজে থেকে ডাউনলোড
+        // হবে না; thumbnailFileId সংরক্ষিত থাকে বলে ব্যবহারকারী কোনো
+        // ফাইলে ট্যাপ করলে তখন ডাউনলোড হবে (downloadForPreview)।
+        val autoDownloadThumbnails = settingsRepository.isThumbnailAutoDownloadEnabled.value
         
         if (content is TdApi.MessageText && (chatId == savedMessagesChatId || chatId == legacySavedMessagesId)) {
             val text = content.text.text
@@ -1106,9 +1148,9 @@ class DriveRepository @Inject constructor(
                 val docFile = content.document.document
                 val thumb = content.document.thumbnail
 
-                if (thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
+                if (autoDownloadThumbnails && thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
                     telegramClient.send(TdApi.DownloadFile(thumb.file.id, 32, 0, 0, false))
-                } else if (thumb == null && !isEncrypted && mimeType.startsWith("image/") && docFile.local.path.isEmpty() && docFile.expectedSize < 15 * 1024 * 1024L) {
+                } else if (autoDownloadThumbnails && thumb == null && !isEncrypted && mimeType.startsWith("image/") && docFile.local.path.isEmpty() && docFile.expectedSize < 15 * 1024 * 1024L) {
                     telegramClient.send(TdApi.DownloadFile(docFile.id, 16, 0, 0, false))
                 }
 
@@ -1134,7 +1176,7 @@ class DriveRepository @Inject constructor(
                 val sizes = content.photo.sizes
                 val thumb = sizes.firstOrNull()
                 val full = sizes.lastOrNull()?.photo
-                if (thumb != null && thumb.photo.local.path.isEmpty() && thumb.photo.local.canBeDownloaded) {
+                if (autoDownloadThumbnails && thumb != null && thumb.photo.local.path.isEmpty() && thumb.photo.local.canBeDownloaded) {
                     telegramClient.send(TdApi.DownloadFile(thumb.photo.id, 32, 0, 0, false))
                 }
                 DriveItemEntity(
@@ -1157,7 +1199,7 @@ class DriveRepository @Inject constructor(
                 val cleanName = cleanEncryptedFileName(splitInfo?.originalName ?: content.video.fileName)
                 val mimeType = if (content.video.mimeType == "application/octet-stream") FileUtils.getMimeType(cleanName) else content.video.mimeType
                 val thumb = content.video.thumbnail
-                if (thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
+                if (autoDownloadThumbnails && thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
                     telegramClient.send(TdApi.DownloadFile(thumb.file.id, 32, 0, 0, false))
                 }
                 DriveItemEntity(
@@ -1199,7 +1241,7 @@ class DriveRepository @Inject constructor(
                 val caption = content.caption.text
                 val isEncrypted = caption.contains("[ENC]") || isSecureFolder
                 val thumb = content.animation.thumbnail
-                if (thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
+                if (autoDownloadThumbnails && thumb != null && thumb.file.local.path.isEmpty() && thumb.file.local.canBeDownloaded) {
                     telegramClient.send(TdApi.DownloadFile(thumb.file.id, 32, 0, 0, false))
                 }
                 DriveItemEntity(
