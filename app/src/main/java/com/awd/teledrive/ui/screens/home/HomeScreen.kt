@@ -621,7 +621,7 @@ fun HomeContent(
                         TopAppBar(
                             title = {
                                 Text(
-                                    text = activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    text = activeTitle.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                                 )
                             },
