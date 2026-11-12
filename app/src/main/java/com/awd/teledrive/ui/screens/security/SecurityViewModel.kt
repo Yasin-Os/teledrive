@@ -1,10 +1,13 @@
 package com.awd.teledrive.ui.screens.security
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.awd.teledrive.core.BiometricHelper
 import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,7 +19,8 @@ import javax.inject.Inject
 @HiltViewModel
 class SecurityViewModel @Inject constructor(
     private val secureSettings: SecureSettings,
-    private val secureSessionManager: SecureSessionManager
+    private val secureSessionManager: SecureSessionManager,
+    @param:ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     companion object {
@@ -26,6 +30,18 @@ class SecurityViewModel @Inject constructor(
 
         private const val KEY_SAFE_FOLDER_PIN = "safe_folder_pin_code_v2"
         private const val KEY_SAFE_FOLDER_LOCK_ENABLED = "safe_folder_lock_enabled_v2"
+
+        // Vault 2.0: biometric unlock for the safe folder (opt-in, PIN stays
+        // the fallback), auto-lock after leaving the app, and the timestamp
+        // of the last backgrounding (written by MainActivity on ON_PAUSE).
+        private const val KEY_SAFE_FOLDER_BIOMETRIC = "safe_folder_biometric_enabled"
+        private const val KEY_SAFE_FOLDER_AUTO_LOCK_MINUTES = "safe_folder_auto_lock_minutes"
+        private const val KEY_VAULT_BACKGROUNDED_AT = "safe_folder_backgrounded_at_ms"
+
+        /** Auto-lock choice meaning "never lock on background". */
+        const val AUTO_LOCK_NEVER = -1
+        const val DEFAULT_AUTO_LOCK_MINUTES = 5
+        private val AUTO_LOCK_OPTIONS = setOf(1, 5, 15, 30, AUTO_LOCK_NEVER)
 
         // PIN brute-force protection: 5 wrong attempts lock the PIN for
         // 30 seconds, doubling on every further lockout (max 5 minutes).
@@ -152,6 +168,18 @@ class SecurityViewModel @Inject constructor(
 
     val isSecureModeActive = secureSessionManager.decryptedPassword.map { it != null }
 
+    // Vault 2.0: biometric unlock for the safe folder (opt-in).
+    private val _isSafeFolderBiometricEnabled = MutableStateFlow(
+        secureSettings.getBoolean(KEY_SAFE_FOLDER_BIOMETRIC, false)
+    )
+    val isSafeFolderBiometricEnabled = _isSafeFolderBiometricEnabled.asStateFlow()
+
+    // Vault 2.0: auto-lock after leaving the app, in minutes (-1 = never).
+    private val _safeFolderAutoLockMinutes = MutableStateFlow(
+        secureSettings.getInt(KEY_SAFE_FOLDER_AUTO_LOCK_MINUTES, DEFAULT_AUTO_LOCK_MINUTES)
+    )
+    val safeFolderAutoLockMinutes = _safeFolderAutoLockMinutes.asStateFlow()
+
     // --- Whole App Lock Functions ---
     fun setSecurityEnabled(enabled: Boolean) {
         secureSettings.saveBoolean(KEY_APP_LOCK_ENABLED, enabled)
@@ -235,6 +263,7 @@ class SecurityViewModel @Inject constructor(
         _isSafeFolderPinSet.value = true
         _isSafeFolderLockEnabled.value = true
         secureSessionManager.setSessionPassword(pin)
+        clearVaultBackgroundedAt()
     }
 
     fun verifySafeFolderPin(pin: String): Boolean {
@@ -250,6 +279,7 @@ class SecurityViewModel @Inject constructor(
             resetPinAttempts(SAFE_PIN_LOCKOUT_KEYS)
             _safePinError.value = null
             secureSessionManager.setSessionPassword(pin)
+            clearVaultBackgroundedAt()
             true
         } else {
             recordFailedPinAttempt(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining) {
@@ -271,6 +301,7 @@ class SecurityViewModel @Inject constructor(
             secureSettings.saveString(KEY_SAFE_FOLDER_PIN, newPin)
             _isSafeFolderPinSet.value = true
             secureSessionManager.setSessionPassword(newPin)
+            clearVaultBackgroundedAt()
             true
         } else {
             recordFailedPinAttempt(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining) {
@@ -292,5 +323,75 @@ class SecurityViewModel @Inject constructor(
         secureSessionManager.clearSession()
     }
 
-    fun unlockWithBiometric(): Boolean = false
+    // --- Vault 2.0: biometric unlock for the safe folder ---
+    fun setSafeFolderBiometricEnabled(enabled: Boolean) {
+        secureSettings.saveBoolean(KEY_SAFE_FOLDER_BIOMETRIC, enabled)
+        _isSafeFolderBiometricEnabled.value = enabled
+    }
+
+    /**
+     * Whether the safe folder can be unlocked with biometrics right now:
+     * the user opted in, a safe-folder PIN exists to unlock with, and this
+     * device can do a strong biometric check. PIN-only otherwise, never a
+     * crash on devices without biometrics.
+     */
+    fun unlockWithBiometric(): Boolean {
+        return _isSafeFolderBiometricEnabled.value &&
+            _isSafeFolderPinSet.value &&
+            BiometricHelper.isBiometricAvailable(appContext)
+    }
+
+    /**
+     * Call only after a successful BiometricPrompt. Unlocks the vault the
+     * same way the PIN does: the stored safe-folder PIN becomes the session
+     * password (so decrypt-on-open keeps working), without ever showing the
+     * PIN to the UI. Biometrics gate the stored credential; they do not
+     * replace the PIN, which stays the fallback.
+     */
+    fun unlockSafeFolderWithBiometric(): Boolean {
+        if (!unlockWithBiometric()) return false
+        val storedPin = secureSettings.getString(KEY_SAFE_FOLDER_PIN) ?: return false
+        secureSessionManager.setSessionPassword(storedPin)
+        clearVaultBackgroundedAt()
+        return true
+    }
+
+    // --- Vault 2.0: auto-lock after leaving the app ---
+    fun setSafeFolderAutoLockMinutes(minutes: Int) {
+        val value = if (minutes in AUTO_LOCK_OPTIONS) minutes else DEFAULT_AUTO_LOCK_MINUTES
+        secureSettings.saveInt(KEY_SAFE_FOLDER_AUTO_LOCK_MINUTES, value)
+        _safeFolderAutoLockMinutes.value = value
+    }
+
+    /** Called by MainActivity when the app goes to the background. */
+    fun recordVaultBackgroundedAt() {
+        secureSettings.saveLong(KEY_VAULT_BACKGROUNDED_AT, System.currentTimeMillis())
+    }
+
+    private fun clearVaultBackgroundedAt() {
+        secureSettings.saveLong(KEY_VAULT_BACKGROUNDED_AT, 0L)
+    }
+
+    /**
+     * Checked when the safe-folder screen (re)appears. If the app was in the
+     * background longer than the auto-lock timeout, locks the vault and
+     * returns true so the UI can navigate away. Consumes the background
+     * timestamp either way, so each backgrounding is judged once. Never
+     * locks while the vault is in the foreground: this only runs on resume
+     * after a backgrounding, and a fresh PIN/biometric unlock clears the
+     * timestamp. No-op when the safe-folder lock is off or set to Never.
+     */
+    fun checkVaultAutoLock(): Boolean {
+        val backgroundedAt = secureSettings.getLong(KEY_VAULT_BACKGROUNDED_AT, 0L)
+        if (backgroundedAt == 0L) return false
+        clearVaultBackgroundedAt()
+        if (!_isSafeFolderLockEnabled.value) return false
+        val minutes = _safeFolderAutoLockMinutes.value
+        if (minutes == AUTO_LOCK_NEVER) return false
+        if (System.currentTimeMillis() - backgroundedAt > minutes * 60_000L) {
+            lockSecureMode()
+            return true
+        }
+        return false
+    }
 }
