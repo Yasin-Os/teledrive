@@ -120,8 +120,6 @@
     <string name="logout_confirm_message">Apakah Anda yakin ingin keluar dari Telegram?</string>
     <string name="confirm">Konfirmasi</string>
     <string name="restart_app">Restart Aplikasi</string>
-    <string name="theme_changed_title">Tema Berubah</string>
-    <string name="theme_changed_message">Tema telah diperbarui. Beberapa perubahan mungkin memerlukan restart aplikasi untuk diterapkan sepenuhnya. Apakah Anda ingin restart sekarang?</string>
     <string name="set_password_title">Atur Kata Sandi Utama</string>
     <string name="set_password_message">Silakan atur kata sandi utama untuk mengaktifkan fitur keamanan.</string>
     <string name="filter_all">Semua</string>
