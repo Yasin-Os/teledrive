@@ -71,15 +71,28 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Shipped locales are the default strings (English) and values-in
+        // (Indonesian). There is no values-bn, so "bn" must NOT be listed
+        // here — resConfigs would strip the Indonesian strings. (P1-20)
+        resConfigs("en", "in")
+
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
         }
     }
 
-    // একাধিক APK তৈরি হওয়া বন্ধ করে শুধুমাত্র ১টি মূল Universal APK রাখা হলো
+    // One APK per ABI (arm64-v8a + armeabi-v7a): the native .so files
+    // (TDLib, libsodium) are per-ABI, so a universal APK ships both sets
+    // and is much larger than either split APK. The in-app updater knows
+    // the split names (see UpdateRepository.buildCandidateUrls) and the
+    // release workflow publishes every APK under
+    // app/build/outputs/apk/release/. (P1-20)
     splits {
         abi {
-            isEnable = false
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
         }
     }
 
@@ -132,8 +145,14 @@ android {
 androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
+            // With ABI splits every output is one ABI, so each output needs
+            // its own file name — reusing one name for all outputs would
+            // make them collide. (P1-20)
+            val abi = output.filters.find {
+                it.filterType == com.android.build.api.variant.FilterConfiguration.FilterType.ABI
+            }?.identifier ?: "universal"
             (output as? com.android.build.api.variant.impl.VariantOutputImpl)?.outputFileName?.set(
-                "MyCloud-v${android.defaultConfig.versionName}-universal-${variant.name}.apk"
+                "MyCloud-v${android.defaultConfig.versionName}-$abi-${variant.name}.apk"
             )
         }
     }
