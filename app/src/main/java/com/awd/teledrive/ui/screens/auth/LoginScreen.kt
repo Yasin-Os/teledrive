@@ -145,7 +145,7 @@ private object LoginText {
     const val COUNTRY_WRONG = "Invalid country code"
 
     const val CODE_TITLE_FALLBACK = "Verification code"
-    const val CODE_SUBTITLE = "Enter the 5-digit code sent to your Telegram app"
+    const val CODE_SUBTITLE = "Enter the 5 or 6-digit code sent to your Telegram app"
     const val RESEND = "Resend code"
     const val RESEND_IN = "Resend in"
 
@@ -213,7 +213,13 @@ private val COUNTRY_LIST: List<CountryOption> by lazy {
 private fun findCountryByCode(digits: String): CountryOption? {
     if (digits.isEmpty()) return null
     val matches = COUNTRY_LIST.filter { it.dialCode == digits }
-    return matches.firstOrNull { it.iso in PRIMARY_ISO } ?: matches.firstOrNull()
+    if (matches.size <= 1) return matches.firstOrNull()
+    // একই ডায়াল কোড একাধিক দেশের হতে পারে (+1: US/CA, +7: RU/KZ) — ডিভাইসের
+    // লোকেলের দেশ আগে, তারপর PRIMARY_ISO, সবশেষে প্রথম ম্যাচ
+    val deviceIso = Locale.getDefault().country
+    return matches.firstOrNull { it.iso == deviceIso }
+        ?: matches.firstOrNull { it.iso in PRIMARY_ISO }
+        ?: matches.firstOrNull()
 }
 
 private fun hasCountryWithPrefix(digits: String): Boolean =
@@ -850,7 +856,7 @@ fun LoginContent(
                     }
                 }
                 is LoginUiState.EnteringCode -> {
-                    if (code.length == 5) onCodeSubmit(code)
+                    if (code.length in 5..6) onCodeSubmit(code)
                 }
                 is LoginUiState.EnteringPassword -> {
                     if (password.isNotBlank()) onPasswordSubmit(password)
@@ -868,7 +874,7 @@ fun LoginContent(
 
     val canSubmitPhone = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6 &&
         apiId.trim().isNotBlank() && apiHash.trim().isNotBlank()
-    val canVerify = code.length == 5 && !isProcessing
+    val canVerify = code.length in 5..6 && !isProcessing
     val canUnlock = password.isNotBlank() && !isProcessing
 
     val fabEnabled = when (uiState) {
@@ -1301,9 +1307,9 @@ fun LoginContent(
                                         BasicTextField(
                                             value = code,
                                             onValueChange = { input ->
-                                                val filtered = input.filter { it.isDigit() }.take(5)
+                                                val filtered = input.filter { it.isDigit() }.take(6)
                                                 code = filtered
-                                                if (filtered.length == 5 && !isProcessing) {
+                                                if (filtered.length in 5..6 && !isProcessing) {
                                                     abortRetryCount = 0
                                                     onCodeSubmit(filtered)
                                                 }
@@ -1314,7 +1320,7 @@ fun LoginContent(
                                             ),
                                             keyboardActions = KeyboardActions(
                                                 onDone = {
-                                                    if (code.length == 5 && !isProcessing) {
+                                                    if (code.length in 5..6 && !isProcessing) {
                                                         abortRetryCount = 0
                                                         onCodeSubmit(code)
                                                     }
@@ -1327,7 +1333,7 @@ fun LoginContent(
                                                     verticalAlignment = Alignment.CenterVertically,
                                                     modifier = Modifier.fillMaxWidth()
                                                 ) {
-                                                    repeat(5) { index ->
+                                                    repeat(6) { index ->
                                                         val char = code.getOrNull(index)?.toString() ?: ""
                                                         val isFocused = code.length == index
                                                         val boxColor = when {
