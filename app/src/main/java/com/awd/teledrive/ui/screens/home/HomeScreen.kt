@@ -2205,7 +2205,7 @@ fun ShareDialog(
                         Text(stringResource(R.string.no_one_joined), style = MaterialTheme.typography.bodyMedium)
                     } else {
                         members.forEach { user ->
-                            val displayName = "${user.firstName} ${user.lastName}".trim().ifEmpty { user.username }
+                            val displayName = "${user.firstName} ${user.lastName}".trim().ifEmpty { user.phoneNumber.ifEmpty { "ID ${user.id}" } }
                             Text(displayName, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
