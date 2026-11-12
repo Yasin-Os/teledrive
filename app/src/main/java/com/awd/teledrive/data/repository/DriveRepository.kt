@@ -157,8 +157,19 @@ class DriveRepository @Inject constructor(
                             }
                         }
 
+                        // Auto-delete only once the upload is confirmed: a
+                        // sent message alone does not prove the file bytes
+                        // arrived. Delete now only if this message's own file
+                        // reports the upload complete; otherwise leave the
+                        // delete to the transfer-completion path, which
+                        // removes the phone file after waitForCompletion
+                        // reports success.
                         pendingAutoDeleteFiles.remove(oldId)?.let { phoneFile ->
-                            deletePhoneFileCompletely(phoneFile)
+                            if (file?.remote?.isUploadingCompleted == true) {
+                                deletePhoneFileCompletely(phoneFile)
+                            } else {
+                                Log.w("DriveRepo", "Auto-delete deferred for $oldId: upload not yet confirmed")
+                            }
                         }
                     }
                     is TdApi.UpdateMessageSendFailed -> {
@@ -248,6 +259,10 @@ class DriveRepository @Inject constructor(
     private val FILE_META_PREFIX = "#TELEDRIVE_FILE_DATA"
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private var currentManifest = TeleDriveManifest()
+    // Dedicated lock for manifest mutations. Never synchronize on
+    // currentManifest itself: it is a var that gets reassigned, so the
+    // lock object would change under the threads using it.
+    private val manifestLock = Any()
     private var manifestMessageId: Long = 0
 
     private fun finishChannelDiscovery(chatId: Long) {
@@ -621,7 +636,7 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    fun runImmediateFolderBackup() {
+    fun runImmediateFolderBackup(onFinished: (() -> Unit)? = null) {
         if (!isBackupRunning.compareAndSet(false, true)) return
         scope.launch {
             try {
@@ -659,6 +674,7 @@ class DriveRepository @Inject constructor(
                 Log.e("DriveRepo", "Sequential backup error: ${e.message}")
             } finally {
                 isBackupRunning.set(false)
+                onFinished?.invoke()
             }
         }
     }
@@ -797,7 +813,7 @@ class DriveRepository @Inject constructor(
                     updatedMappings.remove(id.toString())
                 }
             }
-            synchronized(currentManifest) {
+            synchronized(manifestLock) {
                 currentManifest = compactManifest(currentManifest.copy(fileMappings = updatedMappings, updatedAt = System.currentTimeMillis() / 1000))
             }
             saveCloudManifestDebounced()
@@ -908,7 +924,7 @@ class DriveRepository @Inject constructor(
     fun createVirtualFolder(name: String, parentId: String = "0", isSecure: Boolean = false) {
         val id = "vf_${System.nanoTime()}"
         val folder = VirtualFolder(id, name, parentId, System.currentTimeMillis() / 1000, "virtual_folder", isSecure)
-        synchronized(currentManifest) {
+        synchronized(manifestLock) {
             currentManifest = compactManifest(currentManifest.copy(virtualFolders = currentManifest.virtualFolders + (id to folder)))
         }
         syncVirtualFoldersToDb()
@@ -1011,7 +1027,13 @@ class DriveRepository @Inject constructor(
                 if (allFetchedIds.size < 2500 && lastMsgId != fromMessageId) {
                     fetchHistoryRecursively(chatId, lastMsgId, allFetchedIds)
                 } else {
-                    scope.launch { driveDao.deleteFilesByChatNotInList(chatId, allFetchedIds) }
+                    // The history fetch stopped before reaching the end
+                    // (2,500-item cap or no progress): the local index may
+                    // hold files this sync never saw, so pruning here would
+                    // delete entries for files that still exist on Telegram.
+                    // Only a sync that provably reached the end of history
+                    // (the empty page above) may prune the local index.
+                    Log.w("DriveRepo", "History sync stopped at ${allFetchedIds.size} items; skipping local prune")
                 }
             }
         }
@@ -1238,19 +1260,40 @@ class DriveRepository @Inject constructor(
                         val groupId = FileUtils.generateSplitGroupId()
                         val partMessageIds = mutableListOf<Long>()
                         
+                        val partUploadOk = BooleanArray(parts.size)
                         parts.forEachIndexed { index, part ->
                             val caption = "[TD_SPLIT|ID:$groupId|PART:$index/${parts.size}|NAME:$cleanName]$vfTag"
-                            uploadSinglePart(part.absolutePath, cleanName, targetChatId, caption, virtualFolderId, deleteSourceAfter = true) { messageId ->
-                                if (messageId != 0L) partMessageIds.add(messageId)
-                                if (index == parts.size - 1) {
-                                    sendSplitMasterMetadata(groupId, cleanName, sourceFile.length(), FileUtils.getMimeType(cleanName), parts.size, virtualFolderId, isChatSecure(targetChatId), partMessageIds)
-                                    if (backupTrackingKey != null) {
-                                        inFlightBackupKeys.remove(backupTrackingKey)
-                                        markFileBackedUp(backupTrackingKey)
+                            uploadSinglePart(
+                                part.absolutePath, cleanName, targetChatId, caption, virtualFolderId,
+                                deleteSourceAfter = true,
+                                onMessageSent = { messageId ->
+                                    if (messageId != 0L) partMessageIds.add(messageId)
+                                },
+                                onUploadCompleted = { success ->
+                                    // Parts upload serially, so the last part's
+                                    // completion is the moment every part has
+                                    // been attempted — but only finalize when
+                                    // ALL parts succeeded. Never mark the file
+                                    // backed up or delete the phone original
+                                    // on send-accept alone: the last part may
+                                    // still be uploading, or an earlier part
+                                    // may have failed.
+                                    partUploadOk[index] = success
+                                    if (index == parts.size - 1) {
+                                        if (partUploadOk.all { it }) {
+                                            sendSplitMasterMetadata(groupId, cleanName, sourceFile.length(), FileUtils.getMimeType(cleanName), parts.size, virtualFolderId, isChatSecure(targetChatId), partMessageIds)
+                                            if (backupTrackingKey != null) {
+                                                inFlightBackupKeys.remove(backupTrackingKey)
+                                                markFileBackedUp(backupTrackingKey)
+                                            }
+                                            if (autoDeleteEnabled) deletePhoneFileCompletely(sourceFile)
+                                        } else {
+                                            if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
+                                            Log.w("DriveRepo", "Split upload incomplete for $cleanName; phone original kept")
+                                        }
                                     }
-                                    if (autoDeleteEnabled) deletePhoneFileCompletely(sourceFile)
                                 }
-                            }
+                            )
                         }
                     } catch (e: Exception) {
                         if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
@@ -1318,7 +1361,8 @@ class DriveRepository @Inject constructor(
         virtualFolderId: String? = null,
         deleteSourceAfter: Boolean = false,
         backupTrackingKey: String? = null,
-        onMessageSent: (Long) -> Unit = {}
+        onMessageSent: (Long) -> Unit = {},
+        onUploadCompleted: (Boolean) -> Unit = {}
     ) {
         startTransferService()
         val isSecure = isChatSecure(targetChatId) || (virtualFolderId != null && isVirtualFolderSecure(virtualFolderId))
@@ -1376,6 +1420,7 @@ class DriveRepository @Inject constructor(
                 } catch (e: Exception) {
                     if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
                     transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
+                    try { onUploadCompleted(false) } catch (_: Exception) {}
                     return@enqueueTransfer 
                 }
             } else {
@@ -1402,7 +1447,7 @@ class DriveRepository @Inject constructor(
                     }
 
                     if (!virtualFolderId.isNullOrEmpty() && virtualFolderId != "0") {
-                        synchronized(currentManifest) {
+                        synchronized(manifestLock) {
                             currentManifest = compactManifest(
                                 currentManifest.copy(
                                     fileMappings = currentManifest.fileMappings + (result.id.toString() to virtualFolderId)
@@ -1452,6 +1497,7 @@ class DriveRepository @Inject constructor(
                     inFlightBackupKeys.remove(backupTrackingKey)
                 }
             } catch (e: Exception) {}
+            try { onUploadCompleted(completedSuccess) } catch (_: Exception) {}
         }
     }
 
@@ -1590,13 +1636,22 @@ class DriveRepository @Inject constructor(
                 val folder = currentManifest.virtualFolders[virtualId] ?: return@launch
                 currentManifest = compactManifest(currentManifest.copy(virtualFolders = currentManifest.virtualFolders + (virtualId to folder.copy(name = newName))))
                 saveCloudManifestDebounced()
+                driveDao.renameItem(item.id, item.parentChatId, newName)
             } else if (item is DriveItem.File) {
                 val vfTag = if (item.virtualParentId != "0") " [VF:${item.virtualParentId}]" else ""
                 telegramClient.send(TdApi.EditMessageCaption(item.parentChatId, item.id, null, TdApi.FormattedText("$newName$vfTag", emptyArray()), false)) { editResult ->
-                    if (editResult is TdApi.Message) scope.launch { driveDao.renameItem(item.id, item.parentChatId, newName) }
+                    if (editResult is TdApi.Message) {
+                        scope.launch { driveDao.renameItem(item.id, item.parentChatId, newName) }
+                    } else {
+                        // Telegram rejected the rename: leave the local
+                        // name unchanged so phone and Telegram stay in sync.
+                        Log.w("DriveRepo", "Rename failed for message ${item.id}: $editResult")
+                    }
                 }
+            } else {
+                // Non-virtual folders have no Telegram caption to edit.
+                driveDao.renameItem(item.id, item.parentChatId, newName)
             }
-            driveDao.renameItem(item.id, item.parentChatId, newName)
         }
     }
 
@@ -1605,13 +1660,19 @@ class DriveRepository @Inject constructor(
             val filesByChat = items.filterIsInstance<DriveItem.File>().groupBy { it.parentChatId }
             filesByChat.forEach { (chatId, files) ->
                 val ids = files.map { it.id }.toLongArray()
-                telegramClient.send(TdApi.DeleteMessages(chatId, ids, true)) {
-                    scope.launch { files.forEach { f -> driveDao.deleteItemCompletely(f.id, chatId) } }
+                telegramClient.send(TdApi.DeleteMessages(chatId, ids, true)) { result ->
+                    if (result is TdApi.Ok) {
+                        scope.launch { files.forEach { f -> driveDao.deleteItemCompletely(f.id, chatId) } }
+                    } else {
+                        // Telegram refused the delete: keep the local rows
+                        // so the files stay visible and can be retried.
+                        Log.w("DriveRepo", "DeleteMessages failed for chat $chatId: $result")
+                    }
                 }
             }
 
             if (filesByChat.isNotEmpty()) {
-                synchronized(currentManifest) {
+                synchronized(manifestLock) {
                     val updatedFileMappings = currentManifest.fileMappings.toMutableMap()
                     val updatedSplitMasters = currentManifest.splitFileMasters.toMutableMap()
                     val metadataIdsToDelete = mutableListOf<Long>()
@@ -1646,9 +1707,21 @@ class DriveRepository @Inject constructor(
     private suspend fun deleteVirtualFolderRecursive(virtualId: String) {
         val children = driveDao.getItemsByVirtualParentSync(virtualId)
         val filesByChat = children.filter { !it.isFolder }.groupBy { it.parentChatId }
+        var allSucceeded = true
         filesByChat.forEach { (chatId, entities) ->
-            telegramClient.send(TdApi.DeleteMessages(chatId, entities.map { it.id }.toLongArray(), true)) {}
+            val deleteResult = CompletableDeferred<Boolean>()
+            telegramClient.send(TdApi.DeleteMessages(chatId, entities.map { it.id }.toLongArray(), true)) { result ->
+                deleteResult.complete(result is TdApi.Ok)
+            }
+            val ok = withTimeoutOrNull(30_000L) { deleteResult.await() } ?: false
+            if (!ok) {
+                allSucceeded = false
+                Log.w("DriveRepo", "DeleteMessages failed for chat $chatId while deleting folder $virtualId")
+            }
         }
+        // Only remove local rows when Telegram confirmed every delete;
+        // otherwise the folder stays visible and the delete can be retried.
+        if (!allSucceeded) return
         val entity = driveDao.getVirtualFolderById(virtualId)
         if (entity != null) driveDao.deleteItemCompletely(entity.id, entity.parentChatId)
         children.forEach { child -> driveDao.deleteItemCompletely(child.id, child.parentChatId) }

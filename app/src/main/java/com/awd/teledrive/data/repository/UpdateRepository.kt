@@ -482,9 +482,11 @@ class UpdateRepository @Inject constructor(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val archiveSigners = archiveInfo.signingInfo?.apkContentsSigners
                 val installedSigners = installedInfo.signingInfo?.apkContentsSigners
+                // Fail closed: without signing info we cannot prove this APK
+                // is ours, so it must not be accepted.
                 if (archiveSigners != null && installedSigners != null) {
                     archiveSigners.any { archiveSig -> installedSigners.any { it == archiveSig } }
-                } else true
+                } else false
             } else {
                 @Suppress("DEPRECATION")
                 val archiveSigs = archiveInfo.signatures
@@ -492,7 +494,7 @@ class UpdateRepository @Inject constructor(
                 val installedSigs = installedInfo.signatures
                 if (archiveSigs != null && installedSigs != null) {
                     archiveSigs.any { archiveSig -> installedSigs.any { it == archiveSig } }
-                } else true
+                } else false
             }
         } catch (e: Exception) {
             Log.e("UpdateRepository", "APK validation failed", e)
