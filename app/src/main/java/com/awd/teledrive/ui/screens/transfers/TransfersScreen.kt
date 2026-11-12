@@ -34,10 +34,9 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
+import com.awd.teledrive.core.utils.FileUtils
 import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.ui.theme.TeledriveTheme
-import kotlin.math.log10
-import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,9 +94,9 @@ fun TransfersContent(
                         supportingContent = {
                             Column {
                                 val sizeText = if (transfer.totalSize > 0) {
-                                    "${formatSize(transfer.downloadedSize)} / ${formatSize(transfer.totalSize)}"
+                                    "${FileUtils.formatSize(transfer.downloadedSize)} / ${FileUtils.formatSize(transfer.totalSize)}"
                                 } else {
-                                    formatSize(transfer.downloadedSize)
+                                    FileUtils.formatSize(transfer.downloadedSize)
                                 }
                                 val statusText = when(transfer.status) {
                                     com.awd.teledrive.data.repository.TransferRepository.Status.QUEUED -> stringResource(R.string.status_queued)
@@ -160,10 +159,4 @@ fun TransfersPreview() {
     }
 }
 
-private fun formatSize(size: Long): String {
-    if (size <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt()
-    return String.format(java.util.Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
-}
 
