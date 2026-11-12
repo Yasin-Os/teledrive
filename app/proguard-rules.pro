@@ -1,4 +1,4 @@
-# Proguard rules for Awd TeleDrive
+# Proguard rules for MyCloud
 
 # TDLib (Telegram Database Library)
 -keep class org.drinkless.tdlib.** { *; }
