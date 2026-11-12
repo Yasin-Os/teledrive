@@ -90,6 +90,7 @@ object DatabaseModule {
             // resort for pre-v5 installs with no migration path.
             .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration(true)
+            .addMigrations(MIGRATION_7_8) // v7 -> v8: smart-search FTS tables + recent searches
             .build()
     }
 
@@ -104,6 +105,7 @@ object DatabaseModule {
             // pre-v5 installs with no migration path.
             .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration(true)
+            .addMigrations(MIGRATION_7_8) // v7 -> v8: smart-search FTS tables + recent searches
             .build()
     }
 
