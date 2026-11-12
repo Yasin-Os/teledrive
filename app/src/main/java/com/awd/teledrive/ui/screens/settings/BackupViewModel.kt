@@ -31,7 +31,7 @@ class BackupViewModel @Inject constructor(
 ) : ViewModel() {
 
     val isAutoBackupEnabled = settingsRepository.isAutoBackupEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), settingsRepository.isAutoBackupEnabled.value)
 
     private val _lastBackupTime = MutableStateFlow(secureSettings.getLong("last_backup_time", 0L))
     val lastBackupTime = _lastBackupTime.asStateFlow()
@@ -42,36 +42,34 @@ class BackupViewModel @Inject constructor(
     private val _feedback = MutableSharedFlow<BackupFeedback>()
     val feedback: SharedFlow<BackupFeedback> = _feedback.asSharedFlow()
 
-    // ডিফল্টভাবে Wi-Fi Only বন্ধ রাখা হলো যাতে মোবাইল ডাটা (এমবি) ও ওয়াইফাই উভয় ক্ষেত্রেই অটো-সিঙ্ক চলে
+    // প্রাথমিক মান সংরক্ষিত সেটিং থেকেই নেওয়া হয়, যাতে টগল
+    // প্রথম মুহূর্তেই ভুল অবস্থা দেখিয়ে না যায়।
     val isBackupWifiOnly = settingsRepository.isBackupWifiOnlyEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), settingsRepository.isBackupWifiOnlyEnabled.value)
 
     val backupWorkInfo = workerManager.getBackupWorkInfo()
 
     init {
         if (_backupFolders.value.isNotEmpty()) {
-            settingsRepository.setAutoBackupEnabled(true)
-            settingsRepository.setBackupWifiOnlyEnabled(false)
-            workerManager.scheduleBackup(true)
-            driveRepository.runImmediateFolderBackup()
+            // সংরক্ষিত টগল সম্মান করা হয়: Auto Backup চালু থাকলেই
+            // ওয়ার্কার (সঠিক নেটওয়ার্ক শর্তসহ) আবার বসানো হয়; বন্ধ
+            // থাকলে পুরোনো ওয়ার্কার বাতিল করা হয়। আগের কোড এখানে
+            // টগল জোর করে চালু আর Wi-Fi Only জোর করে বন্ধ করে দিত।
+            workerManager.scheduleBackup(settingsRepository.isAutoBackupEnabled.value)
         }
     }
 
     fun setAutoBackupEnabled(enabled: Boolean) {
         settingsRepository.setAutoBackupEnabled(enabled)
-        if (enabled) {
-            settingsRepository.setBackupWifiOnlyEnabled(false)
-        }
         workerManager.scheduleBackup(enabled)
         if (enabled && _backupFolders.value.isNotEmpty()) {
             driveRepository.runImmediateFolderBackup()
-            workerManager.triggerOneTimeBackup()
         }
     }
 
     fun setBackupWifiOnly(enabled: Boolean) {
         settingsRepository.setBackupWifiOnlyEnabled(enabled)
-        if (isAutoBackupEnabled.value) {
+        if (settingsRepository.isAutoBackupEnabled.value) {
             workerManager.scheduleBackup(true)
         }
     }
@@ -89,9 +87,7 @@ class BackupViewModel @Inject constructor(
         _backupFolders.value = current
         secureSettings.saveStringList("backup_folders", current)
 
-        if (current.isNotEmpty()) {
-            settingsRepository.setAutoBackupEnabled(true)
-            settingsRepository.setBackupWifiOnlyEnabled(false)
+        if (current.isNotEmpty() && settingsRepository.isAutoBackupEnabled.value) {
             workerManager.scheduleBackup(true)
             driveRepository.runImmediateFolderBackup()
         }
@@ -106,10 +102,10 @@ class BackupViewModel @Inject constructor(
             _backupFolders.value = current
             secureSettings.saveStringList("backup_folders", current)
 
-            settingsRepository.setAutoBackupEnabled(true)
-            settingsRepository.setBackupWifiOnlyEnabled(false)
-            workerManager.scheduleBackup(true)
-            driveRepository.runImmediateFolderBackup()
+            if (settingsRepository.isAutoBackupEnabled.value) {
+                workerManager.scheduleBackup(true)
+                driveRepository.runImmediateFolderBackup()
+            }
         }
     }
 
@@ -126,7 +122,9 @@ class BackupViewModel @Inject constructor(
         // "Last backup" must reflect when a backup actually finished, not
         // when it started: refresh it from the persisted value once the
         // immediate run completes.
-        driveRepository.runImmediateFolderBackup {
+        // ম্যানুয়াল ব্যাকআপ: ব্যবহারকারীর স্পষ্ট নির্দেশ, তাই Auto Backup
+        // টগল ও Wi-Fi Only এখানে প্রযোজ্য নয়।
+        driveRepository.runImmediateFolderBackup(manual = true) {
             _lastBackupTime.value = secureSettings.getLong("last_backup_time", 0L)
         }
         workerManager.triggerOneTimeBackup()
