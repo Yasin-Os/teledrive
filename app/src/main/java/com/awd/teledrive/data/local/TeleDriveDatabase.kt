@@ -22,7 +22,28 @@ val MIGRATION_5_6: Migration = object : Migration(5, 6) {
     }
 }
 
-@Database(entities = [DriveItemEntity::class, TransferEntity::class], version = 6, exportSchema = false)
+/**
+ * Adds DriveItemEntity.contentHash (nullable, so existing rows are untouched)
+ * with its index, plus the file_hashes table that remembers content hashes
+ * across history re-syncs. The index name and table columns match exactly
+ * what Room expects for the version 7 schema.
+ */
+val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE drive_items ADD COLUMN contentHash TEXT")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_drive_items_contentHash ON drive_items (contentHash)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS file_hashes (" +
+                "remoteUniqueId TEXT NOT NULL, " +
+                "contentHash TEXT NOT NULL, " +
+                "size INTEGER NOT NULL, " +
+                "updatedAt INTEGER NOT NULL, " +
+                "PRIMARY KEY(remoteUniqueId))"
+        )
+    }
+}
+
+@Database(entities = [DriveItemEntity::class, TransferEntity::class, FileHashEntity::class], version = 7, exportSchema = false)
 abstract class TeleDriveDatabase : RoomDatabase() {
     abstract fun driveDao(): DriveDao
     abstract fun transferDao(): TransferDao
