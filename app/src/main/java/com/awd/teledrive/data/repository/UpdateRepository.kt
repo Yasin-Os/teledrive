@@ -430,7 +430,7 @@ class UpdateRepository @Inject constructor(
         } + listOf(
             "MyCloud-v$ver-universal-release.apk",
             "MyCloud-v$ver-universal-debug.apk",
-            "awd-teledrive-v$ver-universal-debug.apk",
+            "mycloud-v$ver-universal-release.apk",
             "app-universal-debug.apk",
             "app-debug.apk"
         )
@@ -740,7 +740,7 @@ class UpdateRepository @Inject constructor(
         }
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-release.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-debug.apk")
-        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/awd-teledrive-v$ver-universal-debug.apk")
+        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/mycloud-v$ver-universal-release.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-universal-debug.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-debug.apk")
 
