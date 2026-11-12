@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
+    <!-- App updates (APK) are downloaded into the cache directories. -->
     <cache-path name="my_cache" path="." />
-    <files-path name="my_files" path="." />
-    <external-path name="my_external" path="." />
-    <root-path name="root" path="." />
+    <external-cache-path name="my_external_cache" path="." />
+    <!-- Files downloaded by TDLib live under filesDir/tdlib. No root-path,
+         external-path or files-path "." : previously the provider exposed the
+         whole filesystem (including the TDLib database and the Room database)
+         to any app that received a URI. -->
+    <files-path name="my_tdlib_files" path="tdlib/" />
 </paths>
