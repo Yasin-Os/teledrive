@@ -706,10 +706,6 @@ fun SettingsContent(
                     icon = Icons.Default.CloudUpload, title = stringResource(R.string.sync_now),
                     accentColor = EmeraldAccent, onClick = onTriggerManualBackup
                 )
-                ModernActionBarItem(
-                    icon = Icons.Default.MonitorHeart, title = stringResource(R.string.backup_health),
-                    accentColor = Color(0xFF10B981), onClick = onNavigateToBackupHealth
-                )
             }
 
             // 2. Storage & Cache Bar Section (Cyan Accent)
@@ -718,14 +714,6 @@ fun SettingsContent(
                     icon = Icons.Default.Cloud, title = stringResource(R.string.cloud_usage),
                     accentColor = SkyAccent, badgeText = FileUtils.formatSize(totalStorageUsed),
                     onClick = onNavigateToCloudAnalysis
-                )
-                ModernActionBarItem(
-                    icon = Icons.Default.Analytics, title = stringResource(R.string.storage_analyzer),
-                    accentColor = Color(0xFF0EA5E9), onClick = onNavigateToStorageAnalyzer
-                )
-                ModernActionBarItem(
-                    icon = Icons.Default.ContentCopy, title = stringResource(R.string.duplicate_finder),
-                    accentColor = Color(0xFF0EA5E9), onClick = onNavigateToDuplicateFinder
                 )
                 ModernActionBarItem(
                     icon = Icons.Default.Storage, title = stringResource(R.string.local_cache),
@@ -742,6 +730,18 @@ fun SettingsContent(
                     icon = Icons.Default.History, title = stringResource(R.string.cache_duration),
                     accentColor = SkyAccent, badgeText = formatCacheAge(cacheAgeLimit, context),
                     onClick = { showCacheAgeDialog = true }
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.Analytics, title = stringResource(R.string.storage_analyzer),
+                    accentColor = Color(0xFF0EA5E9), onClick = onNavigateToStorageAnalyzer
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.ContentCopy, title = stringResource(R.string.duplicate_finder),
+                    accentColor = Color(0xFF0EA5E9), onClick = onNavigateToDuplicateFinder
+                )
+                ModernActionBarItem(
+                    icon = Icons.Default.MonitorHeart, title = stringResource(R.string.backup_health),
+                    accentColor = Color(0xFF10B981), onClick = onNavigateToBackupHealth
                 )
             }
 
