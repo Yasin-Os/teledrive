@@ -123,8 +123,12 @@ class BackupViewModel @Inject constructor(
         viewModelScope.launch {
             _feedback.emit(BackupFeedback.Starting)
         }
-        driveRepository.runImmediateFolderBackup()
+        // "Last backup" must reflect when a backup actually finished, not
+        // when it started: refresh it from the persisted value once the
+        // immediate run completes.
+        driveRepository.runImmediateFolderBackup {
+            _lastBackupTime.value = secureSettings.getLong("last_backup_time", 0L)
+        }
         workerManager.triggerOneTimeBackup()
-        _lastBackupTime.value = System.currentTimeMillis()
     }
 }
