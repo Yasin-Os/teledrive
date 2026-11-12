@@ -7,6 +7,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Toast
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -109,7 +110,7 @@ fun BackupSettingsScreen(
                     it,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
-            } catch (e: Exception) {}
+            } catch (e: Exception) { Log.w("BackupSettings", "takePersistableUriPermission failed", e) }
 
             val rawPath = it.path ?: ""
             val resolvedPath = when {
@@ -162,20 +163,28 @@ fun BackupSettingsScreen(
             }
         }
 
-        val projection = arrayOf(MediaStore.MediaColumns.DATA)
+        val projection = arrayOf(
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH
+        )
         listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         ).forEach { uri ->
             try {
                 context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-                    val dataIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+                    val nameIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val relIdx = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                    if (nameIdx == -1 || relIdx == -1) return@use
                     while (cursor.moveToNext()) {
-                        val path = cursor.getString(dataIndex) ?: continue
+                        val name = cursor.getString(nameIdx) ?: continue
+                        val rel = cursor.getString(relIdx).orEmpty()
+                        val relDir = if (rel.isEmpty()) "" else if (rel.endsWith("/")) rel else "$rel/"
+                        val path = File(Environment.getExternalStorageDirectory(), relDir + name).absolutePath
                         File(path).parent?.let { folders.add(it) }
                     }
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { Log.w("BackupSettings", "backup folder query failed", e) }
         }
 
         folders.addAll(selectedFolders)
