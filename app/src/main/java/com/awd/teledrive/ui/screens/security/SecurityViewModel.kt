@@ -1,12 +1,16 @@
 package com.awd.teledrive.ui.screens.security
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -22,7 +26,32 @@ class SecurityViewModel @Inject constructor(
 
         private const val KEY_SAFE_FOLDER_PIN = "safe_folder_pin_code_v2"
         private const val KEY_SAFE_FOLDER_LOCK_ENABLED = "safe_folder_lock_enabled_v2"
+
+        // PIN brute-force protection: 5 wrong attempts lock the PIN for
+        // 30 seconds, doubling on every further lockout (max 5 minutes).
+        // Counters survive process death (stored in SecureSettings), so
+        // restarting the app does not reset the lockout.
+        private const val MAX_PIN_ATTEMPTS = 5
+        private const val BASE_LOCKOUT_MS = 30_000L
+        private const val MAX_LOCKOUT_MS = 5 * 60_000L
+
+        private val APP_PIN_LOCKOUT_KEYS = PinLockoutKeys(
+            attempts = "app_pin_failed_attempts",
+            lockoutUntil = "app_pin_lockout_until_ms",
+            lockoutCount = "app_pin_lockout_count"
+        )
+        private val SAFE_PIN_LOCKOUT_KEYS = PinLockoutKeys(
+            attempts = "safe_pin_failed_attempts",
+            lockoutUntil = "safe_pin_lockout_until_ms",
+            lockoutCount = "safe_pin_lockout_count"
+        )
     }
+
+    private data class PinLockoutKeys(
+        val attempts: String,
+        val lockoutUntil: String,
+        val lockoutCount: String
+    )
 
     // ১. পুরো অ্যাপ লক স্টেট (Settings -> Security)
     private val _isPasswordSet = MutableStateFlow(!secureSettings.getString(KEY_APP_LOCK_PIN).isNullOrEmpty())
@@ -43,6 +72,74 @@ class SecurityViewModel @Inject constructor(
 
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
+
+    // PIN lockout countdowns (seconds left, 0 = not locked), for the UI.
+    private val _appPinLockoutRemaining = MutableStateFlow(0L)
+    val appPinLockoutRemainingSeconds = _appPinLockoutRemaining.asStateFlow()
+
+    private val _safePinLockoutRemaining = MutableStateFlow(0L)
+    val safePinLockoutRemainingSeconds = _safePinLockoutRemaining.asStateFlow()
+
+    private val _safePinError = MutableStateFlow<String?>(null)
+    val safePinError = _safePinError.asStateFlow()
+
+    private var appPinTicker: Job? = null
+    private var safePinTicker: Job? = null
+
+    init {
+        // Resume the countdown if the app was restarted mid-lockout.
+        if (isPinLocked(APP_PIN_LOCKOUT_KEYS)) {
+            appPinTicker = startLockoutTicker(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining)
+        }
+        if (isPinLocked(SAFE_PIN_LOCKOUT_KEYS)) {
+            safePinTicker = startLockoutTicker(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining)
+        }
+    }
+
+    private fun isPinLocked(keys: PinLockoutKeys): Boolean {
+        return secureSettings.getLong(keys.lockoutUntil, 0L) > System.currentTimeMillis()
+    }
+
+    private fun pinLockoutRemainingSeconds(keys: PinLockoutKeys): Long {
+        return ((secureSettings.getLong(keys.lockoutUntil, 0L) - System.currentTimeMillis()) / 1000)
+            .coerceAtLeast(0L)
+    }
+
+    private fun lockoutMessage(keys: PinLockoutKeys): String {
+        return "Too many wrong attempts. Try again in ${pinLockoutRemainingSeconds(keys)}s"
+    }
+
+    private fun recordFailedPinAttempt(keys: PinLockoutKeys, flow: MutableStateFlow<Long>, startTicker: () -> Unit) {
+        val attempts = secureSettings.getInt(keys.attempts, 0) + 1
+        if (attempts >= MAX_PIN_ATTEMPTS) {
+            val count = secureSettings.getInt(keys.lockoutCount, 0)
+            val duration = minOf(BASE_LOCKOUT_MS * (1L shl minOf(count, 4)), MAX_LOCKOUT_MS)
+            secureSettings.saveLong(keys.lockoutUntil, System.currentTimeMillis() + duration)
+            secureSettings.saveInt(keys.lockoutCount, count + 1)
+            secureSettings.saveInt(keys.attempts, 0)
+            startTicker()
+            flow.value = pinLockoutRemainingSeconds(keys)
+        } else {
+            secureSettings.saveInt(keys.attempts, attempts)
+        }
+    }
+
+    private fun resetPinAttempts(keys: PinLockoutKeys) {
+        secureSettings.saveInt(keys.attempts, 0)
+        secureSettings.saveInt(keys.lockoutCount, 0)
+        secureSettings.saveLong(keys.lockoutUntil, 0L)
+    }
+
+    private fun startLockoutTicker(keys: PinLockoutKeys, flow: MutableStateFlow<Long>): Job {
+        return viewModelScope.launch {
+            while (true) {
+                val remaining = pinLockoutRemainingSeconds(keys)
+                flow.value = remaining
+                if (remaining <= 0L) break
+                delay(1000L)
+            }
+        }
+    }
 
     // ২. Safe Folder-এর সম্পূর্ণ আলাদা ও স্বতন্ত্র পিন লক স্টেট
     private val _isSafeFolderPinSet = MutableStateFlow(!secureSettings.getString(KEY_SAFE_FOLDER_PIN).isNullOrEmpty())
@@ -79,22 +176,42 @@ class SecurityViewModel @Inject constructor(
     }
 
     fun changeAppLockPin(oldPin: String, newPin: String): Boolean {
+        if (isPinLocked(APP_PIN_LOCKOUT_KEYS)) {
+            _error.value = lockoutMessage(APP_PIN_LOCKOUT_KEYS)
+            return false
+        }
         val current = secureSettings.getString(KEY_APP_LOCK_PIN)
         return if (current == null || current == oldPin) {
+            resetPinAttempts(APP_PIN_LOCKOUT_KEYS)
             secureSettings.saveString(KEY_APP_LOCK_PIN, newPin)
             _isPasswordSet.value = true
             true
         } else {
+            recordFailedPinAttempt(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining) {
+                appPinTicker = startLockoutTicker(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining)
+            }
+            _error.value = if (isPinLocked(APP_PIN_LOCKOUT_KEYS)) lockoutMessage(APP_PIN_LOCKOUT_KEYS) else "Incorrect PIN"
             false
         }
     }
 
     fun verifyPassword(pin: String): Boolean {
+        if (isPinLocked(APP_PIN_LOCKOUT_KEYS)) {
+            _error.value = lockoutMessage(APP_PIN_LOCKOUT_KEYS)
+            if (appPinTicker?.isActive != true) {
+                appPinTicker = startLockoutTicker(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining)
+            }
+            return false
+        }
         val stored = secureSettings.getString(KEY_APP_LOCK_PIN)
         val isValid = stored != null && stored == pin
         if (!isValid) {
-            _error.value = "Incorrect PIN"
+            recordFailedPinAttempt(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining) {
+                appPinTicker = startLockoutTicker(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining)
+            }
+            _error.value = if (isPinLocked(APP_PIN_LOCKOUT_KEYS)) lockoutMessage(APP_PIN_LOCKOUT_KEYS) else "Incorrect PIN"
         } else {
+            resetPinAttempts(APP_PIN_LOCKOUT_KEYS)
             _error.value = null
             _isLocked.value = false
         }
@@ -121,23 +238,45 @@ class SecurityViewModel @Inject constructor(
     }
 
     fun verifySafeFolderPin(pin: String): Boolean {
+        if (isPinLocked(SAFE_PIN_LOCKOUT_KEYS)) {
+            _safePinError.value = lockoutMessage(SAFE_PIN_LOCKOUT_KEYS)
+            if (safePinTicker?.isActive != true) {
+                safePinTicker = startLockoutTicker(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining)
+            }
+            return false
+        }
         val stored = secureSettings.getString(KEY_SAFE_FOLDER_PIN)
         return if (stored != null && stored == pin) {
+            resetPinAttempts(SAFE_PIN_LOCKOUT_KEYS)
+            _safePinError.value = null
             secureSessionManager.setSessionPassword(pin)
             true
         } else {
+            recordFailedPinAttempt(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining) {
+                safePinTicker = startLockoutTicker(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining)
+            }
+            _safePinError.value = if (isPinLocked(SAFE_PIN_LOCKOUT_KEYS)) lockoutMessage(SAFE_PIN_LOCKOUT_KEYS) else null
             false
         }
     }
 
     fun changeSafeFolderPin(oldPin: String, newPin: String): Boolean {
+        if (isPinLocked(SAFE_PIN_LOCKOUT_KEYS)) {
+            _safePinError.value = lockoutMessage(SAFE_PIN_LOCKOUT_KEYS)
+            return false
+        }
         val stored = secureSettings.getString(KEY_SAFE_FOLDER_PIN)
         return if (stored == null || stored == oldPin) {
+            resetPinAttempts(SAFE_PIN_LOCKOUT_KEYS)
             secureSettings.saveString(KEY_SAFE_FOLDER_PIN, newPin)
             _isSafeFolderPinSet.value = true
             secureSessionManager.setSessionPassword(newPin)
             true
         } else {
+            recordFailedPinAttempt(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining) {
+                safePinTicker = startLockoutTicker(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining)
+            }
+            _safePinError.value = if (isPinLocked(SAFE_PIN_LOCKOUT_KEYS)) lockoutMessage(SAFE_PIN_LOCKOUT_KEYS) else null
             false
         }
     }
