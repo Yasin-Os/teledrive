@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.TransferDao
+import com.awd.teledrive.data.local.TransferEntity
 import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.remote.TelegramClient
 import com.awd.teledrive.data.secure.SecureSettings
@@ -23,6 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -74,9 +76,90 @@ class TransferRepository @Inject constructor(
         _transfers.value = HashMap(activeMap)
     }
 
+    // P1-7: transfer persistence — in-memory map-এর পাশাপাশি Room
+    // `transfers` টেবিলেও লেখা হয়, যাতে প্রসেস মারা গেলেও transfer
+    // তালিকা হারিয়ে না যায়। Progress tick প্রতি DB লেখা হয় না:
+    // persistProgress() ডিফল্ট 1s throttle করে, status বদলের সময়
+    // force=true দিয়ে সাথে সাথে লেখা হয়।
+    private val lastPersistTime = ConcurrentHashMap<String, Long>()
+    private val persistThrottleMs = 1000L
+
+    private fun TransferInfo.toEntity(): TransferEntity = TransferEntity(
+        remoteUniqueId = remoteUniqueId,
+        fileId = fileId,
+        fileName = fileName,
+        progress = progress,
+        isDownload = isDownload,
+        status = status,
+        totalSize = totalSize,
+        downloadedSize = downloadedSize,
+        localPath = localPath
+    )
+
+    private fun TransferEntity.toTransferInfo(): TransferInfo = TransferInfo(
+        fileId = fileId,
+        remoteUniqueId = remoteUniqueId,
+        fileName = fileName,
+        progress = progress,
+        isDownload = isDownload,
+        status = status,
+        totalSize = totalSize,
+        downloadedSize = downloadedSize,
+        localPath = localPath
+    )
+
+    private fun persistInsert(info: TransferInfo) {
+        scope.launch {
+            try { transferDao.insertTransfer(info.toEntity()) } catch (e: Exception) {}
+        }
+    }
+
+    private fun persistProgress(info: TransferInfo, force: Boolean = false) {
+        if (!force) {
+            val now = System.currentTimeMillis()
+            val last = lastPersistTime[info.remoteUniqueId] ?: 0L
+            if (now - last < persistThrottleMs) return
+            lastPersistTime[info.remoteUniqueId] = now
+        }
+        scope.launch {
+            try {
+                transferDao.updateProgressFull(info.remoteUniqueId, info.progress, info.status, info.downloadedSize)
+            } catch (e: Exception) {}
+        }
+    }
+
+    // P1-7: startup-এ DB থেকে transfer ফিরিয়ে আনা। মাঝপথে থেমে যাওয়া
+    // (Queued/Downloading/Uploading) row Failed হিসেবে দেখানো হয় —
+    // auto-resume করা হয় না, কারণ TDLib ডাউনলোড/আপলোড আবার শুরু
+    // করতে মূল ফাইল/চ্যাট প্রসঙ্গ লাগে; resume আলাদা কাজে আসবে।
+    // Paused row যেমন ছিল তেমনই থাকে।
+    private suspend fun restorePersistedTransfers() {
+        val rows = try {
+            transferDao.getAllTransfersFlow().first()
+        } catch (e: Exception) {
+            return
+        }
+        for (row in rows) {
+            val wasActive = row.status == Status.QUEUED ||
+                row.status == Status.DOWNLOADING || row.status == Status.UPLOADING
+            val restored = row.toTransferInfo().let {
+                if (wasActive) it.copy(status = Status.FAILED) else it
+            }
+            val key = restored.remoteUniqueId
+            activeMap[key] = restored
+            completionDeferreds.putIfAbsent(key, CompletableDeferred())
+            if (restored.fileId != 0) fileIdToKey[restored.fileId] = key
+            if (!restored.localPath.isNullOrEmpty()) pathToKey[restored.localPath] = key
+            if (wasActive) persistProgress(restored, force = true)
+        }
+        if (rows.isNotEmpty()) publishState()
+    }
+
     init {
         scope.launch {
             try { transferDao.clearCompleted() } catch (e: Exception) {}
+
+            restorePersistedTransfers()
 
             telegramClient.fileUpdates.collect { update ->
                 val file = update.file
@@ -129,6 +212,7 @@ class TransferRepository @Inject constructor(
                     )
                     activeMap[key] = updatedInfo
                     publishState()
+                    persistProgress(updatedInfo)
                 }
             }
         }
@@ -140,6 +224,8 @@ class TransferRepository @Inject constructor(
         if (fileId != 0) fileIdToKey.remove(fileId)
         info?.localPath?.let { pathToKey.remove(it) }
         lastEmitTime.remove(key)
+        lastPersistTime.remove(key)
+        if (uniqueId.isNotEmpty()) lastPersistTime.remove(uniqueId)
 
         completionDeferreds.remove(key)?.complete(success)
         if (uniqueId.isNotEmpty()) completionDeferreds.remove(uniqueId)?.complete(success)
@@ -188,6 +274,7 @@ class TransferRepository @Inject constructor(
         if (fileId != 0) fileIdToKey[fileId] = key
         if (!localPath.isNullOrEmpty()) pathToKey[localPath] = key
         publishState()
+        persistInsert(info)
 
         val semaphore = if (isDownload) downloadSemaphore else uploadSemaphore
         scope.launch {
@@ -197,11 +284,13 @@ class TransferRepository @Inject constructor(
                 }
                 val currentKey = idMigrationMap[key] ?: key
                 activeMap[currentKey]?.let { current ->
-                    activeMap[currentKey] = current.copy(
+                    val started = current.copy(
                         status = if (isDownload) Status.DOWNLOADING else Status.UPLOADING,
                         progress = 0.01f
                     )
+                    activeMap[currentKey] = started
                     publishState()
+                    persistProgress(started, force = true)
                 }
                 try {
                     block()
@@ -233,6 +322,13 @@ class TransferRepository @Inject constructor(
         }
         activeMap[targetKey] = updated
         publishState()
+        scope.launch {
+            try {
+                if (oldId != targetKey) transferDao.updateUniqueId(oldId, targetKey)
+                if (newFileId != 0) transferDao.updateFileId(targetKey, newFileId)
+                if (!localPath.isNullOrEmpty()) transferDao.updateLocalPath(targetKey, localPath)
+            } catch (e: Exception) {}
+        }
     }
 
     fun addTransfer(
@@ -263,6 +359,7 @@ class TransferRepository @Inject constructor(
         if (fileId != 0) fileIdToKey[fileId] = key
         if (!localPath.isNullOrEmpty()) pathToKey[localPath] = key
         publishState()
+        persistInsert(info)
     }
 
     fun updateTransferManual(remoteUniqueId: String, progress: Float, status: String, throttled: Boolean = false) {
@@ -283,8 +380,10 @@ class TransferRepository @Inject constructor(
         }
 
         val current = activeMap[targetId] ?: activeMap[remoteUniqueId] ?: return
-        activeMap[targetId] = current.copy(progress = progress, status = status)
+        val updated = current.copy(progress = progress, status = status)
+        activeMap[targetId] = updated
         publishState()
+        persistProgress(updated)
     }
 
     fun pauseTransfer(uniqueId: String) {
@@ -300,6 +399,7 @@ class TransferRepository @Inject constructor(
         }
         activeMap[targetId] = info.copy(status = Status.PAUSED)
         publishState()
+        persistProgress(info.copy(status = Status.PAUSED), force = true)
     }
 
     fun resumeTransfer(uniqueId: String) {
@@ -314,6 +414,7 @@ class TransferRepository @Inject constructor(
             activeMap[targetId] = info.copy(status = Status.UPLOADING)
             publishState()
         }
+        activeMap[targetId]?.let { persistProgress(it, force = true) }
     }
 
     fun removeTransfer(remoteUniqueId: String) {
