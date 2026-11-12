@@ -64,6 +64,9 @@ import com.awd.teledrive.ui.screens.settings.BackupSettingsScreen
 import com.awd.teledrive.ui.screens.settings.CacheDetailsScreen
 import com.awd.teledrive.ui.screens.settings.CloudAnalysisScreen
 import com.awd.teledrive.ui.screens.settings.SettingsScreen
+import com.awd.teledrive.ui.screens.insights.BackupHealthScreen
+import com.awd.teledrive.ui.screens.insights.DuplicateFinderScreen
+import com.awd.teledrive.ui.screens.insights.StorageAnalyzerScreen
 import com.awd.teledrive.ui.screens.starred.StarredScreen
 import com.awd.teledrive.ui.screens.transfers.TransfersScreen
 import java.io.File
@@ -81,6 +84,9 @@ sealed class Screen(val route: String, val icon: ImageVector? = null, val labelR
     object About : Screen("about")
     object CacheDetails : Screen("cache_details")
     object CloudAnalysis : Screen("cloud_analysis")
+    object StorageAnalyzer : Screen("storage_analyzer")
+    object DuplicateFinder : Screen("duplicate_finder")
+    object BackupHealth : Screen("backup_health")
     object Logs : Screen("logs")
     object BackupSettings : Screen("backup_settings")
     object SecureStorage : Screen("secure_storage")
@@ -285,6 +291,9 @@ fun NavGraph(navController: NavHostController) {
                     onNavigateToLogs = { navController.navigate(Screen.Logs.route) },
                     onNavigateToCacheDetails = { navController.navigate(Screen.CacheDetails.route) },
                     onNavigateToCloudAnalysis = { navController.navigate(Screen.CloudAnalysis.route) },
+                    onNavigateToStorageAnalyzer = { navController.navigate(Screen.StorageAnalyzer.route) },
+                    onNavigateToDuplicateFinder = { navController.navigate(Screen.DuplicateFinder.route) },
+                    onNavigateToBackupHealth = { navController.navigate(Screen.BackupHealth.route) },
                     onNavigateToAbout = { navController.navigate(Screen.About.route) }
                 )
             }
@@ -295,7 +304,23 @@ fun NavGraph(navController: NavHostController) {
                 CacheDetailsScreen(onBack = { navController.popBackStack() })
             }
             composable(Screen.CloudAnalysis.route) {
-                CloudAnalysisScreen(onBack = { navController.popBackStack() })
+                CloudAnalysisScreen(
+                    onBack = { navController.popBackStack() },
+                    onNavigateToStorageAnalyzer = { navController.navigate(Screen.StorageAnalyzer.route) }
+                )
+            }
+            composable(Screen.StorageAnalyzer.route) {
+                StorageAnalyzerScreen(
+                    onBack = { navController.popBackStack() },
+                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, true) },
+                    onNavigateToDuplicateFinder = { navController.navigate(Screen.DuplicateFinder.route) }
+                )
+            }
+            composable(Screen.DuplicateFinder.route) {
+                DuplicateFinderScreen(onBack = { navController.popBackStack() })
+            }
+            composable(Screen.BackupHealth.route) {
+                BackupHealthScreen(onBack = { navController.popBackStack() })
             }
             composable(Screen.BackupSettings.route) {
                 BackupSettingsScreen(onBack = { navController.popBackStack() })
