@@ -153,6 +153,7 @@ class SettingsViewModel @Inject constructor(
             driveRepository.clearDatabaseLocalPaths()
             _showCacheWarning.value = false
             driveRepository.fetchFiles()
+            driveRepository.refreshInternalCacheSize()
         }
     }
 
@@ -179,6 +180,7 @@ class SettingsViewModel @Inject constructor(
 
             _cacheStatistics.value = stats
             driveRepository.fetchFiles()
+            driveRepository.refreshInternalCacheSize()
         }
     }
 
@@ -187,6 +189,7 @@ class SettingsViewModel @Inject constructor(
             driveRepository.clearDatabaseLocalPaths(onlyFiles = true)
             _cacheStatistics.value = stats
             driveRepository.fetchFiles()
+            driveRepository.refreshInternalCacheSize()
         }
     }
 

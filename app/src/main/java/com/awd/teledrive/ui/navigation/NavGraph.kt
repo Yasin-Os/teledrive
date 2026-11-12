@@ -50,6 +50,7 @@ import com.awd.teledrive.R
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.auth.LoginScreen
 import com.awd.teledrive.ui.screens.home.HomeScreen
+import com.awd.teledrive.ui.screens.home.HomeViewModel
 import com.awd.teledrive.ui.screens.logs.LogsScreen
 import com.awd.teledrive.ui.screens.media.MediaScreen
 import com.awd.teledrive.ui.screens.preview.PdfViewerScreen
@@ -258,9 +259,15 @@ fun NavGraph(navController: NavHostController) {
                 )
             }
             composable(Screen.Starred.route) {
+                val homeEntry = remember(navController) { navController.getBackStackEntry(Screen.Home.route) }
+                val homeViewModel: HomeViewModel = hiltViewModel(homeEntry)
                 StarredScreen(
                     onBack = { navController.popBackStack() },
-                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, false) }
+                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, false) },
+                    onNavigateToFolder = { chatId, virtualId, name ->
+                        homeViewModel.navigateToFolder(chatId, virtualId, name)
+                        navController.popBackStack()
+                    }
                 )
             }
             composable(Screen.Media.route) {

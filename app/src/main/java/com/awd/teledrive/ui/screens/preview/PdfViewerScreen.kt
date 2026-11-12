@@ -55,6 +55,49 @@ import com.awd.teledrive.ui.theme.TeledriveTheme
 import kotlinx.coroutines.withContext
 import java.io.File
 
+// How many rendered pages the LRU cache keeps (visible pages + lookahead).
+private const val PDF_PAGE_CACHE_SIZE = 4
+
+/**
+ * Small LRU cache of rendered PDF pages. Bitmaps are recycled when evicted
+ * and when the viewer is closed. Pages currently composed on screen are
+ * never recycled while they are displayed (see [markInUse]).
+ */
+private class PdfPageCache(private val maxSize: Int = PDF_PAGE_CACHE_SIZE) {
+    private val cache = LinkedHashMap<Int, Bitmap>(maxSize, 0.75f, true)
+    private val inUse = mutableSetOf<Int>()
+
+    @Synchronized
+    fun get(index: Int): Bitmap? = cache[index]?.takeUnless { it.isRecycled }
+
+    @Synchronized
+    fun put(index: Int, bitmap: Bitmap) {
+        cache[index] = bitmap
+        while (cache.size > maxSize) {
+            val eldest = cache.entries.firstOrNull { it.key !in inUse } ?: break
+            cache.remove(eldest.key)
+            if (!eldest.value.isRecycled) eldest.value.recycle()
+        }
+    }
+
+    @Synchronized
+    fun markInUse(index: Int) {
+        inUse.add(index)
+    }
+
+    @Synchronized
+    fun markUnused(index: Int) {
+        inUse.remove(index)
+    }
+
+    @Synchronized
+    fun clear() {
+        cache.values.forEach { if (!it.isRecycled) it.recycle() }
+        cache.clear()
+        inUse.clear()
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PdfViewerScreen(
@@ -63,17 +106,24 @@ fun PdfViewerScreen(
 ) {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
-    
+
     var pageCount by remember { mutableStateOf(0) }
     var pdfRenderer by remember { mutableStateOf<PdfRenderer?>(null) }
+    var pdfPfd by remember { mutableStateOf<ParcelFileDescriptor?>(null) }
 
     LaunchedEffect(filePath) {
         if (!isPreview) {
             val file = File(filePath)
             if (file.exists()) {
                 try {
+                    // Close any previous document first (e.g. the file changed).
+                    pdfRenderer?.close()
+                    pdfPfd?.close()
+                    pdfRenderer = null
+                    pdfPfd = null
                     val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
                     val renderer = PdfRenderer(pfd)
+                    pdfPfd = pfd
                     pdfRenderer = renderer
                     pageCount = renderer.pageCount
                 } catch (e: Exception) {
@@ -83,10 +133,13 @@ fun PdfViewerScreen(
         }
     }
 
-    // Ensure resources are closed when leaving
+    // Ensure resources are closed when leaving. PdfRenderer.close() does NOT
+    // close the ParcelFileDescriptor it was created from, so close both —
+    // the descriptor leaked before.
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
-            pdfRenderer?.close()
+            try { pdfRenderer?.close() } catch (e: Exception) { }
+            try { pdfPfd?.close() } catch (e: Exception) { }
         }
     }
 
@@ -111,7 +164,14 @@ fun PdfViewerContent(
     val context = LocalContext.current
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
-    
+
+    // LRU cache of rendered pages (a few pages around the visible one); its
+    // bitmaps are recycled on eviction and when this viewer is closed.
+    val pageCache = remember(filePath) { PdfPageCache() }
+    androidx.compose.runtime.DisposableEffect(filePath) {
+        onDispose { pageCache.clear() }
+    }
+
     val fileName = filePath.substringAfterLast('/')
 
     Scaffold(
@@ -181,7 +241,7 @@ fun PdfViewerContent(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     items(pageCount, key = { it }, contentType = { "pdf_page" }) { index ->
-                        PdfPageItem(pdfRenderer, index)
+                        PdfPageItem(pdfRenderer, index, pageCache)
                     }
                 }
             }
@@ -190,42 +250,47 @@ fun PdfViewerContent(
 }
 
 @Composable
-fun PdfPageItem(renderer: PdfRenderer?, index: Int) {
-    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+fun PdfPageItem(renderer: PdfRenderer?, index: Int, pageCache: PdfPageCache) {
+    var bitmap by remember(renderer, index) { mutableStateOf<Bitmap?>(null) }
     val context = LocalContext.current
 
-    LaunchedEffect(index) {
+    // This page is composed (visible or in the lazy layout's window): the
+    // cache must not recycle its bitmap while it is on screen.
+    androidx.compose.runtime.DisposableEffect(index) {
+        pageCache.markInUse(index)
+        onDispose { pageCache.markUnused(index) }
+    }
+
+    LaunchedEffect(renderer, index) {
         if (renderer != null) {
+            pageCache.get(index)?.let {
+                bitmap = it
+                return@LaunchedEffect
+            }
             withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     synchronized(renderer) {
                         val page = renderer.openPage(index)
-                        
+
                         // Optimized memory: Limit resolution to device screen width
                         val displayMetrics = context.resources.displayMetrics
                         val screenWidth = displayMetrics.widthPixels
                         val scaleFactor = screenWidth.toFloat() / page.width.toFloat()
-                        
+
                         val width = (page.width * scaleFactor).toInt().coerceAtMost(2000)
                         val height = (page.height * scaleFactor).toInt().coerceAtMost(3000)
-                        
+
                         val newBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                         newBitmap.eraseColor(android.graphics.Color.WHITE)
                         page.render(newBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        bitmap = newBitmap
                         page.close()
+                        pageCache.put(index, newBitmap)
+                        bitmap = newBitmap
                     }
                 } catch (e: Exception) {
                     Log.e("PdfViewer", "Error rendering page $index", e)
                 }
             }
-        }
-    }
-
-    // Recycle bitmap when out of composition to save memory
-    androidx.compose.runtime.DisposableEffect(index) {
-        onDispose {
-            // Optional: Keep in memory or recycle. For now let GC handle it as we reuse 'bitmap' state
         }
     }
 
@@ -235,9 +300,10 @@ fun PdfPageItem(renderer: PdfRenderer?, index: Int) {
         colors = CardDefaults.cardColors(containerColor = Color.White),
         modifier = Modifier.fillMaxWidth()
     ) {
-        if (bitmap != null) {
+        val shownBitmap = bitmap
+        if (shownBitmap != null && !shownBitmap.isRecycled) {
             Image(
-                bitmap = bitmap!!.asImageBitmap(),
+                bitmap = shownBitmap.asImageBitmap(),
                 contentDescription = "Page ${index + 1}",
                 modifier = Modifier.fillMaxWidth(),
                 contentScale = ContentScale.FillWidth

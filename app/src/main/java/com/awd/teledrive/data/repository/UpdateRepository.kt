@@ -416,9 +416,18 @@ class UpdateRepository @Inject constructor(
         notes: String = "Update $tag"
     ): GitHubRelease {
         val ver = tag.removePrefix("v").trim()
-        // Current releases ship the signed release APK; the debug names are
-        // kept only as fallbacks for older releases that shipped debug builds.
-        val candidateNames = listOf(
+        // Releases now ship one APK per ABI (ABI splits, see
+        // app/build.gradle.kts), so there is no universal APK any more: try
+        // this device's ABI first, then the other ABI, using both the
+        // renamed MyCloud file names and the Gradle default split names.
+        // The universal names are kept only as fallbacks for releases
+        // published before splits.
+        val preferredAbi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val splitAbis = (listOf(preferredAbi, "arm64-v8a", "armeabi-v7a"))
+            .filter { it.isNotEmpty() }.distinct()
+        val candidateNames = splitAbis.flatMap { abi ->
+            listOf("MyCloud-v$ver-$abi-release.apk", "app-$abi-release.apk")
+        } + listOf(
             "MyCloud-v$ver-universal-release.apk",
             "MyCloud-v$ver-universal-debug.apk",
             "awd-teledrive-v$ver-universal-debug.apk",
@@ -670,6 +679,10 @@ class UpdateRepository @Inject constructor(
                 Log.e("UpdateRepository", "Error downloading APK", e)
                 cancelNotification()
                 _updateState.value = UpdateState.Error(e.message ?: "Download failed")
+            } finally {
+                // Download over (success, failure or cancellation): let the
+                // keep-alive service stop itself again (P1-16).
+                stopKeepAliveService()
             }
         }
     }
@@ -677,6 +690,7 @@ class UpdateRepository @Inject constructor(
     fun cancelUpdateDownload() {
         activeDownloadJob?.cancel()
         activeDownloadJob = null
+        stopKeepAliveService()
         cancelNotification()
         _isDownloadMinimized.value = false
         val rel = _availableRelease.value
@@ -712,6 +726,18 @@ class UpdateRepository @Inject constructor(
             }
         }
 
+        // With ABI splits there is no universal APK: the release ships one
+        // APK per ABI, so the hardcoded fallbacks must include the split
+        // names or they would all 404 (P1-20). This device's ABI first,
+        // then the other ABI, in both the renamed MyCloud names and the
+        // Gradle default split names; the universal names stay as fallbacks
+        // for releases published before splits.
+        val splitAbis = (listOf(preferredAbi, "arm64-v8a", "armeabi-v7a"))
+            .filter { it.isNotEmpty() }.distinct()
+        for (abi in splitAbis) {
+            list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-$abi-release.apk")
+            list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-$abi-release.apk")
+        }
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-release.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-debug.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/awd-teledrive-v$ver-universal-debug.apk")
@@ -813,12 +839,29 @@ class UpdateRepository @Inject constructor(
 
     private fun startKeepAliveService() {
         try {
-            val intent = Intent(context, TransferService::class.java)
+            // Tell TransferService this start is for an update download:
+            // without the flag it sees no TransferRepository transfers and
+            // stops itself ~4s later, mid-download (P1-16).
+            val intent = Intent(context, TransferService::class.java).apply {
+                putExtra(TransferService.EXTRA_KEEP_ALIVE_FOR_UPDATE, true)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
             }
+        } catch (e: Exception) {}
+    }
+
+    private fun stopKeepAliveService() {
+        try {
+            // Plain startService: the service is already running in the
+            // foreground, so this only delivers the intent to onStartCommand
+            // (no new foreground service is started from the background).
+            val intent = Intent(context, TransferService::class.java).apply {
+                action = TransferService.ACTION_UPDATE_DOWNLOAD_FINISHED
+            }
+            context.startService(intent)
         } catch (e: Exception) {}
     }
 

@@ -80,6 +80,8 @@ class DriveRepository @Inject constructor(
         private const val PREF_STORAGE_CHAT_ID = "dedicated_storage_chat_id"
         private const val PREF_CHANNEL_PHOTO_SET = "dedicated_channel_photo_set_"
         private const val PREF_HELPER_BOT_USERNAME = "helper_bot_username"
+        // P1-17: how often the on-disk cache size may be recomputed.
+        private const val CACHE_SIZE_REFRESH_INTERVAL_MS = 15 * 60 * 1000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -1859,14 +1861,186 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    fun moveItems(fromChatId: Long, toChatId: Long, messageIds: List<Long>) { }
-    fun moveFolderContentsAndDelete(fromFolderChatId: Long, toChatId: Long) { }
+    // P1-5: Move was an empty stub, so Preview/Media "move" did nothing.
+    // TDLib has no "move message" call, so a move between chats is a
+    // forward + delete: the message is copied to the target chat
+    // (sendCopy, so it lands without a "Forwarded from" header and with
+    // its caption kept) and the source is deleted only after Telegram
+    // confirms the copy. Local rows and manifest mappings are re-pointed
+    // at the new message ids, and downloaded/starred/encrypted state is
+    // carried over (matched by remote unique id — a forwarded copy is
+    // the same file). If the source delete fails, the file simply exists
+    // in both chats and the move can be retried; nothing is lost.
+    fun moveItems(fromChatId: Long, toChatId: Long, messageIds: List<Long>) {
+        if (messageIds.isEmpty() || fromChatId == 0L || toChatId == 0L || fromChatId == toChatId) return
+        scope.launch {
+            val entities = driveDao.getItemsByIds(messageIds, fromChatId).filter { !it.isFolder }
+            if (entities.isEmpty()) {
+                Log.w("DriveRepo", "Move: no local items found for ${messageIds.size} id(s) in chat $fromChatId")
+                return@launch
+            }
+            moveMessagesInternal(fromChatId, toChatId, entities)
+        }
+    }
 
-    fun getInternalCacheSize(): Flow<Long> = kotlinx.coroutines.flow.flow {
-        emit(calculateTotalStorage())
-        while (true) {
-            delay(10000)
-            emit(calculateTotalStorage())
+    // P1-5: Move every file stored in one folder chat into another chat.
+    // The source chat itself is left in place (now empty) — leaving or
+    // deleting a Telegram chat has no established pattern in this codebase
+    // and is a destructive step the user should take in Telegram if wanted.
+    fun moveFolderContentsAndDelete(fromFolderChatId: Long, toChatId: Long) {
+        if (fromFolderChatId == 0L || toChatId == 0L || fromFolderChatId == toChatId) return
+        scope.launch {
+            val entities = driveDao.getItemsSync(fromFolderChatId).filter { !it.isFolder && !it.isVirtual }
+            if (entities.isEmpty()) return@launch
+            moveMessagesInternal(fromFolderChatId, toChatId, entities)
+        }
+    }
+
+    // P1-5: Move files between virtual folders without touching Telegram:
+    // only the manifest mapping and the local virtualParentId change, then
+    // the manifest is saved. The caption [VF:] tag is left alone — the
+    // manifest mapping wins over the tag when the file is next mapped
+    // (see getAndEnsureVirtualFolder).
+    fun moveItemsToVirtualFolder(messageIds: List<Long>, chatId: Long, virtualFolderId: String) {
+        if (messageIds.isEmpty() || chatId == 0L) return
+        scope.launch {
+            val entities = driveDao.getItemsByIds(messageIds, chatId).filter { !it.isFolder }
+            if (entities.isEmpty()) return@launch
+            synchronized(manifestLock) {
+                val updatedMappings = currentManifest.fileMappings.toMutableMap()
+                entities.forEach { updatedMappings[it.id.toString()] = virtualFolderId }
+                currentManifest = compactManifest(currentManifest.copy(
+                    fileMappings = updatedMappings,
+                    updatedAt = System.currentTimeMillis() / 1000
+                ))
+            }
+            entities.forEach { driveDao.updateVirtualParent(it.id, virtualFolderId) }
+            saveCloudManifestDebounced()
+        }
+    }
+
+    // P1-5: forward-then-delete move shared by moveItems and
+    // moveFolderContentsAndDelete. Returns true only when every movable
+    // message now lives solely in the target chat.
+    private suspend fun moveMessagesInternal(fromChatId: Long, toChatId: Long, entities: List<DriveItemEntity>): Boolean {
+        // Split files are stored as several part messages plus a master
+        // metadata message listing their ids; forwarding the parts would
+        // orphan that master record, so split files are skipped.
+        val (movable, split) = entities.partition { it.splitGroupId == null }
+        if (split.isNotEmpty()) {
+            Log.w("DriveRepo", "Move: skipping ${split.size} split-file part(s); split files cannot be moved yet")
+        }
+        if (movable.isEmpty()) return false
+        val ids = movable.map { it.id }.toLongArray()
+
+        val options = TdApi.MessageSendOptions().apply {
+            disableNotification = false
+            fromBackground = false
+        }
+        val forwardResult = CompletableDeferred<TdApi.Object?>()
+        telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromChatId, ids, options, true, false)) { result ->
+            forwardResult.complete(result)
+        }
+        val forwarded = withTimeoutOrNull(60_000L) { forwardResult.await() } as? TdApi.Messages
+        if (forwarded == null) {
+            Log.w("DriveRepo", "Move: forward to chat $toChatId failed or timed out; sources left untouched")
+            return false
+        }
+
+        val oldByUniqueId = movable.filter { !it.remoteUniqueId.isNullOrEmpty() }.associateBy { it.remoteUniqueId!! }
+        val pairs = forwarded.messages.mapNotNull { message -> mapMessageToEntity(toChatId, message) }
+            .mapIndexedNotNull { index, newEntity ->
+                val old = newEntity.remoteUniqueId?.let { oldByUniqueId[it] } ?: movable.getOrNull(index)
+                if (old == null) null else old to newEntity.copy(
+                    isStarred = old.isStarred,
+                    localPath = verifyOfflinePath(old.localPath) ?: newEntity.localPath,
+                    thumbnailPath = verifyOfflinePath(old.thumbnailPath) ?: newEntity.thumbnailPath,
+                    virtualParentId = old.virtualParentId,
+                    isSecure = old.isSecure,
+                    isEncrypted = old.isEncrypted
+                )
+            }
+        if (pairs.isEmpty()) {
+            Log.w("DriveRepo", "Move: forwarded ${forwarded.messages.size} message(s) but none could be mapped locally; sources left untouched")
+            return false
+        }
+        driveDao.insertItems(pairs.map { it.second })
+
+        // Re-point manifest mappings and file-metadata links at the new
+        // ids. The old mappings stay until the source delete succeeds, so
+        // a failed delete never orphans the source copy's folder.
+        synchronized(manifestLock) {
+            val updatedMappings = currentManifest.fileMappings.toMutableMap()
+            val updatedFileMeta = currentManifest.fileMetadataIds.toMutableMap()
+            pairs.forEach { (old, newEntity) ->
+                val vfId = updatedMappings[old.id.toString()] ?: old.virtualParentId
+                if (vfId != null && vfId != "0") updatedMappings[newEntity.id.toString()] = vfId
+                updatedFileMeta[old.id.toString()]?.let { metaId -> updatedFileMeta[newEntity.id.toString()] = metaId }
+            }
+            currentManifest = compactManifest(currentManifest.copy(
+                fileMappings = updatedMappings,
+                fileMetadataIds = updatedFileMeta,
+                updatedAt = System.currentTimeMillis() / 1000
+            ))
+        }
+        saveCloudManifestDebounced()
+
+        val deleteResult = CompletableDeferred<Boolean>()
+        telegramClient.send(TdApi.DeleteMessages(fromChatId, pairs.map { it.first.id }.toLongArray(), true)) { result ->
+            deleteResult.complete(result is TdApi.Ok)
+        }
+        val deleted = withTimeoutOrNull(30_000L) { deleteResult.await() } ?: false
+        if (!deleted) {
+            Log.w("DriveRepo", "Move: forwarded ${pairs.size} message(s) to chat $toChatId but deleting the sources failed; the files now exist in both chats")
+            return false
+        }
+        pairs.forEach { (old, _) -> driveDao.deleteItemCompletely(old.id, fromChatId) }
+        synchronized(manifestLock) {
+            val updatedMappings = currentManifest.fileMappings.toMutableMap()
+            val updatedFileMeta = currentManifest.fileMetadataIds.toMutableMap()
+            pairs.forEach { (old, _) ->
+                updatedMappings.remove(old.id.toString())
+                updatedFileMeta.remove(old.id.toString())
+            }
+            currentManifest = compactManifest(currentManifest.copy(
+                fileMappings = updatedMappings,
+                fileMetadataIds = updatedFileMeta,
+                updatedAt = System.currentTimeMillis() / 1000
+            ))
+        }
+        saveCloudManifestDebounced()
+        return true
+    }
+
+    // P1-17: the old flow re-walked cacheDir/filesDir/externalCacheDir
+    // every 10 seconds for as long as Settings was open. The size is now
+    // computed on demand on the IO scope, cached, and refreshed at most
+    // every 15 minutes; call refreshInternalCacheSize() after clearing the
+    // cache to update the displayed value immediately.
+    private val internalCacheSize = MutableStateFlow(0L)
+    @Volatile
+    private var lastInternalCacheSizeComputedAtMs = 0L
+    private var internalCacheSizeJob: Job? = null
+    private val internalCacheSizeLock = Any()
+
+    fun getInternalCacheSize(): Flow<Long> {
+        maybeRefreshInternalCacheSize()
+        return internalCacheSize.asStateFlow()
+    }
+
+    fun refreshInternalCacheSize() {
+        synchronized(internalCacheSizeLock) {
+            if (internalCacheSizeJob?.isActive == true) return
+            internalCacheSizeJob = scope.launch {
+                lastInternalCacheSizeComputedAtMs = System.currentTimeMillis()
+                internalCacheSize.value = calculateTotalStorage()
+            }
+        }
+    }
+
+    private fun maybeRefreshInternalCacheSize() {
+        if (System.currentTimeMillis() - lastInternalCacheSizeComputedAtMs > CACHE_SIZE_REFRESH_INTERVAL_MS) {
+            refreshInternalCacheSize()
         }
     }
 

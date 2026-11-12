@@ -13,12 +13,14 @@ import com.awd.teledrive.data.secure.SecureSettings
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
@@ -63,6 +65,13 @@ class HomeViewModel @Inject constructor(
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
+
+    // P1-6: debounce the query so each keystroke does not re-filter and
+    // re-sort the whole file list; the combine below reads this flow.
+    @OptIn(FlowPreview::class)
+    private val searchQueryDebounced = _searchQuery
+        .debounce(300)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     private val _sortOrder = MutableStateFlow(SortOrder.DATE)
     val sortOrder = _sortOrder.asStateFlow()
@@ -155,13 +164,26 @@ class HomeViewModel @Inject constructor(
         return file.mimeType.contains("android.package-archive") || ext.endsWith(".apk") || ext.endsWith(".apks") || ext.endsWith(".xapk")
     }
 
+    // P1-6: Archives has no "archived" flag anywhere in the app (no such
+    // field on DriveItem/DriveItemEntity and no Archives entry point in
+    // the Home UI), so an archive is a file in an archive format, matched
+    // by extension and by MIME type for files without an extension.
+    private fun isArchiveFile(file: DriveItem.File): Boolean {
+        val name = file.name.lowercase()
+        if (name.endsWith(".zip") || name.endsWith(".rar") || name.endsWith(".7z") ||
+            name.endsWith(".tar") || name.endsWith(".gz")) return true
+        val mime = file.mimeType.lowercase()
+        return mime.contains("zip") || mime.contains("rar") || mime.contains("7z") ||
+            mime.contains("x-tar") || mime.contains("gzip")
+    }
+
     // ইন-মেমোরি ০ মিলিসেকেন্ড ফিল্টারিং ইঞ্জিন (ব্যাকে আসলে বা ক্যাটাগরিতে ঢুকলে কখনোই আটকে যাবে না)
     val items: StateFlow<List<DriveItem>> = combine(
         listOf(
             allCloudFiles,
             virtualFolders,
             _currentVirtualFolderId,
-            _searchQuery,
+            searchQueryDebounced,
             _sortOrder,
             _filterType,
             _customCategory,
@@ -208,7 +230,8 @@ class HomeViewModel @Inject constructor(
 
         val filteredFiles = when {
             customCat == CustomCategory.APPS -> baseFiles.filter { isAppFile(it) }
-            customCat == CustomCategory.DOWNLOADS || customCat == CustomCategory.ARCHIVES -> baseFiles.filter { !it.localPath.isNullOrEmpty() }
+            customCat == CustomCategory.DOWNLOADS -> baseFiles.filter { !it.localPath.isNullOrEmpty() }
+            customCat == CustomCategory.ARCHIVES -> baseFiles.filter { isArchiveFile(it) }
             filter == FilterType.PHOTOS -> baseFiles.filter { it.mimeType.startsWith("image/") }
             filter == FilterType.VIDEOS -> baseFiles.filter { it.mimeType.startsWith("video/") }
             filter == FilterType.AUDIO -> baseFiles.filter { it.mimeType.startsWith("audio/") }
@@ -228,7 +251,12 @@ class HomeViewModel @Inject constructor(
 
         val sortedFiles = when (order) {
             SortOrder.NAME -> filteredFiles.sortedBy { it.name.lowercase() }
-            SortOrder.DATE -> filteredFiles
+            // P1-6: DATE was a no-op (returned files unsorted). DriveItem.File
+            // carries no date field — the Room createdAt is dropped when
+            // mapping to DriveItem — but Telegram message ids grow
+            // monotonically with send time within a chat, so newest-first
+            // by id is newest-first by date.
+            SortOrder.DATE -> filteredFiles.sortedByDescending { it.id }
             SortOrder.SIZE -> filteredFiles.sortedByDescending { it.size }
         }
 
@@ -343,9 +371,49 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun moveItems(ids: Set<Long>, targetChatId: Long) { }
+    // P1-5: was an empty stub, so moving from Home did nothing. Resolves
+    // each selected id to its source chat and moves it to the target chat
+    // (0 = Saved Messages, same convention as Preview/Media); the
+    // repository forwards the message and deletes the source only after
+    // Telegram confirms the copy.
+    fun moveItems(ids: Set<Long>, targetChatId: Long) {
+        if (ids.isEmpty()) return
+        val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
+        if (destination == 0L) return
+        val filesByChat = allCloudFiles.value.filter { it.id in ids }.groupBy { it.parentChatId }
+        if (filesByChat.isEmpty()) return
+        viewModelScope.launch {
+            filesByChat.forEach { (fromChatId, files) ->
+                if (fromChatId != destination) {
+                    driveRepository.moveItems(fromChatId, destination, files.map { it.id })
+                }
+            }
+        }
+    }
 
-    fun moveFolderContentsAndDelete(folderChatId: Long, targetChatId: Long) { }
+    // P1-5: was an empty stub. Moves every file in the folder chat to the
+    // target chat; the (now empty) source chat is left in place — see
+    // DriveRepository.moveFolderContentsAndDelete.
+    fun moveFolderContentsAndDelete(folderChatId: Long, targetChatId: Long) {
+        val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
+        if (folderChatId == 0L || destination == 0L || folderChatId == destination) return
+        viewModelScope.launch {
+            driveRepository.moveFolderContentsAndDelete(folderChatId, destination)
+        }
+    }
+
+    // P1-5: move files between virtual folders (manifest mapping + local
+    // row only, no Telegram traffic).
+    fun moveItemsToVirtualFolder(ids: Set<Long>, virtualFolderId: String) {
+        if (ids.isEmpty()) return
+        val filesByChat = allCloudFiles.value.filter { it.id in ids }.groupBy { it.parentChatId }
+        if (filesByChat.isEmpty()) return
+        viewModelScope.launch {
+            filesByChat.forEach { (chatId, files) ->
+                driveRepository.moveItemsToVirtualFolder(files.map { it.id }, chatId, virtualFolderId)
+            }
+        }
+    }
 
     fun toggleStarred(item: DriveItem) {
         viewModelScope.launch {

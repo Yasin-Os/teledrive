@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -18,11 +19,14 @@ import android.graphics.Paint
 import android.graphics.Shader
 import android.media.AudioManager
 import android.media.MediaMetadata
+import android.media.MediaMetadataRetriever
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.annotation.OptIn as AndroidOptIn
@@ -85,7 +89,6 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.CircularProgressIndicator
@@ -106,6 +109,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -151,17 +155,23 @@ import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.drinkless.tdlib.TdApi
 import java.io.File
+import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import kotlin.math.PI
 import kotlin.math.abs
@@ -595,7 +605,7 @@ class ZeroLagTdlibDataSource(
     private val viewModel: VideoPlayerViewModel,
     private val chatId: Long,
     private val messageId: Long,
-    private var fileId: Int,
+    @Volatile private var fileId: Int,
     private val expectedSize: Long
 ) : BaseDataSource(true) {
 
@@ -605,11 +615,47 @@ class ZeroLagTdlibDataSource(
     private var bytesRemaining: Long = 0L
     private var opened = false
 
-    private fun queryTdFileOnce(): TdApi.File? = runBlocking {
+    // Monitor the loader thread parks on while it waits for more downloaded
+    // bytes. It is woken by the fileUpdates collector below (or by the short
+    // timeout, as a safety net if a notification arrived before the collector
+    // was subscribed).
+    private val fileUpdateLock = Object()
+    private var fileUpdatesJob: Job? = null
+
+    init {
+        // Suspended wait on the existing fileUpdates flow: whenever TDLib
+        // reports progress for our file, wake the loader thread so read()
+        // can re-check the cache instead of polling with sleep + re-query.
+        // The collector lives until close() cancels it.
+        fileUpdatesJob = viewModel.viewModelScope.launch {
+            viewModel.telegramClient.fileUpdates.collect { update ->
+                if (update.file.id == fileId) {
+                    synchronized(fileUpdateLock) { fileUpdateLock.notifyAll() }
+                }
+            }
+        }
+    }
+
+    // Blocking TDLib query with a bounded wait. ExoPlayer's loader thread has
+    // no coroutine scope, which is why runBlocking was used here before; a
+    // CountDownLatch with a timeout waits the same way without blocking a
+    // coroutine dispatcher thread and without waiting forever if TDLib never
+    // answers. The result is also cached in viewModel.cachedTdFile.
+    private fun queryTdFileBlocking(timeoutMs: Long = 5000): TdApi.File? {
         if (fileId == 0 && chatId != 0L && messageId != 0L) {
-            val msgDef = CompletableDeferred<TdApi.Object>()
-            viewModel.telegramClient.send(TdApi.GetMessage(chatId, messageId)) { msgDef.complete(it) }
-            val msg = msgDef.await()
+            val latch = CountDownLatch(1)
+            val result = AtomicReference<TdApi.Object?>()
+            viewModel.telegramClient.send(TdApi.GetMessage(chatId, messageId)) {
+                result.set(it)
+                latch.countDown()
+            }
+            try {
+                latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
+            val msg = result.get()
             if (msg is TdApi.Message) {
                 val f = when (val c = msg.content) {
                     is TdApi.MessageVideo -> c.video.video
@@ -621,22 +667,32 @@ class ZeroLagTdlibDataSource(
                 if (f != null) {
                     fileId = f.id
                     viewModel.cachedTdFile = f
-                    return@runBlocking f
+                    return f
                 }
             }
         }
-        if (fileId == 0) return@runBlocking null
-        val def = CompletableDeferred<TdApi.Object>()
-        viewModel.telegramClient.send(TdApi.GetFile(fileId)) { def.complete(it) }
-        val result = def.await() as? TdApi.File
-        if (result != null) viewModel.cachedTdFile = result
-        result
+        if (fileId == 0) return null
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<TdApi.Object?>()
+        viewModel.telegramClient.send(TdApi.GetFile(fileId)) {
+            result.set(it)
+            latch.countDown()
+        }
+        try {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        }
+        val file = result.get() as? TdApi.File
+        if (file != null) viewModel.cachedTdFile = file
+        return file
     }
 
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
         currentPosition = dataSpec.position
-        val file = viewModel.cachedTdFile ?: queryTdFileOnce()
+        val file = viewModel.cachedTdFile ?: queryTdFileBlocking()
         val totalSize = file?.expectedSize?.takeIf { it > 0 } ?: file?.size?.takeIf { it > 0 } ?: expectedSize
 
         if (file != null) {
@@ -671,7 +727,7 @@ class ZeroLagTdlibDataSource(
         var lastRequestedOffset = -1L
 
         while (opened) {
-            val file = viewModel.cachedTdFile ?: queryTdFileOnce() ?: return C.RESULT_END_OF_INPUT
+            val file = viewModel.cachedTdFile ?: queryTdFileBlocking() ?: return C.RESULT_END_OF_INPUT
             val local = file.local
 
             if (local.isDownloadingCompleted && local.path.isNotEmpty()) {
@@ -731,9 +787,11 @@ class ZeroLagTdlibDataSource(
                 }
             }
 
+            // Wait to be woken by the fileUpdates collector (see init) instead
+            // of sleeping and re-querying in a tight loop. The short timeout
+            // is only a safety net in case a notification was missed.
             try {
-                Thread.sleep(40)
-                queryTdFileOnce()
+                synchronized(fileUpdateLock) { fileUpdateLock.wait(250) }
             } catch (e: InterruptedException) {
                 return C.RESULT_END_OF_INPUT
             }
@@ -745,6 +803,8 @@ class ZeroLagTdlibDataSource(
 
     override fun close() {
         opened = false
+        fileUpdatesJob?.cancel()
+        fileUpdatesJob = null
         try {
             raf?.close()
         } catch (e: Exception) {}
@@ -787,9 +847,13 @@ fun VideoPlayerScreen(
     }
 
     var isAudioPlayerMode by remember(isNativeAudioFile) { mutableStateOf(isNativeAudioFile) }
-    var showAudioTooltip by remember { mutableStateOf(!isNativeAudioFile) }
+    // Keyed to the current file: the tooltip belongs to this file only. It was
+    // remembered once for the first file opened, so after skipping tracks it
+    // could show (or stay hidden) for the wrong file.
+    var showAudioTooltip by remember(activeMediaUrl) { mutableStateOf(!isNativeAudioFile) }
 
     val exoPlayer = remember { BackgroundAudioEngine.getOrCreatePlayer(context) }
+    val scope = rememberCoroutineScope()
 
     var isPlaying by remember { mutableStateOf(exoPlayer.isPlaying) }
     var isBuffering by remember { mutableStateOf(false) }
@@ -803,6 +867,79 @@ fun VideoPlayerScreen(
     var isLandscape by remember { mutableStateOf(false) }
     var isRepeatOne by remember { mutableStateOf(false) }
     var isStarred by remember { mutableStateOf(false) }
+
+    // Sleep timer (audio UI): minutes chosen by the user, 0 = off. When the
+    // deadline passes the player is paused for real instead of showing a toast.
+    var sleepTimerMinutes by remember { mutableIntStateOf(0) }
+    var sleepTimerEndsAt by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(sleepTimerEndsAt) {
+        if (sleepTimerEndsAt > 0L) {
+            val remaining = sleepTimerEndsAt - System.currentTimeMillis()
+            if (remaining > 0) delay(remaining)
+            if (sleepTimerEndsAt > 0L) {
+                exoPlayer.pause()
+                BackgroundAudioEngine.updateNotification(context)
+                sleepTimerMinutes = 0
+                sleepTimerEndsAt = 0L
+                Toast.makeText(context, "Sleep timer finished", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Snapshot: grab the frame at the current position with
+    // MediaMetadataRetriever and save it to Pictures/MyCloud. Works from the
+    // local file or the downloaded TDLib copy; while streaming without a local
+    // copy yet it reports that the snapshot is unavailable instead of
+    // pretending it saved one.
+    val takeSnapshot: () -> Unit = {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val localPath = when {
+                    !isStreamUrl -> activeMediaUrl
+                    else -> viewModel.cachedTdFile?.local?.path?.takeIf { File(it).exists() }
+                }
+                if (localPath.isNullOrEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Snapshot not available yet", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(localPath)
+                    val frame = retriever.getFrameAtTime(
+                        exoPlayer.currentPosition * 1000,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                    )
+                    if (frame == null) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Could not capture frame", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+                    val saved = try {
+                        saveSnapshotToPictures(context, frame, fileName)
+                    } finally {
+                        frame.recycle()
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            if (saved) "Snapshot saved" else "Snapshot failed",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                } finally {
+                    retriever.release()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Snapshot failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     var activeGestureMode by remember { mutableStateOf(GestureMode.NONE) }
     var verticalGestureProgress by remember { mutableFloatStateOf(0f) }
@@ -926,6 +1063,7 @@ fun VideoPlayerScreen(
             duration = duration,
             isRepeatOne = isRepeatOne,
             isStarred = isStarred,
+            sleepTimerMinutes = sleepTimerMinutes,
             isVideoSource = !isNativeAudioFile,
             onBack = {
                 resetWindowBrightness(activity)
@@ -960,6 +1098,24 @@ fun VideoPlayerScreen(
                 if (!path.isNullOrEmpty()) {
                     FileSharingHelper.shareFile(context, path, "audio/*")
                 }
+            },
+            onCycleSleepTimer = {
+                sleepTimerMinutes = when (sleepTimerMinutes) {
+                    0 -> 15
+                    15 -> 30
+                    30 -> 60
+                    else -> 0
+                }
+                sleepTimerEndsAt = if (sleepTimerMinutes == 0) {
+                    0L
+                } else {
+                    System.currentTimeMillis() + sleepTimerMinutes * 60_000L
+                }
+                Toast.makeText(
+                    context,
+                    if (sleepTimerMinutes == 0) "Sleep timer off" else "Sleep timer: $sleepTimerMinutes min",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         )
         return
@@ -1350,9 +1506,7 @@ fun VideoPlayerScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Surface(
-                        onClick = {
-                            Toast.makeText(context, "Snapshot saved", Toast.LENGTH_SHORT).show()
-                        },
+                        onClick = { takeSnapshot() },
                         shape = RoundedCornerShape(8.dp),
                         color = Color.Black.copy(alpha = 0.45f),
                         modifier = Modifier.size(42.dp)
@@ -1360,7 +1514,7 @@ fun VideoPlayerScreen(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.ContentCut,
-                                contentDescription = "Cut",
+                                contentDescription = "Snapshot",
                                 tint = Color.White,
                                 modifier = Modifier.size(22.dp)
                             )
@@ -1553,6 +1707,7 @@ private fun PlayItVinylAudioPlayerUI(
     duration: Long,
     isRepeatOne: Boolean,
     isStarred: Boolean,
+    sleepTimerMinutes: Int,
     isVideoSource: Boolean,
     onBack: () -> Unit,
     onSwitchToVideo: () -> Unit,
@@ -1562,9 +1717,9 @@ private fun PlayItVinylAudioPlayerUI(
     onNextTrack: () -> Unit,
     onToggleRepeat: () -> Unit,
     onToggleStar: () -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onCycleSleepTimer: () -> Unit
 ) {
-    val context = LocalContext.current
     val infiniteTransition = rememberInfiniteTransition(label = "VinylRotation")
     val discAngle by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -1729,25 +1884,26 @@ private fun PlayItVinylAudioPlayerUI(
                         modifier = Modifier.size(26.dp)
                     )
                 }
-                IconButton(onClick = {
-                    Toast.makeText(context, "Hi-Fi Audio Enhancer Active", Toast.LENGTH_SHORT).show()
-                }) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = "Equalizer",
-                        tint = Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
-                IconButton(onClick = {
-                    Toast.makeText(context, "Background Play Active", Toast.LENGTH_SHORT).show()
-                }) {
-                    Icon(
-                        imageVector = Icons.Default.Timer,
-                        contentDescription = "Sleep Timer",
-                        tint = Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier.size(26.dp)
-                    )
+                // Sleep timer: cycles Off -> 15 -> 30 -> 60 min and pauses
+                // playback for real when it fires (see VideoPlayerScreen).
+                // The equaliser button was removed: the player has no audio
+                // effects chain, so it could only ever show a fake toast.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(onClick = onCycleSleepTimer) {
+                        Icon(
+                            imageVector = Icons.Default.Timer,
+                            contentDescription = "Sleep Timer",
+                            tint = if (sleepTimerMinutes > 0) Color(0xFF2ECC71) else Color.White.copy(alpha = 0.8f),
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                    if (sleepTimerMinutes > 0) {
+                        Text(
+                            text = "${sleepTimerMinutes}m",
+                            color = Color(0xFF2ECC71),
+                            fontSize = 11.sp
+                        )
+                    }
                 }
                 IconButton(onClick = {
                     if (isVideoSource) onSwitchToVideo()
@@ -1855,6 +2011,39 @@ private fun PlayItVinylAudioPlayerUI(
                 }
             }
         }
+    }
+}
+
+// Saves a video frame to Pictures/MyCloud and returns true on success.
+// MediaStore (Android 10+) needs no storage permission for the app's own files.
+private fun saveSnapshotToPictures(context: Context, bitmap: Bitmap, fileName: String): Boolean {
+    return try {
+        val baseName = fileName.substringBeforeLast('.')
+            .filter { it.isLetterOrDigit() || it == '.' || it == '-' || it == '_' || it == ' ' }
+            .trim().takeIf { it.isNotEmpty() } ?: "frame"
+        val displayName = "Snapshot_${baseName}_${System.currentTimeMillis()}.jpg"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MyCloud")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: return false
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            } ?: return false
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "MyCloud")
+            if (!dir.exists()) dir.mkdirs()
+            FileOutputStream(File(dir, displayName)).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            }
+        }
+        true
+    } catch (e: Exception) {
+        false
     }
 }
 

@@ -32,6 +32,10 @@ class MediaBackupWorker(
     companion object {
         private const val NOTIFICATION_ID = 101
         private const val CHANNEL_ID = "backup_channel"
+        // P1-14: ব্যর্থতা চিরকাল retry হবে না — 5 চেষ্টার পর failure,
+        // যাতে WorkManager backoff শেষে কাজটা ছেড়ে দেয়। পরের
+        // periodic রানে আবার চেষ্টা হবে।
+        private const val MAX_RETRY_ATTEMPTS = 5
     }
 
     @EntryPoint
@@ -73,7 +77,7 @@ class MediaBackupWorker(
             if (backupFolders.isEmpty()) return@withContext Result.success()
 
             val chatId = driveRepository.awaitSavedMessagesChatId()
-            if (chatId == 0L) return@withContext Result.retry()
+            if (chatId == 0L) return@withContext retryOrFail()
 
             val customPrefs = applicationContext.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
             val deleteAfterBackup = customPrefs.getBoolean("delete_after_backup", false)
@@ -111,9 +115,12 @@ class MediaBackupWorker(
             secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
             Result.success()
         } catch (e: Exception) {
-            Result.retry()
+            retryOrFail()
         }
     }
+
+    private fun retryOrFail(): Result =
+        if (runAttemptCount >= MAX_RETRY_ATTEMPTS) Result.failure() else Result.retry()
 
     private fun isNetworkUnmetered(): Boolean {
         return try {
