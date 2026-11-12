@@ -169,7 +169,7 @@ fun StarredContent(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = Modifier.fillMaxSize().padding(padding)
                 ) {
-                    items(items) { item ->
+                    items(items, key = { it.id }, contentType = { if (it is DriveItem.File) "file" else "folder" }) { item ->
                         val isSelected = selectedItems.contains(item.id)
                         DriveGridItem(
                             item = item,
@@ -194,7 +194,7 @@ fun StarredContent(
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
-                    items(items) { item ->
+                    items(items, key = { it.id }, contentType = { if (it is DriveItem.File) "file" else "folder" }) { item ->
                         val isSelected = selectedItems.contains(item.id)
                         DriveListItem(
                             item = item,

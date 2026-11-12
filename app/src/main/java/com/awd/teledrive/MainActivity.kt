@@ -161,14 +161,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         checkAndRequestPermissions()
 
-        lifecycleScope.launch {
-            updateRepository.checkForUpdates(manual = false)
-        }
-
-        if (settingsRepository.isAutoBackupEnabled.value) {
-            workerManager.scheduleBackup(true)
-        }
-
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
@@ -203,7 +195,11 @@ class MainActivity : AppCompatActivity() {
 
             LaunchedEffect(showSplash) {
                 if (!showSplash) {
+                    // P1-9: প্রথম ফ্রেমের পর শুরু করা — onCreate-এর ক্রিটিক্যাল পাথে নয়
                     updateRepository.checkForUpdates(manual = false)
+                    if (settingsRepository.isAutoBackupEnabled.value) {
+                        workerManager.scheduleBackup(true)
+                    }
                     while (true) {
                         delay(5 * 60 * 1000L)
                         updateRepository.checkForUpdates(manual = false)
@@ -332,10 +328,10 @@ fun StartupSplashScreen(onFinished: () -> Unit) {
     val shapes = remember { IconShapes() }
     val progress = remember { Animatable(0f) }
 
-    // আগের সেই সম্পূর্ণ ২১০০ মিলিসেকেন্ডের ড্রয়িং এনিমেশন
+    // সংক্ষিপ্ত ৭০০ মিলিসেকেন্ডের ড্রয়িং এনিমেশন (P1-9: স্প্ল্যাশ সর্বোচ্চ ~৮০০ মিলিসেকেন্ড)
     LaunchedEffect(Unit) {
-        progress.animateTo(1f, tween(durationMillis = 2100, easing = LinearEasing))
-        delay(350)
+        progress.animateTo(1f, tween(durationMillis = 700, easing = LinearEasing))
+        delay(100)
         onFinished()
     }
 

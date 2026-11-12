@@ -106,25 +106,12 @@ class DriveRepository @Inject constructor(
             transferRepository.clearCompleted()
             registerRealTimeFolderWatcher()
 
-            launch {
-                delay(3000)
-                while (true) {
-                    val folders = secureSettings.getStringList("backup_folders")
-                    if (folders.isNotEmpty() && isAutomaticBackupAllowed()) {
-                        runImmediateFolderBackup()
-                    }
-                    delay(20000)
-                }
-            }
-
             telegramClient.updates.collect { update ->
                 when (update) {
                     is TdApi.UpdateFile -> {
                         val file = update.file
                         if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
-                            driveDao.updateLocalPath(file.id, file.local.path)
-                            driveDao.updateLocalPathByUniqueId(file.remote.uniqueId, file.local.path)
-                            driveDao.updateThumbnailPathByUniqueId(file.remote.uniqueId, file.local.path)
+                            driveDao.updateFileLocalPaths(file.id, file.remote.uniqueId, file.local.path)
                         }
                     }
                     is TdApi.UpdateMessageSendSucceeded -> {
@@ -193,7 +180,10 @@ class DriveRepository @Inject constructor(
                     super.onChange(selfChange, uri)
                     watcherDebounceJob?.cancel()
                     watcherDebounceJob = scope.launch {
-                        delay(1500)
+                        // 30s debounce: MediaStore fires a burst of change
+                        // events per file operation, so coalesce them into a
+                        // single backup run instead of rescanning each time.
+                        delay(30_000)
                         val folders = secureSettings.getStringList("backup_folders")
                         if (folders.isNotEmpty() && isAutomaticBackupAllowed()) {
                             runImmediateFolderBackup()
@@ -275,10 +265,23 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    // TTL cache for verifyOfflinePath: File.exists()/length() on every row
+    // of every Flow emission is expensive, so verified results (path or
+    // null) are cached briefly. 30s TTL keeps stale misses short-lived.
+    private val offlinePathCache = ConcurrentHashMap<String, Pair<String?, Long>>()
+    private val offlinePathCacheTtlMs = 30_000L
+
     private fun verifyOfflinePath(path: String?): String? {
         if (path.isNullOrEmpty()) return null
+        val now = System.currentTimeMillis()
+        offlinePathCache[path]?.let { (cached, cachedAt) ->
+            if (now - cachedAt < offlinePathCacheTtlMs) return cached
+        }
         val f = File(path)
-        return if (f.exists() && f.length() > 0L) path else null
+        val result = if (f.exists() && f.length() > 0L) path else null
+        if (offlinePathCache.size > 2000) offlinePathCache.clear()
+        offlinePathCache[path] = result to now
+        return result
     }
 
     private val MANIFEST_PREFIX = "#TELEDRIVE_MANIFEST"
@@ -578,6 +581,18 @@ class DriveRepository @Inject constructor(
             }
         }
 
+        // Incremental scan: only ask MediaStore for files modified since
+        // the last backup run (5-minute overlap so files modified during
+        // a backup run are not missed). Watermark 0 = never backed up,
+        // so fall back to the full scan as before. The File-tree walk
+        // above and the SAF walk below stay unfiltered as a safety net.
+        val lastBackupTime = secureSettings.getLong("last_backup_time", 0L)
+        val watermarkSec = ((lastBackupTime - 5 * 60 * 1000).coerceAtLeast(0L)) / 1000
+        val modifiedSelection = if (watermarkSec == 0L) null
+            else "${MediaStore.MediaColumns.DATE_MODIFIED} > ?"
+        val modifiedSelectionArgs = if (watermarkSec == 0L) null
+            else arrayOf(watermarkSec.toString())
+
         val projection = arrayOf(MediaStore.MediaColumns.DATA)
         val uris = mutableListOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -591,7 +606,7 @@ class DriveRepository @Inject constructor(
 
         uris.forEach { uri ->
             try {
-                context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                context.contentResolver.query(uri, projection, modifiedSelection, modifiedSelectionArgs, null)?.use { cursor ->
                     val dataIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
                     if (dataIdx != -1) {
                         while (cursor.moveToNext()) {
@@ -863,9 +878,8 @@ class DriveRepository @Inject constructor(
     }
 
     fun getSafeFolderFilesFlow(): Flow<List<DriveItem.File>> {
-        return driveDao.getAllFiles().map { entities ->
-            entities.filter { it.virtualParentId == SAFE_SPACE_VIRTUAL_ID || it.isEncrypted || it.isSecure }
-                .map { entity ->
+        return driveDao.getSafeFolderFiles().map { entities ->
+            entities.map { entity ->
                     DriveItem.File(
                         entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType,
                         entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred,
@@ -1013,6 +1027,19 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    fun getAllFilesPage(limit: Int, offset: Int): Flow<List<DriveItem.File>> {
+        return driveDao.getAllFilesPage(limit, offset).map { entities ->
+            entities.filter { it.virtualParentId != SAFE_SPACE_VIRTUAL_ID }
+                .map { entity ->
+                    DriveItem.File(
+                        entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType,
+                        entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred,
+                        entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted
+                    )
+                }
+        }
+    }
+
     fun getStarredItems(): Flow<List<DriveItem>> {
         return driveDao.getStarredItems().map { entities ->
             entities.filter { (it.isVirtual || !it.isFolder) && it.virtualParentId != SAFE_SPACE_VIRTUAL_ID }.map { entity ->
@@ -1040,6 +1067,32 @@ class DriveRepository @Inject constructor(
                     else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
                 }
         }.debounce(25)
+    }
+
+    fun getItemsPage(chatId: Long, virtualParentId: String = "0", limit: Int, offset: Int): Flow<List<DriveItem>> {
+        val targetChatId = if (chatId != 0L) chatId else savedMessagesChatId
+        val flow = if (targetChatId != 0L) driveDao.getItemsPage(targetChatId, virtualParentId, limit, offset)
+        else kotlinx.coroutines.flow.flowOf(emptyList())
+
+        return flow.map { entities ->
+            entities.filter { (!it.isFolder || it.isVirtual) && (virtualParentId == SAFE_SPACE_VIRTUAL_ID || it.virtualParentId != SAFE_SPACE_VIRTUAL_ID) }
+                .sortedByDescending { it.createdAt }
+                .map { entity ->
+                    if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                }
+        }
+    }
+
+    fun searchGlobalPage(query: String, limit: Int, offset: Int): Flow<List<DriveItem>> {
+        return driveDao.searchGlobalPage(query, limit, offset).map { entities ->
+            entities.filter { (!it.isFolder || it.isVirtual) && it.virtualParentId != SAFE_SPACE_VIRTUAL_ID }
+                .sortedByDescending { it.createdAt }
+                .map { entity ->
+                    if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                }
+        }
     }
 
     fun fetchFiles(chatId: Long? = null) {
@@ -1618,10 +1671,7 @@ class DriveRepository @Inject constructor(
                     if (file != null && file.id != 0) {
                         if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty() && File(file.local.path).exists()) {
                             scope.launch {
-                                driveDao.updateLocalPath(file.id, file.local.path)
-                                if (file.remote.uniqueId.isNotEmpty()) {
-                                    driveDao.updateLocalPathByUniqueId(file.remote.uniqueId, file.local.path)
-                                }
+                                driveDao.updateFileLocalPaths(file.id, file.remote.uniqueId, file.local.path)
                             }
                             return@send
                         }
@@ -1848,15 +1898,15 @@ class DriveRepository @Inject constructor(
 
     fun getCloudFileTypeStats(): Flow<List<DriveDao.FileTypeStat>> = driveDao.getCloudFileTypeStats()
     
-    fun getTotalStorageUsed(): Flow<Long> = driveDao.getAllFiles().map { files ->
+    fun getTotalStorageUsed(): Flow<Long> = driveDao.getFileSizeRows().map { rows ->
         var totalSize = 0L
         val processedGroups = mutableSetOf<String>()
-        files.forEach { file ->
-            if (file.splitGroupId == null) totalSize += file.size
-            else if (!processedGroups.contains(file.splitGroupId)) {
-                val master = currentManifest.splitFileMasters[file.splitGroupId]
-                totalSize += master?.totalSize ?: (file.size * file.totalParts)
-                processedGroups.add(file.splitGroupId)
+        rows.forEach { row ->
+            if (row.splitGroupId == null) totalSize += row.size
+            else if (!processedGroups.contains(row.splitGroupId)) {
+                val master = currentManifest.splitFileMasters[row.splitGroupId]
+                totalSize += master?.totalSize ?: (row.size * row.totalParts)
+                processedGroups.add(row.splitGroupId)
             }
         }
         totalSize

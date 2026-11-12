@@ -180,7 +180,7 @@ fun PdfViewerContent(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    items(pageCount) { index ->
+                    items(pageCount, key = { it }, contentType = { "pdf_page" }) { index ->
                         PdfPageItem(pdfRenderer, index)
                     }
                 }

@@ -1,10 +1,19 @@
 package com.awd.teledrive.data.local
 
 import androidx.room.Entity
+import androidx.room.Index
 
 @Entity(
     tableName = "drive_items",
-    primaryKeys = ["id", "parentChatId"]
+    primaryKeys = ["id", "parentChatId"],
+    indices = [
+        Index(value = ["parentChatId"], name = "index_drive_items_parentChatId"),
+        Index(value = ["virtualParentId"], name = "index_drive_items_virtualParentId"),
+        Index(value = ["remoteUniqueId"], name = "index_drive_items_remoteUniqueId"),
+        Index(value = ["virtualId"], name = "index_drive_items_virtualId"),
+        Index(value = ["splitGroupId"], name = "index_drive_items_splitGroupId"),
+        Index(value = ["isStarred"], name = "index_drive_items_isStarred")
+    ]
 )
 data class DriveItemEntity(
     val id: Long,

@@ -70,6 +70,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Size
 import com.awd.teledrive.R
 import com.awd.teledrive.domain.model.DriveItem
 
@@ -355,7 +357,7 @@ fun MediaContent(
                         .fillMaxSize()
                         .padding(top = padding.calculateTopPadding())
                 ) {
-                    itemsIndexed(currentAlbumItems) { _, item ->
+                    itemsIndexed(currentAlbumItems, key = { _, item -> item.id }) { _, item ->
                         val isSelected = selectedItems.contains(item.id)
                         MediaGridItem(
                             item = item,
@@ -386,7 +388,8 @@ fun AlbumGridCard(
     onClick: () -> Unit
 ) {
     val coverItem = album.items.firstOrNull()
-    val coverModel = coverItem?.localPath ?: coverItem?.thumbnailPath
+    // P1-13: থাম্বনেইলের জন্য ছোট thumbnailPath আগে — পুরো ফাইল লোড করা হবে না
+    val coverModel = coverItem?.thumbnailPath?.takeIf { it.isNotEmpty() } ?: coverItem?.localPath
 
     Column(
         modifier = Modifier
@@ -405,7 +408,13 @@ fun AlbumGridCard(
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                 if (coverModel != null) {
                     AsyncImage(
-                        model = coverModel,
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(coverModel)
+                            .size(Size(360, 360))
+                            .placeholder(R.drawable.ic_mycloud_logo)
+                            .error(R.drawable.ic_mycloud_logo)
+                            .crossfade(true)
+                            .build(),
                         contentDescription = album.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
@@ -455,8 +464,15 @@ fun MediaGridItem(
         border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
+            // P1-13: থাম্বনেইলের জন্য ছোট thumbnailPath আগে — পুরো ফাইল লোড করা হবে না
             AsyncImage(
-                model = item.localPath ?: item.thumbnailPath,
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(item.thumbnailPath?.takeIf { it.isNotEmpty() } ?: item.localPath)
+                    .size(Size(360, 360))
+                    .placeholder(R.drawable.ic_mycloud_logo)
+                    .error(R.drawable.ic_mycloud_logo)
+                    .crossfade(true)
+                    .build(),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop

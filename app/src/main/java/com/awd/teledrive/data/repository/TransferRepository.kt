@@ -55,8 +55,8 @@ class TransferRepository @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // আপলোড ল্যাগ-মুক্ত ১টি করে এবং ডাউনলোড সুপার ফাস্ট করতে ৪টি প্যারালাল স্ট্রিম দেওয়া হয়েছে
-    private val uploadSemaphore = Semaphore(1)
+    // আপলোড ৩টি প্যারালাল স্ট্রিমে এবং ডাউনলোড সুপার ফাস্ট করতে ৪টি প্যারালাল স্ট্রিম দেওয়া হয়েছে
+    private val uploadSemaphore = Semaphore(3)
     private val downloadSemaphore = Semaphore(4)
 
     private val activeMap = ConcurrentHashMap<String, TransferInfo>()
@@ -91,11 +91,7 @@ class TransferRepository @Inject constructor(
 
                 if (key == null) {
                     if (file.local.isDownloadingCompleted && localPath.isNotEmpty()) {
-                        driveDao.updateLocalPath(fileId, localPath)
-                        if (uniqueId.isNotEmpty()) {
-                            driveDao.updateLocalPathByUniqueId(uniqueId, localPath)
-                            driveDao.updateThumbnailPathByUniqueId(uniqueId, localPath)
-                        }
+                        driveDao.updateFileLocalPaths(fileId, uniqueId, localPath)
                     }
                     return@collect
                 }
@@ -112,10 +108,7 @@ class TransferRepository @Inject constructor(
 
                 if (isEffectivelyCompleted) {
                     if (isDownload && localPath.isNotEmpty()) {
-                        driveDao.updateLocalPath(fileId, localPath)
-                        if (uniqueId.isNotEmpty()) {
-                            driveDao.updateLocalPathByUniqueId(uniqueId, localPath)
-                        }
+                        driveDao.updateFileLocalPaths(fileId, uniqueId, localPath)
                     }
                     completeAndCleanupTransfer(key, uniqueId, fileId, success = true)
                     return@collect
