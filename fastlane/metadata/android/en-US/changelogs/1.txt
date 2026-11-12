@@ -1,1 +1,1 @@
-Initial release of TeleDrive. Cloud storage powered by Telegram API.
+Initial release of MyCloud. Cloud storage powered by Telegram API.

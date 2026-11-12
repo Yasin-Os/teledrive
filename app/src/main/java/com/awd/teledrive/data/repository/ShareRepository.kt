@@ -38,7 +38,7 @@ class ShareRepository @Inject constructor(
     }
 
     private fun createInviteLink(chatId: Long, callback: (String?) -> Unit) {
-        telegramClient.send(TdApi.CreateChatInviteLink(chatId, "TeleDrive Share", 0, 0, false)) { inviteResult ->
+        telegramClient.send(TdApi.CreateChatInviteLink(chatId, "MyCloud Share", 0, 0, false)) { inviteResult ->
             if (inviteResult is TdApi.ChatInviteLink) {
                 callback(inviteResult.inviteLink)
             } else {

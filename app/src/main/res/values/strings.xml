@@ -249,6 +249,7 @@
     <string name="changelog_v110"><b>Version 1.1.0</b>\n• Cloud Storage Analysis tool\n• Advanced Local Cache management</string>
     <string name="changelog_v100"><b>Version 1.0.0</b>\n• Initial release of MyCloud Android</string>
     <string name="official_website">Official Website</string>
+    <string name="official_website_url">https://xn--b5b0eua0btmi.xn--45bl4db.xn--54b7fta0cc/</string>
     <string name="github_and_issues">GitHub &amp; Updates</string>
     <string name="creator">Developer: Yasin Adnan</string>
     <string name="license">License</string>
