@@ -58,7 +58,10 @@ interface DriveDao {
         val newItemIds = items.map { it.id }.toSet()
         val existingItems = getItemsSync(chatId)
         val existingMap = existingItems.associateBy { it.id }
-        
+        // Content hashes remembered from earlier uploads survive the
+        // re-sync (mapMessageToEntity creates fresh rows with null hash).
+        val hashByUniqueId = getFileHashesByUniqueIds(items.mapNotNull { it.remoteUniqueId })
+
         val updatedItems = items.map { item ->
             val existing = existingMap[item.id]
             val savedLocalPath = item.localPath ?: existing?.localPath?.takeIf { File(it).exists() }
@@ -68,7 +71,8 @@ interface DriveDao {
                 isStarred = existing?.isStarred == true,
                 localPath = savedLocalPath,
                 thumbnailPath = savedThumbPath,
-                virtualParentId = preservedParent
+                virtualParentId = preservedParent,
+                contentHash = existing?.contentHash ?: hashByUniqueId[item.remoteUniqueId]
             )
         }
 
@@ -89,6 +93,8 @@ interface DriveDao {
         val existingMap = items.groupBy { it.parentChatId }.flatMap { (chatId, group) ->
             getItemsByIds(group.map { it.id }, chatId)
         }.associateBy { it.id to it.parentChatId }
+        // Content hashes remembered from earlier uploads (see above).
+        val hashByUniqueId = getFileHashesByUniqueIds(items.mapNotNull { it.remoteUniqueId })
         val updatedItems = items.map { item ->
             val existing = existingMap[item.id to item.parentChatId]
             val savedLocalPath = item.localPath ?: existing?.localPath?.takeIf { File(it).exists() }
@@ -98,7 +104,8 @@ interface DriveDao {
                 isStarred = existing?.isStarred == true,
                 localPath = savedLocalPath,
                 thumbnailPath = savedThumbPath,
-                virtualParentId = preservedParent
+                virtualParentId = preservedParent,
+                contentHash = existing?.contentHash ?: hashByUniqueId[item.remoteUniqueId]
             )
         }
         insertItems(updatedItems)
@@ -224,4 +231,53 @@ interface DriveDao {
         GROUP BY category
     """)
     fun getCloudFileTypeStats(): Flow<List<FileTypeStat>>
+
+    // ---- Storage analyzer / duplicate finder ----
+
+    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY size DESC LIMIT :limit")
+    fun getLargestFiles(limit: Int): Flow<List<DriveItemEntity>>
+
+    data class DuplicateGroup(
+        val contentHash: String,
+        val size: Long,
+        val count: Int,
+        val wastedBytes: Long
+    )
+
+    @Query("""
+        SELECT contentHash, size, COUNT(*) as count, (COUNT(*) - 1) * size as wastedBytes
+        FROM drive_items
+        WHERE contentHash IS NOT NULL AND isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0)
+        GROUP BY contentHash, size HAVING COUNT(*) > 1 ORDER BY wastedBytes DESC
+    """)
+    fun getDuplicateGroups(): Flow<List<DuplicateGroup>>
+
+    @Query("SELECT * FROM drive_items WHERE contentHash = :hash AND size = :size AND isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
+    suspend fun getDuplicateGroupItems(hash: String, size: Long): List<DriveItemEntity>
+
+    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND contentHash IS NULL AND localPath IS NOT NULL AND (splitGroupId IS NULL OR partIndex = 0)")
+    suspend fun getUnhashedDownloadedFiles(): List<DriveItemEntity>
+
+    @Query("UPDATE drive_items SET contentHash = :hash WHERE remoteUniqueId = :uniqueId")
+    suspend fun updateContentHash(uniqueId: String, hash: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveFileHash(hash: FileHashEntity)
+
+    @Query("SELECT * FROM file_hashes WHERE remoteUniqueId IN (:ids)")
+    suspend fun getFileHashes(ids: List<String>): List<FileHashEntity>
+
+    /**
+     * Hashes for the given remote unique ids, looked up in chunks so a
+     * large sync never exceeds SQLite's variable limit.
+     */
+    @Transaction
+    suspend fun getFileHashesByUniqueIds(ids: List<String>): Map<String, String> {
+        if (ids.isEmpty()) return emptyMap()
+        val result = mutableMapOf<String, String>()
+        ids.distinct().chunked(400).forEach { chunk ->
+            getFileHashes(chunk).forEach { result[it.remoteUniqueId] = it.contentHash }
+        }
+        return result
+    }
 }
