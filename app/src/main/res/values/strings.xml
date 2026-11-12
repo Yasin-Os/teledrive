@@ -334,7 +334,6 @@
     <string name="status_queued">Queued</string>
     <string name="encrypting_perc">Encrypting... %d%%</string>
     <string name="decrypting_perc">Decrypting... %d%%</string>
-    <string name="status_waiting">Waiting...</string>
     <!-- Combo insights: storage analyzer / duplicate finder / backup health -->
     <string name="storage_analyzer">Storage Analyzer</string>
     <string name="duplicate_finder">Duplicate Finder</string>
@@ -367,6 +366,7 @@
     <string name="pending_count">%1$d pending</string>
     <string name="failed_count">%1$d failed</string>
     <string name="tap_to_open">Tap a file to open it</string>
+    <string name="status_waiting">Waiting...</string>
 
     <!-- P2-2: strings moved out of hardcoded UI text in Home/Preview/Settings screens -->
     <string name="search">Search</string>
@@ -449,5 +449,4 @@
     <string name="update_now">Update Now</string>
     <string name="copyright_footer">© 2026 MyCloud • All Rights Reserved</string>
     <string name="developed_by">Developed by Yasin Adnan</string>
-
 </resources>
