@@ -1,5 +1,7 @@
 package com.awd.teledrive.ui.screens.home
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -117,6 +119,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -874,7 +877,7 @@ private fun DownloadTransferBarItem(
         if (downloadTransfers.isEmpty()) null else (downloadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
     }
     SplitTransferBarItem(
-        icon = Icons.Default.ArrowUpward, percentage = downloadProgress,
+        icon = Icons.Default.ArrowDownward, percentage = downloadProgress,
         hasActiveOrHistory = downloadTransfers.isNotEmpty(), onClick = onClick
     )
 }
@@ -890,7 +893,7 @@ private fun UploadTransferBarItem(
         if (uploadTransfers.isEmpty()) null else (uploadTransfers.map { it.progress }.average().toFloat() * 100).toInt().coerceIn(0, 100)
     }
     SplitTransferBarItem(
-        icon = Icons.Default.ArrowDownward, percentage = uploadProgress,
+        icon = Icons.Default.ArrowUpward, percentage = uploadProgress,
         hasActiveOrHistory = uploadTransfers.isNotEmpty(), onClick = onClick
     )
 }
@@ -2126,9 +2129,39 @@ fun ShareDialog(
     var shareToPhone by remember { mutableStateOf("") }
     var isSharingFile by remember { mutableStateOf(false) }
 
+    // P1-15: folder share state. The dialog used to render nothing at all for
+    // folders (empty text + no confirm button) even though the invite-link and
+    // member callbacks were already passed in. Folders shown in the app are
+    // virtual folders (local manifest/Room only, no Telegram chat behind
+    // them), so no Telegram invite link can exist for them — that case shows
+    // a clear message instead of a failing lookup.
+    var inviteLink by remember { mutableStateOf<String?>(null) }
+    var isLoadingLink by remember { mutableStateOf(false) }
+    var members by remember { mutableStateOf<List<TdApi.User>>(emptyList()) }
+    var membersLoaded by remember { mutableStateOf(false) }
+
+    val folder = item as? DriveItem.Folder
+    LaunchedEffect(item) {
+        if (folder != null) {
+            if (folder.isVirtual) {
+                membersLoaded = true
+            } else {
+                isLoadingLink = true
+                onGetInviteLink(folder.telegramChatId) { link ->
+                    inviteLink = link
+                    isLoadingLink = false
+                }
+                onGetMembers(folder.telegramChatId) { users ->
+                    members = users
+                    membersLoaded = true
+                }
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { 
+        title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (item is DriveItem.Folder) Icons.Default.Folder else Icons.Default.InsertDriveFile, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(12.dp))
@@ -2147,6 +2180,34 @@ fun ShareDialog(
                         singleLine = true, leadingIcon = { Icon(Icons.Default.Phone, null) }
                     )
                     if (isSharingFile) LinearProgressIndicator(Modifier.fillMaxWidth())
+                } else if (folder != null) {
+                    Text(stringResource(R.string.private_share_link), style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(4.dp))
+                    when {
+                        isLoadingLink -> Text(stringResource(R.string.loading), style = MaterialTheme.typography.bodyMedium)
+                        inviteLink != null -> Text(inviteLink!!, style = MaterialTheme.typography.bodyMedium)
+                        else -> Text(stringResource(R.string.link_gen_failed), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (folder.isVirtual) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "This folder lives only inside the app, so it has no Telegram invite link to share.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(stringResource(R.string.people_with_access), style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(4.dp))
+                    if (!membersLoaded) {
+                        Text(stringResource(R.string.loading), style = MaterialTheme.typography.bodyMedium)
+                    } else if (members.isEmpty()) {
+                        Text(stringResource(R.string.no_one_joined), style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        members.forEach { user ->
+                            val displayName = "${user.firstName} ${user.lastName}".trim().ifEmpty { user.username }
+                            Text(displayName, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
             }
         },
@@ -2169,6 +2230,18 @@ fun ShareDialog(
                     },
                     enabled = !isSharingFile && shareToPhone.isNotBlank()
                 ) { Text(stringResource(R.string.send)) }
+            } else if (folder != null) {
+                Button(
+                    onClick = {
+                        inviteLink?.let { link ->
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("TeleDrive invite link", link))
+                            Toast.makeText(context, context.getString(R.string.copy_success), Toast.LENGTH_SHORT).show()
+                            onDismiss()
+                        }
+                    },
+                    enabled = inviteLink != null
+                ) { Text(stringResource(R.string.copy)) }
             }
         },
         dismissButton = {
