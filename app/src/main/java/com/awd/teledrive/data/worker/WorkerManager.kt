@@ -1,6 +1,7 @@
 package com.awd.teledrive.data.worker
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -47,6 +48,7 @@ class TeleDriveWorkerManager @Inject constructor(
 
             val backupRequest = PeriodicWorkRequestBuilder<MediaBackupWorker>(1, TimeUnit.HOURS)
                 .setInputData(data)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_DELAY_SECONDS, TimeUnit.SECONDS)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(requiredNetworkType)
@@ -82,6 +84,7 @@ class TeleDriveWorkerManager @Inject constructor(
 
             val backupRequest = OneTimeWorkRequestBuilder<MediaBackupWorker>()
                 .setInputData(data)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_DELAY_SECONDS, TimeUnit.SECONDS)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -99,8 +102,24 @@ class TeleDriveWorkerManager @Inject constructor(
         }
     }
 
+    // P1-14: সব ব্যাকআপ ওয়ার্কে exponential backoff (সর্বনিম্ন 30s);
+    // retry-এর সংখ্যা প্রতিটি Worker-এ runAttemptCount দিয়ে সীমাবদ্ধ।
+    companion object {
+        private const val BACKOFF_DELAY_SECONDS = 30L
+    }
+
     fun scheduleCoreRefresh() {
+        // P1-14: আগে এই 6-ঘণ্টার রিফ্রেশ কেউ schedule করত না (dead
+        // code) — এখন অ্যাপ চালুর সময় TeleDriveApplication থেকে
+        // ডাকা হয়। fetchFiles() নেটওয়ার্ক লাগে বলে CONNECTED
+        // constraint দেওয়া হয়েছে।
         val refreshRequest = PeriodicWorkRequestBuilder<BackupWorker>(6, TimeUnit.HOURS)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_DELAY_SECONDS, TimeUnit.SECONDS)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
             .build()
 
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
