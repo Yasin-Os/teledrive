@@ -589,7 +589,7 @@ fun PhotoEditorScreen(
                             )
                             val outFile = saveBitmapToGalleryAndCache(context, finalBmp, "Edited_$fileName")
                             withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Saved to Gallery!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.saved_to_gallery), Toast.LENGTH_SHORT).show()
                                 if (outFile != null) onSaveEdited(outFile) else onCancel()
                             }
                         } finally {
