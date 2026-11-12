@@ -122,7 +122,7 @@ class AuthRepository @Inject constructor(
             systemVersion = android.os.Build.VERSION.RELEASE ?: "1.0"
             applicationVersion = "2.0"
             // Encrypt the TDLib database (see resolveTdlibEncryptionKey).
-            encryptionKey = resolveTdlibEncryptionKey()
+            databaseEncryptionKey = resolveTdlibEncryptionKey()
         }
         telegramClient.send(params) { _ -> }
     }
