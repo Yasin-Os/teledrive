@@ -1148,6 +1148,70 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    // ---- Batch 7b smart search (additional path; getItems /
+    // searchGlobalPage above are untouched and keep working for their
+    // existing callers) ----
+
+    /**
+     * Name-FTS + content-FTS + filters search (see buildSmartSearchQuery).
+     * The SQL already orders folders first then newest first — do NOT
+     * re-sort here, or the folders-first order is lost.
+     */
+    fun smartSearch(
+        query: String,
+        filters: SmartSearchFilters
+    ): Flow<List<SmartSearchResult>> {
+        return driveDao.smartSearchRaw(buildSmartSearchQuery(query, filters)).map { rows ->
+            rows.filter { (!it.item.isFolder || it.item.isVirtual) && it.item.virtualParentId != SAFE_SPACE_VIRTUAL_ID }
+                .map { row ->
+                    val entity = row.item
+                    val item = if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                    SmartSearchResult(item, row.matchedInContent != 0)
+                }
+        }
+    }
+
+    fun getRecentSearches(): Flow<List<String>> {
+        return driveDao.getRecentSearches().map { rows -> rows.map { it.query } }
+    }
+
+    fun saveRecentSearch(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return
+        scope.launch { driveDao.saveRecentSearch(trimmed) }
+    }
+
+    fun deleteRecentSearch(query: String) {
+        scope.launch { driveDao.deleteRecentSearch(query) }
+    }
+
+    /**
+     * Batch 7b content search: best-effort index of one file's text.
+     * Called from PreviewViewModel when a local copy is available for
+     * preview. Encrypted files are skipped inside the indexer (never
+     * index secure content into the plaintext FTS table) and any failure
+     * is swallowed there, so this can never break preview.
+     */
+    fun indexFileContentForSearch(file: DriveItem.File) {
+        if (file.isEncrypted) return
+        scope.launch { contentSearchIndexer.indexFile(file) }
+    }
+
+    private val contentSearchIndexer by lazy { ContentSearchIndexer(driveDao) }
+
+    // ---- Vault 2.0 encrypt-on-hide (Batch 7b vault side) ----
+
+    /**
+     * Records an encrypted local copy: localPath becomes the ".enc" path
+     * and the row is marked encrypted. Used by SecureStorageViewModel to
+     * make the encrypt-on-hide toggle actually persist (until this lands
+     * the toggle is inert by design — see persistEncryptedLocalCopy).
+     */
+    suspend fun markLocalCopyEncrypted(itemId: Long, chatId: Long, encryptedPath: String) {
+        driveDao.markLocalCopyEncrypted(itemId, chatId, encryptedPath)
+    }
+
     fun fetchFiles(chatId: Long? = null) {
         ensureSavedMessagesChat { resolvedChatId ->
             telegramClient.send(TdApi.LoadChats(TdApi.ChatListMain(), 20)) {
