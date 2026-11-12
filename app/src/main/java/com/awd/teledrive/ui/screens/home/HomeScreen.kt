@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.widget.Toast
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -2117,9 +2118,9 @@ private fun deleteOriginalUriFromPhone(context: Context, uri: Uri) {
             DocumentsContract.deleteDocument(context.contentResolver, uri)
             return
         }
-    } catch (e: Exception) {}
+    } catch (e: Exception) { Log.w("HomeScreen", "deleteOriginalUriFromPhone: deleteDocument failed", e) }
     try {
         context.contentResolver.delete(uri, null, null)
-    } catch (e: Exception) {}
+    } catch (e: Exception) { Log.w("HomeScreen", "deleteOriginalUriFromPhone: contentResolver.delete failed", e) }
 }
 
