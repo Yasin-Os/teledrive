@@ -27,8 +27,6 @@
         android:icon="@drawable/ic_mycloud_logo"
         android:roundIcon="@drawable/ic_mycloud_logo"
         android:label="@string/app_name"
-        android:largeHeap="true"
-        android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.Teledrive"
         tools:targetApi="35">
