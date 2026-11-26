@@ -26,14 +26,11 @@ interface TransferDao {
     @Query("DELETE FROM transfers WHERE remoteUniqueId = :uniqueId")
     suspend fun deleteTransfer(uniqueId: String)
 
-    @Query("DELETE FROM transfers WHERE status = 'Completed' OR status = 'Selesai' OR status = 'Cancelled' OR status = 'Dibatalkan' OR status LIKE 'Gagal%' OR status LIKE 'Failed%'")
+    // Only the status strings TransferRepository.Status defines are
+    // matched; the old Indonesian values ('Selesai', 'Dibatalkan',
+    // 'Gagal%') were never written by this app (L3).
+    @Query("DELETE FROM transfers WHERE status = 'Completed' OR status = 'Cancelled' OR status LIKE 'Failed%'")
     suspend fun clearCompleted()
-
-    @Query("UPDATE transfers SET progress = :progress, status = :status, downloadedSize = :downloadedSize WHERE remoteUniqueId = :uniqueId")
-    suspend fun updateProgress(uniqueId: String, progress: Float, status: String, downloadedSize: Long)
-
-    @Query("UPDATE transfers SET progress = :progress, status = :status WHERE remoteUniqueId = :uniqueId")
-    suspend fun updateProgressOnly(uniqueId: String, progress: Float, status: String)
 
     @Query("UPDATE transfers SET progress = :progress, status = :status, downloadedSize = :size WHERE remoteUniqueId = :uniqueId")
     suspend fun updateProgressFull(uniqueId: String, progress: Float, status: String, size: Long)
