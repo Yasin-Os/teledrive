@@ -406,11 +406,15 @@ fun SecureStorageScreen(
                     if (pickedIds.isNotEmpty()) {
                         Button(
                             onClick = {
-                                viewModel.hideCloudFilesInSafeFolder(
-                                    filteredCloudFiles.filter { it.id in pickedIds }
-                                )
+                                // L24: pickedIds persists across filter/search
+                                // changes, so hiding filteredCloudFiles only
+                                // silently dropped picks made under another
+                                // filter. Hide from the full available list
+                                // and report the number actually hidden.
+                                val toHide = availableCloudFiles.filter { it.id in pickedIds }
+                                viewModel.hideCloudFilesInSafeFolder(toHide)
                                 showCloudPickerSheet = false
-                                Toast.makeText(context, "${pickedIds.size} files hidden in Safe folder", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "${toHide.size} files hidden in Safe folder", Toast.LENGTH_SHORT).show()
                             }
                         ) {
                             Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -752,6 +756,7 @@ fun SecureStorageScreen(
 private fun formatFileSize(size: Long): String {
     if (size <= 0) return "0 B"
     val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt()
+    // L28: sizes >= 1 PB used to index past the end of `units` (crash).
+    val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt().coerceAtMost(units.lastIndex)
     return String.format(Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
 }
