@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
@@ -80,6 +81,7 @@ fun DriveItemMenu(
     onStarClick: () -> Unit,
     onInfoClick: () -> Unit,
     onRenameClick: (() -> Unit)? = null,
+    onMoveClick: (() -> Unit)? = null,
     onSaveAsPhoneClick: (() -> Unit)? = null,
     onDownloadClick: () -> Unit,
     onDeleteClick: (() -> Unit)? = null
@@ -111,6 +113,16 @@ fun DriveItemMenu(
                 text = { Text(stringResource(R.string.rename)) },
                 onClick = { it(); onDismissRequest() },
                 leadingIcon = { Icon(Icons.Default.Edit, null) }
+            )
+        }
+        // M29: Move was unreachable — the menu had no Move item and the
+        // list/grid items never forwarded it. Files only: moving a folder
+        // is not supported by moveItemsToVirtualFolder.
+        if (item is DriveItem.File && onMoveClick != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.move)) },
+                onClick = { onMoveClick(); onDismissRequest() },
+                leadingIcon = { Icon(Icons.Default.DriveFileMove, null) }
             )
         }
         if (!isSecure) {
