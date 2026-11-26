@@ -92,29 +92,36 @@ class MediaBackupWorker(
             if (filesToBackup.isEmpty()) return@withContext Result.success()
 
             // ১টি ১টি করে (1-by-1) ফাইল আপলোড করবে এবং শেষ হওয়া পর্যন্ত অপেক্ষা করবে
-            filesToBackup.forEachIndexed { index, file ->
+            filesToBackup.forEachIndexed { index, target ->
+                val file = target.file ?: return@forEachIndexed
                 if (!file.exists() || !file.isFile) return@forEachIndexed
 
                 val currentCount = index + 1
                 val totalCount = filesToBackup.size
                 val originalPath = file.absolutePath
-                val fileKey = "${originalPath}_${file.length()}"
-                
+                // H14: use the scan key — NOT a key re-derived from the temp
+                // file's path (for SAF targets that never matched the
+                // recorded key, so every SAF file re-uploaded forever).
+                val fileKey = target.key
+
                 setProgress(workDataOf(
-                    "progress" to currentCount.toFloat() / totalCount.toFloat(), 
-                    "fileName" to file.name,
+                    "progress" to currentCount.toFloat() / totalCount.toFloat(),
+                    "fileName" to target.name,
                     "current" to currentCount,
                     "total" to totalCount
                 ))
-                
+
                 safeSetForeground(createForegroundInfo(currentCount, totalCount))
 
                 driveRepository.uploadFileAndWait(
                     filePath = originalPath,
-                    originalFileName = file.name,
+                    originalFileName = target.name,
                     forceDeleteSource = deleteAfterBackup,
                     backupTrackingKey = fileKey
                 )
+                // H14: a SAF temp copy is deleted once its upload is
+                // recorded (the stale-temp sweep is the backstop).
+                driveRepository.cleanupSafTempFile(target)
                 delay(300)
             }
             
