@@ -26,42 +26,56 @@ object FileUtils {
         val buffer = ByteArray(1024 * 1024) // 1MB buffer
         val totalSize = sourceFile.length()
         var totalBytesReadAcrossParts = 0L
-        
-        FileInputStream(sourceFile).use { fis ->
-            var partCounter = 1
-            var bytesReadInPart = 0L
-            var bytesRead: Int
-            
-            var currentPartFile = createTempPartFile(context, sourceFile.name, partCounter)
-            var fos = FileOutputStream(currentPartFile)
-            parts.add(currentPartFile)
 
-            while (fis.read(buffer).also { bytesRead = it } != -1) {
-                if (bytesReadInPart + bytesRead > chunkSize) {
-                    val remainingInChunk = (chunkSize - bytesReadInPart).toInt()
-                    fos.write(buffer, 0, remainingInChunk)
-                    fos.close()
+        // M35: the output stream is closed in a finally block and partial
+        // parts are deleted on failure. Previously a cancel/error leaked
+        // the file descriptor and left stale .tdpart files behind.
+        var fos: FileOutputStream? = null
+        try {
+            FileInputStream(sourceFile).use { fis ->
+                var partCounter = 1
+                var bytesReadInPart = 0L
+                var bytesRead: Int
 
-                    partCounter++
-                    bytesReadInPart = (bytesRead - remainingInChunk).toLong()
-                    currentPartFile = createTempPartFile(context, sourceFile.name, partCounter)
-                    fos = FileOutputStream(currentPartFile)
-                    fos.write(buffer, remainingInChunk, bytesRead - remainingInChunk)
-                    parts.add(currentPartFile)
-                } else {
-                    fos.write(buffer, 0, bytesRead)
-                    bytesReadInPart += bytesRead
+                var currentPartFile = createTempPartFile(context, sourceFile.name, partCounter)
+                fos = FileOutputStream(currentPartFile)
+                parts.add(currentPartFile)
+
+                while (fis.read(buffer).also { bytesRead = it } != -1) {
+                    if (bytesReadInPart + bytesRead > chunkSize) {
+                        val remainingInChunk = (chunkSize - bytesReadInPart).toInt()
+                        fos?.write(buffer, 0, remainingInChunk)
+                        fos?.close()
+                        fos = null
+
+                        partCounter++
+                        bytesReadInPart = (bytesRead - remainingInChunk).toLong()
+                        currentPartFile = createTempPartFile(context, sourceFile.name, partCounter)
+                        fos = FileOutputStream(currentPartFile)
+                        fos?.write(buffer, remainingInChunk, bytesRead - remainingInChunk)
+                        parts.add(currentPartFile)
+                    } else {
+                        fos?.write(buffer, 0, bytesRead)
+                        bytesReadInPart += bytesRead
+                    }
+
+                    totalBytesReadAcrossParts += bytesRead
+                    if (totalSize > 0) {
+                        onProgress(totalBytesReadAcrossParts.toFloat() / totalSize.toFloat())
+                    }
+
+                    // Allow other tasks to breathe, prevents "black screen" and UI freeze
+                    kotlinx.coroutines.yield()
                 }
-                
-                totalBytesReadAcrossParts += bytesRead
-                if (totalSize > 0) {
-                    onProgress(totalBytesReadAcrossParts.toFloat() / totalSize.toFloat())
-                }
-                
-                // Allow other tasks to breathe, prevents "black screen" and UI freeze
-                kotlinx.coroutines.yield()
+                fos?.close()
+                fos = null
             }
-            fos.close()
+        } catch (e: Exception) {
+            try { fos?.close() } catch (_: Exception) {}
+            parts.forEach { try { it.delete() } catch (_: Exception) {} }
+            throw e
+        } finally {
+            try { fos?.close() } catch (_: Exception) {}
         }
         parts
     }
@@ -73,7 +87,11 @@ object FileUtils {
         val totalSize = parts.sumOf { it.length() }
         var bytesMerged = 0L
         
+        // M35: truncate any previous (possibly larger) target first:
+        // without this, leftover trailing bytes of an old file corrupt
+        // the merged output.
         RandomAccessFile(targetFile, "rw").use { raf ->
+            raf.setLength(0)
             parts.forEach { part ->
                 FileInputStream(part).use { fis ->
                     val buffer = ByteArray(1024 * 1024)

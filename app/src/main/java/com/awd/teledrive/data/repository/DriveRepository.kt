@@ -69,6 +69,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -130,6 +131,46 @@ class DriveRepository @Inject constructor(
                         val oldId = update.oldMessageId
                         val tempId = pendingUploadTempIds.remove(oldId)
                         val file = extractTdFileFromMessage(msg)
+
+                        // The id TDLib returns in a send callback is a
+                        // temporary local id; the final server id only
+                        // arrives here. Fix up every place that recorded
+                        // the temp id, or later edits/deletes target a
+                        // message that does not exist (MESSAGE_NOT_FOUND).
+                        if (oldId != 0L && oldId != msg.id) {
+                            if (manifestMessageId == oldId) manifestMessageId = msg.id
+                            pendingManifestPartTempIds.remove(oldId)?.let { (generation, partIndex) ->
+                                // The final id can arrive before the chunked
+                                // save's completion block adopts the
+                                // generation: then the temp id is not in
+                                // manifestPartMessageIds yet, so stash it for
+                                // the completion block to pick up.
+                                if (manifestPartMessageIds[partIndex] == oldId) {
+                                    manifestPartMessageIds[partIndex] = msg.id
+                                } else {
+                                    manifestPartFinalIds[oldId] = msg.id
+                                }
+                            }
+                            pendingSplitPartTempIds.remove(oldId)?.let { (groupId, index) ->
+                                splitUploads[groupId]?.let { state ->
+                                    synchronized(state) { state.finalPartIds[index] = msg.id }
+                                    trySendSplitMaster(state)
+                                }
+                            }
+                            // A split-master metadata message also
+                            // carries its temp id until this update.
+                            fixSplitMasterMetadataId(oldId, msg.id)
+                            synchronized(manifestLock) {
+                                val vf = currentManifest.fileMappings[oldId.toString()]
+                                if (vf != null) {
+                                    val updated = currentManifest.fileMappings.toMutableMap()
+                                    updated.remove(oldId.toString())
+                                    updated[msg.id.toString()] = vf
+                                    currentManifest = compactManifest(currentManifest.copy(fileMappings = updated))
+                                    saveCloudManifestDebounced()
+                                }
+                            }
+                        }
 
                         if (tempId != null || file != null) {
                             transferRepository.completeAndCleanupTransfer(
@@ -329,12 +370,63 @@ class DriveRepository @Inject constructor(
     private val VFOLDER_META_PREFIX = "#TELEDRIVE_VFOLDER_DATA"
     private val FILE_META_PREFIX = "#TELEDRIVE_FILE_DATA"
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-    private var currentManifest = TeleDriveManifest()
+    // M8: updatedAt = 0 until the first fetch/mutation (a fresh TeleDriveManifest() defaults updatedAt to 'now', which would wrongly outrank a newer cloud manifest in mergeManifests' recency check).
+    private var currentManifest = TeleDriveManifest(updatedAt = 0)
     // Dedicated lock for manifest mutations. Never synchronize on
     // currentManifest itself: it is a var that gets reassigned, so the
     // lock object would change under the threads using it.
     private val manifestLock = Any()
     private var manifestMessageId: Long = 0
+
+    // Manifest transport limits: a Telegram text message caps at 4096
+    // chars. A manifest that no longer fits in one message is saved as
+    // numbered parts instead of being silently dropped (H9).
+    private val MANIFEST_PART_PREFIX = "#TELEDRIVE_MANIFEST_PART"
+    private val MANIFEST_SINGLE_MESSAGE_LIMIT = 4000
+    private val MANIFEST_CHUNK_SIZE = 3500
+    // Chunked-manifest bookkeeping: part index -> message id of the
+    // newest complete generation, plus that generation's id. The ids
+    // TDLib returns in send callbacks are temporary local ids; the final
+    // server ids arrive via UpdateMessageSendSucceeded (see the init
+    // collector) and replace them here.
+    private val manifestPartMessageIds = ConcurrentHashMap<Int, Long>()
+    private var manifestPartGeneration: Long = 0L
+    private var lastManifestPartGeneration: Long = 0L
+    // Temporary local message id -> (chunk generation, part index), so
+    // UpdateMessageSendSucceeded can fix a chunk id up to its final id.
+    private val pendingManifestPartTempIds = ConcurrentHashMap<Long, Pair<Long, Int>>()
+    // Temporary local message id -> final server id, for chunk parts
+    // whose UpdateMessageSendSucceeded arrived BEFORE the generation was
+    // adopted (the completion block picks these up when it adopts).
+    private val manifestPartFinalIds = ConcurrentHashMap<Long, Long>()
+
+    // In-flight split uploads (C11): one accumulator per group, holding
+    // the final (server-assigned) part message ids and per-part success.
+    // The master record is sent only once every part has both uploaded
+    // successfully AND its final id is known.
+    private class SplitUploadState(
+        val groupId: String,
+        val cleanName: String,
+        val totalSize: Long,
+        val mimeType: String,
+        val totalParts: Int,
+        val virtualFolderId: String?,
+        val isEncrypted: Boolean,
+        val backupTrackingKey: String?,
+        val autoDeleteEnabled: Boolean,
+        val sourceFile: File
+    ) {
+        // Final Telegram message ids, by part index; null until the
+        // UpdateMessageSendSucceeded for that part arrives.
+        val finalPartIds = arrayOfNulls<Long>(totalParts)
+        val partOk = BooleanArray(totalParts)
+        var completedCount = 0
+        var masterSent = false
+    }
+    private val splitUploads = ConcurrentHashMap<String, SplitUploadState>()
+    // Temporary local message id -> (split group id, part index), so the
+    // UpdateMessageSendSucceeded handler can record the final part id.
+    private val pendingSplitPartTempIds = ConcurrentHashMap<Long, Pair<String, Int>>()
 
     private fun finishChannelDiscovery(chatId: Long) {
         val callbacks: List<(Long) -> Unit>
@@ -817,12 +909,22 @@ class DriveRepository @Inject constructor(
             val allMessages = mutableListOf<TdApi.Message>()
             var searchDone = false
             var historyDone = false
+            // M34: both flags and the message list are shared by two
+            // concurrent TDLib callbacks. Guard every read and write with
+            // the same lock, and finish exactly once: previously the
+            // flags were unsynchronized and the list was read outside
+            // synchronized(allMessages), so the fetch could complete
+            // twice, miss messages, or throw ConcurrentModificationException.
+            var finished = false
 
             fun tryFinish() {
-                if (searchDone && historyDone) {
-                    processManifestMessages(allMessages.distinctBy { it.id })
-                    onComplete()
+                val snapshot: List<TdApi.Message> = synchronized(allMessages) {
+                    if (finished || !searchDone || !historyDone) return
+                    finished = true
+                    allMessages.distinctBy { it.id }
                 }
+                processManifestMessages(snapshot)
+                onComplete()
             }
 
             val searchRequest = TdApi.SearchChatMessages().apply {
@@ -831,33 +933,47 @@ class DriveRepository @Inject constructor(
                 this.limit = 30
             }
             telegramClient.send(searchRequest) { result ->
-                if (result is TdApi.Messages) synchronized(allMessages) { allMessages.addAll(result.messages.toList()) }
-                searchDone = true
+                synchronized(allMessages) {
+                    if (result is TdApi.Messages) allMessages.addAll(result.messages.toList())
+                    searchDone = true
+                }
                 tryFinish()
             }
             telegramClient.send(TdApi.GetChatHistory(chatId, 0, 0, 50, false)) { result ->
-                if (result is TdApi.Messages) synchronized(allMessages) { allMessages.addAll(result.messages.toList()) }
-                historyDone = true
+                synchronized(allMessages) {
+                    if (result is TdApi.Messages) allMessages.addAll(result.messages.toList())
+                    historyDone = true
+                }
                 tryFinish()
             }
         }
     }
 
     private fun processManifestMessages(messages: List<TdApi.Message>) {
+        val texts = messages.mapNotNull { msg ->
+            val content = msg.content
+            if (content is TdApi.MessageText) msg to content.text.text else null
+        }
+        // Chunked manifests (H9) are reassembled first: only the newest
+        // complete generation counts, and chunk messages must never be
+        // mistaken for single-manifest messages below.
+        val chunked = reassembleChunkedManifest(texts)
         val possibleManifests = messages.filter { msg ->
             val content = msg.content
             if (content is TdApi.MessageText) {
                 val text = content.text.text
-                text.contains(MANIFEST_PREFIX) || text.contains(MANIFEST_BACKUP_PREFIX) || text.contains("\"virtualFolders\"")
+                !text.startsWith(MANIFEST_PART_PREFIX) &&
+                    (text.contains(MANIFEST_PREFIX) || text.contains(MANIFEST_BACKUP_PREFIX) || text.contains("\"virtualFolders\""))
             } else false
         }
-        if (possibleManifests.isEmpty()) return
+        if (possibleManifests.isEmpty() && chunked == null) return
 
         manifestMessageId = possibleManifests
-            .filter { (it.content as? TdApi.MessageText)?.text?.text?.contains(MANIFEST_PREFIX) == true && !(it.content as TdApi.MessageText).text.text.contains(MANIFEST_BACKUP_PREFIX) }
+            .filter { (it.content as? TdApi.MessageText)?.text?.text?.contains(MANIFEST_PREFIX) == true && !(it.content as TdApi.MessageText).text.text.contains(MANIFEST_BACKUP_PREFIX) && !(it.content as TdApi.MessageText).text.text.startsWith(MANIFEST_PART_PREFIX) }
             .maxByOrNull { it.date }?.id ?: 0L
 
-        var mergedManifest = TeleDriveManifest()
+        var mergedManifest = TeleDriveManifest(updatedAt = 0)
+        val ordered = mutableListOf<Pair<Int, TeleDriveManifest>>()
         possibleManifests.sortedBy { it.date }.forEach { msg ->
             val content = msg.content
             if (content is TdApi.MessageText) {
@@ -866,11 +982,15 @@ class DriveRepository @Inject constructor(
                 if (jsonStartIndex != -1) {
                     try {
                         val m = json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex).trim())
-                        mergedManifest = mergeManifests(mergedManifest, m)
+                        ordered.add(msg.date to m)
                     } catch (e: Exception) { Log.w("DriveRepo", "processManifestMessages failed", e) }
                 }
             }
         }
+        // The chunked manifest joins the merge at its newest part's date.
+        if (chunked != null) ordered.add(chunked.second to chunked.first)
+        ordered.sortBy { it.first }
+        ordered.forEach { (_, m) -> mergedManifest = mergeManifests(mergedManifest, m) }
         synchronized(manifestLock) {
             // Re-merge under the lock so a manifest update made while the
             // cloud fetch was in flight is not clobbered by the wholesale
@@ -880,20 +1000,108 @@ class DriveRepository @Inject constructor(
         syncVirtualFoldersToDb()
     }
 
+    /**
+     * H9: one chunked-manifest part message. Header:
+     * `#TELEDRIVE_MANIFEST_PART <generation> <index>/<total>`, followed
+     * by a slice of the manifest JSON.
+     */
+    private data class ManifestPart(
+        val generation: Long,
+        val index: Int,
+        val total: Int,
+        val payload: String,
+        val date: Int
+    )
+
+    private fun parseManifestPart(text: String, date: Int): ManifestPart? {
+        val newline = text.indexOf('\n')
+        if (newline == -1) return null
+        val header = text.substring(0, newline).trim().split(' ')
+        if (header.size != 3) return null
+        val generation = header[1].toLongOrNull() ?: return null
+        val indexTotal = header[2].split('/')
+        if (indexTotal.size != 2) return null
+        val index = indexTotal[0].toIntOrNull() ?: return null
+        val total = indexTotal[1].toIntOrNull() ?: return null
+        if (index < 1 || total < 1 || index > total) return null
+        val payload = text.substring(newline + 1)
+        if (payload.isEmpty()) return null
+        return ManifestPart(generation, index, total, payload, date)
+    }
+
+    /**
+     * H9: reassemble the newest COMPLETE generation of chunked-manifest
+     * parts. An incomplete generation (a part failed to send) is ignored
+     * so a half-written manifest can never corrupt the local state.
+     * Returns the manifest and its newest part's date, or null.
+     */
+    private fun reassembleChunkedManifest(texts: List<Pair<TdApi.Message, String>>): Pair<TeleDriveManifest, Int>? {
+        val parts = texts.mapNotNull { (msg, text) ->
+            if (!text.startsWith(MANIFEST_PART_PREFIX)) null
+            else parseManifestPart(text, msg.date)
+        }
+        if (parts.isEmpty()) return null
+        val byGeneration = parts.groupBy { it.generation }
+        val complete = byGeneration.entries.mapNotNull { (generation, genParts) ->
+            val total = genParts.first().total
+            if (genParts.map { it.index }.toSet().size != total) null
+            else {
+                // Duplicate part sends: keep the newest copy of each index.
+                val byIndex = genParts.groupBy { it.index }
+                    .mapValues { (_, same) -> same.maxByOrNull { it.date }!! }
+                generation to byIndex
+            }
+        }
+        if (complete.isEmpty()) return null
+        val (generation, byIndex) = complete.maxByOrNull { it.first }!!
+        val total = byIndex.values.first().total
+        val payloads = (1..total).map { index -> byIndex[index]?.payload }
+        if (payloads.any { it == null }) return null
+        val jsonText = payloads.joinToString("") { it!! }
+        return try {
+            val manifest = json.decodeFromString<TeleDriveManifest>(jsonText)
+            val newestDate = byIndex.values.maxOf { it.date }
+            manifest to newestDate
+        } catch (e: Exception) {
+            Log.w("DriveRepo", "Chunked manifest generation $generation failed to decode", e)
+            null
+        }
+    }
+
     private fun compactManifest(manifest: TeleDriveManifest): TeleDriveManifest {
+        // Drop only dead mappings ("0"/empty targets). fileMetadataIds
+        // must survive: moveMessagesInternal re-points it at the new
+        // message ids, and wiping it here made that re-pointing dead (M6).
         val compactMappings = manifest.fileMappings.filterValues { it != "0" && it.isNotEmpty() }
+        val compactFileMeta = manifest.fileMetadataIds.filterValues { it != 0L }
         return manifest.copy(
             fileMappings = compactMappings,
-            fileMetadataIds = emptyMap()
+            fileMetadataIds = compactFileMeta
         )
     }
 
     private fun mergeManifests(base: TeleDriveManifest, other: TeleDriveManifest): TeleDriveManifest {
-        val mergedDeletedIds = base.deletedFolderIds.toMutableMap().apply { putAll(other.deletedFolderIds) }
+        // M8: the manifest with the newer updatedAt wins overlapping
+        // keys. A concurrent cloud fetch must not undo local edits that
+        // are still inside the 1200 ms save debounce, and a newer cloud
+        // manifest must still win. Keys only one side has are always kept.
+        // (The per-message accumulation in processManifestMessages starts
+        // from updatedAt = 0, so newer messages still override older ones.)
+        val otherIsNewer = other.updatedAt >= base.updatedAt
+        // Deletion is an event: the latest deletion timestamp wins.
+        val mergedDeletedIds = base.deletedFolderIds.toMutableMap()
+        other.deletedFolderIds.forEach { (id, deletedAt) ->
+            val existing = mergedDeletedIds[id]
+            if (existing == null || deletedAt > existing) mergedDeletedIds[id] = deletedAt
+        }
         val mergedFolders = base.virtualFolders.toMutableMap()
         other.virtualFolders.forEach { (id, vf) ->
             val deletedAt = mergedDeletedIds[id]
-            if (deletedAt == null || vf.createdAt > deletedAt) mergedFolders[id] = vf
+            if (deletedAt != null && vf.createdAt <= deletedAt) {
+                mergedFolders.remove(id)
+                return@forEach
+            }
+            if (otherIsNewer || !mergedFolders.containsKey(id)) mergedFolders[id] = vf
         }
         mergedFolders.keys.removeIf { id ->
             val deletedAt = mergedDeletedIds[id]
@@ -902,30 +1110,49 @@ class DriveRepository @Inject constructor(
         return base.copy(
             updatedAt = maxOf(base.updatedAt, other.updatedAt),
             virtualFolders = mergedFolders,
-            fileMappings = (base.fileMappings + other.fileMappings).filterValues { it != "0" && it.isNotEmpty() },
+            fileMappings = mergeMapsByRecency(base.fileMappings, other.fileMappings, otherIsNewer)
+                .filterValues { it != "0" && it.isNotEmpty() },
             secureFolderChatIds = base.secureFolderChatIds + other.secureFolderChatIds,
-            splitFileMasters = base.splitFileMasters + other.splitFileMasters,
-            folderMetadataIds = base.folderMetadataIds + other.folderMetadataIds,
-            fileMetadataIds = emptyMap(),
+            splitFileMasters = mergeMapsByRecency(base.splitFileMasters, other.splitFileMasters, otherIsNewer),
+            folderMetadataIds = mergeMapsByRecency(base.folderMetadataIds, other.folderMetadataIds, otherIsNewer),
+            fileMetadataIds = mergeMapsByRecency(base.fileMetadataIds, other.fileMetadataIds, otherIsNewer),
             deletedFolderIds = mergedDeletedIds
         )
+    }
+
+    /**
+     * M8: merge two maps so the newer manifest wins overlapping keys,
+     * while keys only the older side has are still adopted (files added
+     * from another device must not be lost).
+     */
+    private fun <K, V> mergeMapsByRecency(base: Map<K, V>, other: Map<K, V>, otherIsNewer: Boolean): Map<K, V> {
+        if (otherIsNewer) return base + other
+        val merged = base.toMutableMap()
+        other.forEach { (key, value) -> merged.putIfAbsent(key, value) }
+        return merged
     }
 
     fun setCloudItemsSafeState(itemIds: List<Long>, hideInSafeFolder: Boolean) {
         scope.launch {
             val targetVirtualParent = if (hideInSafeFolder) SAFE_SPACE_VIRTUAL_ID else "0"
-            val updatedMappings = currentManifest.fileMappings.toMutableMap()
-            itemIds.forEach { id ->
-                driveDao.updateVirtualParent(id, targetVirtualParent)
-                if (hideInSafeFolder) {
-                    updatedMappings[id.toString()] = SAFE_SPACE_VIRTUAL_ID
-                } else {
-                    updatedMappings.remove(id.toString())
-                }
-            }
+            // M7: the whole read-modify-write runs under manifestLock.
+            // Building the map outside the lock let a rename/move/folder
+            // create slip in between the read and the write and be
+            // silently overwritten.
             synchronized(manifestLock) {
+                val updatedMappings = currentManifest.fileMappings.toMutableMap()
+                itemIds.forEach { id ->
+                    if (hideInSafeFolder) {
+                        updatedMappings[id.toString()] = SAFE_SPACE_VIRTUAL_ID
+                    } else {
+                        updatedMappings.remove(id.toString())
+                    }
+                }
                 currentManifest = compactManifest(currentManifest.copy(fileMappings = updatedMappings, updatedAt = System.currentTimeMillis() / 1000))
             }
+            // The Room update is independent of the manifest lock; it
+            // runs after the manifest is consistent again.
+            itemIds.forEach { id -> driveDao.updateVirtualParent(id, targetVirtualParent) }
             saveCloudManifestDebounced()
         }
     }
@@ -1009,6 +1236,14 @@ class DriveRepository @Inject constructor(
     fun createManualCloudBackup() {
         ensureSavedMessagesChat { chatId ->
             val text = "$MANIFEST_BACKUP_PREFIX${System.currentTimeMillis()}\n\n${json.encodeToString(compactManifest(currentManifest))}"
+            if (text.length > MANIFEST_SINGLE_MESSAGE_LIMIT) {
+                // A manual backup is a single text message too: an
+                // oversized manifest would fail silently here just like
+                // the live save did (H9). Chunked backups are a
+                // follow-up; for now fail loudly instead of silently.
+                Log.e("DriveRepo", "Manual cloud backup skipped: manifest is ${text.length} chars, over the single-message limit; use Export manifest JSON instead")
+                return@ensureSavedMessagesChat
+            }
             telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(TdApi.FormattedText(text, emptyArray()), null, true)))
         }
     }
@@ -1038,7 +1273,7 @@ class DriveRepository @Inject constructor(
         val id = "vf_${System.nanoTime()}"
         val folder = VirtualFolder(id, name, parentId, System.currentTimeMillis() / 1000, "virtual_folder", isSecure)
         synchronized(manifestLock) {
-            currentManifest = compactManifest(currentManifest.copy(virtualFolders = currentManifest.virtualFolders + (id to folder)))
+            currentManifest = compactManifest(currentManifest.copy(virtualFolders = currentManifest.virtualFolders + (id to folder), updatedAt = System.currentTimeMillis() / 1000))
         }
         syncVirtualFoldersToDb()
         saveCloudManifestDebounced()
@@ -1055,16 +1290,128 @@ class DriveRepository @Inject constructor(
     private fun saveCloudManifestNow() {
         ensureSavedMessagesChat { chatId ->
             val clean = compactManifest(currentManifest)
-            val text = "$MANIFEST_PREFIX\n\n${json.encodeToString(clean)}"
-            val formatted = TdApi.FormattedText(text, emptyArray())
-            if (manifestMessageId != 0L) {
-                telegramClient.send(TdApi.EditMessageText(chatId, manifestMessageId, null, TdApi.InputMessageText(formatted, null, true)))
+            val jsonText = json.encodeToString(clean)
+            val text = "$MANIFEST_PREFIX\n\n$jsonText"
+            if (text.length <= MANIFEST_SINGLE_MESSAGE_LIMIT) {
+                saveSingleManifest(chatId, text)
             } else {
-                telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(formatted, null, true))) { result ->
-                    if (result is TdApi.Message) manifestMessageId = result.id
+                // H9: the manifest no longer fits in one Telegram
+                // message (4096 chars). Save it as numbered parts
+                // instead of silently dropping every change from here on.
+                saveChunkedManifest(chatId, jsonText)
+            }
+        }
+    }
+
+    private fun saveSingleManifest(chatId: Long, text: String) {
+        val formatted = TdApi.FormattedText(text, emptyArray())
+        if (manifestMessageId != 0L) {
+            telegramClient.send(TdApi.EditMessageText(chatId, manifestMessageId, null, TdApi.InputMessageText(formatted, null, true))) { result ->
+                if (result is TdApi.Error) {
+                    // The stored id may be a stale temporary local id or
+                    // the message may be gone: fall back to a fresh
+                    // message next time instead of retrying a dead edit
+                    // forever (H9).
+                    Log.e("DriveRepo", "Manifest edit failed (${result.code} ${result.message}); will send a fresh manifest message")
+                    manifestMessageId = 0L
+                }
+            }
+        } else {
+            telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(formatted, null, true))) { result ->
+                if (result is TdApi.Message) {
+                    manifestMessageId = result.id
+                } else if (result is TdApi.Error) {
+                    Log.e("DriveRepo", "Manifest send failed (${result.code} ${result.message})")
                 }
             }
         }
+        // A previous chunked save is now superseded: remove its parts
+        // best-effort so the reader never merges stale chunks back in.
+        deleteManifestPartMessages(chatId)
+    }
+
+    /**
+     * H9: save an oversized manifest as numbered part messages. A fresh
+     * generation is sent every time; the reader only trusts the newest
+     * complete generation, so a partially-sent generation can never
+     * corrupt the local state. The previous generation is deleted only
+     * after the new one is fully sent.
+     */
+    private fun saveChunkedManifest(chatId: Long, jsonText: String) {
+        val generation = maxOf(System.currentTimeMillis(), lastManifestPartGeneration + 1)
+        lastManifestPartGeneration = generation
+        val chunks = splitManifestJson(jsonText)
+        val total = chunks.size
+        val previousPartIds = manifestPartMessageIds.values.toList()
+        val sentIds = ConcurrentHashMap<Int, Long>()
+        val finishedCount = AtomicInteger(0)
+        val failedCount = AtomicInteger(0)
+        chunks.forEachIndexed { index, chunk ->
+            val header = "$MANIFEST_PART_PREFIX $generation ${index + 1}/$total\n"
+            val formatted = TdApi.FormattedText(header + chunk, emptyArray())
+            telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(formatted, null, true))) { result ->
+                if (result is TdApi.Message) {
+                    sentIds[index + 1] = result.id
+                    pendingManifestPartTempIds[result.id] = generation to (index + 1)
+                } else {
+                    failedCount.incrementAndGet()
+                    val error = (result as? TdApi.Error)?.let { " (${it.code} ${it.message})" } ?: ""
+                    Log.e("DriveRepo", "Manifest part ${index + 1}/$total failed to send$error")
+                }
+                if (finishedCount.incrementAndGet() == total) {
+                    if (failedCount.get() == 0) {
+                        // New generation is complete: it replaces the old one.
+                        // A part whose final id already arrived (stashed by
+                        // UpdateMessageSendSucceeded) is adopted directly
+                        // instead of its temporary local id.
+                        manifestPartMessageIds.clear()
+                        sentIds.forEach { (index, tempId) ->
+                            manifestPartMessageIds[index] = manifestPartFinalIds.remove(tempId) ?: tempId
+                        }
+                        manifestPartGeneration = generation
+                        if (manifestMessageId != 0L) {
+                            val oldSingle = manifestMessageId
+                            manifestMessageId = 0L
+                            telegramClient.send(TdApi.DeleteMessages(chatId, longArrayOf(oldSingle), true)) {}
+                        }
+                        if (previousPartIds.isNotEmpty()) {
+                            telegramClient.send(TdApi.DeleteMessages(chatId, previousPartIds.toLongArray(), true)) {}
+                        }
+                    } else {
+                        // Incomplete generation: the reader ignores it, the
+                        // previous generation stays live, and the next
+                        // debounced save retries with a newer generation.
+                        sentIds.values.forEach { manifestPartFinalIds.remove(it) }
+                        Log.e("DriveRepo", "Chunked manifest generation $generation incomplete (${failedCount.get()}/$total parts failed); previous generation kept")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun deleteManifestPartMessages(chatId: Long) {
+        if (manifestPartMessageIds.isEmpty()) return
+        val ids = manifestPartMessageIds.values.toList()
+        manifestPartMessageIds.clear()
+        manifestPartGeneration = 0L
+        telegramClient.send(TdApi.DeleteMessages(chatId, ids.toLongArray(), true)) {}
+    }
+
+    /**
+     * H9: split manifest JSON into chunks that fit in one Telegram
+     * message each, without splitting a surrogate pair across chunks.
+     */
+    private fun splitManifestJson(jsonText: String): List<String> {
+        if (jsonText.length <= MANIFEST_CHUNK_SIZE) return listOf(jsonText)
+        val chunks = mutableListOf<String>()
+        var start = 0
+        while (start < jsonText.length) {
+            var end = minOf(start + MANIFEST_CHUNK_SIZE, jsonText.length)
+            if (end < jsonText.length && jsonText[end - 1].isHighSurrogate() && jsonText[end].isLowSurrogate()) end += 1
+            chunks.add(jsonText.substring(start, end))
+            start = end
+        }
+        return chunks
     }
 
     fun getAllFiles(): Flow<List<DriveItem.File>> {
@@ -1433,7 +1780,9 @@ class DriveRepository @Inject constructor(
 
     private fun getAndEnsureVirtualFolder(messageId: Long, caption: String): String {
         val mappedId = currentManifest.fileMappings[messageId.toString()]
-        val tagId = parseVirtualFolderTag(caption)
+        // A caption literally saying "[VF:null]" (written by the old
+        // rename bug, H10) must not conjure a "Folder_null" ghost folder.
+        val tagId = parseVirtualFolderTag(caption)?.takeIf { it != "null" && it.isNotBlank() }
         val finalId = mappedId ?: tagId ?: "0"
         if (finalId == SAFE_SPACE_VIRTUAL_ID) return SAFE_SPACE_VIRTUAL_ID
         
@@ -1487,44 +1836,45 @@ class DriveRepository @Inject constructor(
                         }
                         transferRepository.removeTransfer(placeholderId)
                         val groupId = FileUtils.generateSplitGroupId()
-                        val partMessageIds = mutableListOf<Long>()
-                        
-                        val partUploadOk = BooleanArray(parts.size)
+                        // Parts upload concurrently (upload semaphore: 3),
+                        // so the last-index part can finish first and the
+                        // master must not depend on completion order. A
+                        // SplitUploadState tracks per-part success and the
+                        // final server-assigned message ids; the master is
+                        // sent by trySendSplitMaster once every part has
+                        // been attempted, all succeeded, and every final
+                        // id is known.
+                        val splitState = SplitUploadState(
+                            groupId = groupId,
+                            cleanName = cleanName,
+                            totalSize = sourceFile.length(),
+                            mimeType = FileUtils.getMimeType(cleanName),
+                            totalParts = parts.size,
+                            virtualFolderId = virtualFolderId,
+                            isEncrypted = isChatSecure(targetChatId) || (virtualFolderId != null && isVirtualFolderSecure(virtualFolderId)),
+                            backupTrackingKey = backupTrackingKey,
+                            autoDeleteEnabled = autoDeleteEnabled,
+                            sourceFile = sourceFile
+                        )
+                        splitUploads[groupId] = splitState
                         parts.forEachIndexed { index, part ->
                             val caption = "[TD_SPLIT|ID:$groupId|PART:$index/${parts.size}|NAME:$cleanName]$vfTag"
                             uploadSinglePart(
                                 part.absolutePath, cleanName, targetChatId, caption, virtualFolderId,
                                 deleteSourceAfter = true,
                                 computeContentHash = false,
-                                onMessageSent = { messageId ->
-                                    if (messageId != 0L) partMessageIds.add(messageId)
+                                onMessageSent = { tempMessageId ->
+                                    // The id in the send callback is a
+                                    // temporary local id; the final id
+                                    // arrives via UpdateMessageSendSucceeded.
+                                    if (tempMessageId != 0L) pendingSplitPartTempIds[tempMessageId] = groupId to index
                                 },
                                 onUploadCompleted = { success ->
-                                    // Parts upload serially, so the last part's
-                                    // completion is the moment every part has
-                                    // been attempted — but only finalize when
-                                    // ALL parts succeeded. Never mark the file
-                                    // backed up or delete the phone original
-                                    // on send-accept alone: the last part may
-                                    // still be uploading, or an earlier part
-                                    // may have failed.
-                                    partUploadOk[index] = success
-                                    if (index == parts.size - 1) {
-                                        if (partUploadOk.all { it }) {
-                                            sendSplitMasterMetadata(groupId, cleanName, sourceFile.length(), FileUtils.getMimeType(cleanName), parts.size, virtualFolderId, isChatSecure(targetChatId), partMessageIds)
-                                            if (backupTrackingKey != null) {
-                                                inFlightBackupKeys.remove(backupTrackingKey)
-                                                markFileBackedUp(backupTrackingKey)
-                                            }
-                                            if (autoDeleteEnabled) deletePhoneFileCompletely(sourceFile)
-                                        } else {
-                                            if (backupTrackingKey != null) {
-                                                inFlightBackupKeys.remove(backupTrackingKey)
-                                                recordBackupFailed(backupTrackingKey)
-                                            }
-                                            Log.w("DriveRepo", "Split upload incomplete for $cleanName; phone original kept")
-                                        }
+                                    synchronized(splitState) {
+                                        splitState.partOk[index] = success
+                                        splitState.completedCount++
                                     }
+                                    trySendSplitMaster(splitState)
                                 }
                             )
                         }
@@ -1607,6 +1957,9 @@ class DriveRepository @Inject constructor(
         if (isSecure && password == null) {
             if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
             scope.launch(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.unlock_to_upload), Toast.LENGTH_LONG).show() }
+            // C11: a split part that never starts must still report its
+            // completion, or the split-upload accounting waits forever.
+            try { onUploadCompleted(false) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
             return
         }
         // The session password is being used: reset its inactivity timer.
@@ -1701,7 +2054,8 @@ class DriveRepository @Inject constructor(
                         synchronized(manifestLock) {
                             currentManifest = compactManifest(
                                 currentManifest.copy(
-                                    fileMappings = currentManifest.fileMappings + (result.id.toString() to virtualFolderId)
+                                    fileMappings = currentManifest.fileMappings + (result.id.toString() to virtualFolderId),
+                                    updatedAt = System.currentTimeMillis() / 1000
                                 )
                             )
                         }
@@ -1753,7 +2107,14 @@ class DriveRepository @Inject constructor(
                 }
             }
             
-            val completedSuccess = transferRepository.waitForCompletion(tempId)
+            // waitForCompletion can throw on cancellation; treat that as
+            // a failed upload so the split-upload accounting (and the
+            // caller's onUploadCompleted) still runs exactly once.
+            val completedSuccess = try {
+                transferRepository.waitForCompletion(tempId)
+            } catch (e: Exception) {
+                false
+            }
             
             try {
                 tempEncFile?.let { if (it.exists()) it.delete() }
@@ -1810,6 +2171,61 @@ class DriveRepository @Inject constructor(
         try { MediaScannerConnection.scanFile(context, arrayOf(path), null, null) } catch (e: Exception) { Log.w("DriveRepo", "deletePhoneFileCompletely: media scan failed", e) }
     }
 
+    /**
+     * C11: send the split master record once — and only once — every
+     * part has uploaded successfully and its final Telegram message id
+     * is known. Called both from the last part's upload completion and
+     * from UpdateMessageSendSucceeded (a part's final id can arrive
+     * after its upload already reported success).
+     */
+    private fun trySendSplitMaster(state: SplitUploadState) {
+        synchronized(state) {
+            if (state.masterSent) return
+            if (state.completedCount < state.totalParts) return
+            if (!state.partOk.all { it }) {
+                // At least one part failed: no master, the file stays
+                // un-backed-up and the phone original is kept.
+                state.masterSent = true
+                splitUploads.remove(state.groupId)
+                state.backupTrackingKey?.let { key ->
+                    inFlightBackupKeys.remove(key)
+                    recordBackupFailed(key)
+                }
+                Log.w("DriveRepo", "Split upload incomplete for ${state.cleanName}; phone original kept")
+                return
+            }
+            val partIds = state.finalPartIds.map { it ?: return }
+            state.masterSent = true
+            splitUploads.remove(state.groupId)
+            sendSplitMasterMetadata(
+                state.groupId, state.cleanName, state.totalSize, state.mimeType,
+                state.totalParts, state.virtualFolderId, state.isEncrypted, partIds
+            )
+            state.backupTrackingKey?.let { key ->
+                inFlightBackupKeys.remove(key)
+                markFileBackedUp(key)
+            }
+            if (state.autoDeleteEnabled) deletePhoneFileCompletely(state.sourceFile)
+        }
+    }
+
+    /**
+     * H9/C11: a split-master metadata message id recorded from a send
+     * callback is a temporary local id. Replace it with the final server
+     * id once UpdateMessageSendSucceeded arrives, so deleting a split
+     * file can actually remove its master message.
+     */
+    private fun fixSplitMasterMetadataId(tempId: Long, finalId: Long) {
+        if (tempId == 0L || tempId == finalId) return
+        synchronized(manifestLock) {
+            val entry = currentManifest.splitFileMasters.entries.firstOrNull { it.value.metadataMessageId == tempId } ?: return
+            val updated = currentManifest.splitFileMasters.toMutableMap()
+            updated[entry.key] = entry.value.copy(metadataMessageId = finalId)
+            currentManifest = compactManifest(currentManifest.copy(splitFileMasters = updated))
+        }
+        saveCloudManifestDebounced()
+    }
+
     private fun sendSplitMasterMetadata(groupId: String, name: String, size: Long, mime: String, parts: Int, vfId: String?, enc: Boolean, ids: List<Long>) {
         ensureSavedMessagesChat { chatId ->
             val master = SplitFileMaster(groupId, name, size, mime, parts, vfId, enc, ids)
@@ -1817,7 +2233,7 @@ class DriveRepository @Inject constructor(
             telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(TdApi.FormattedText(text, emptyArray()), null, true))) { result ->
                 val finalMaster = if (result is TdApi.Message) master.copy(metadataMessageId = result.id) else master
                 synchronized(manifestLock) {
-                    currentManifest = compactManifest(currentManifest.copy(splitFileMasters = currentManifest.splitFileMasters + (groupId to finalMaster)))
+                    currentManifest = compactManifest(currentManifest.copy(splitFileMasters = currentManifest.splitFileMasters + (groupId to finalMaster), updatedAt = System.currentTimeMillis() / 1000))
                 }
                 saveCloudManifestDebounced()
             }
@@ -1832,6 +2248,15 @@ class DriveRepository @Inject constructor(
                 launch(Dispatchers.Main) {
                     Toast.makeText(context, "ফাইলটি ইতিমধ্যে অফলাইনে সংরক্ষিত আছে: $fileName", Toast.LENGTH_SHORT).show()
                 }
+                return@launch
+            }
+
+            // C11: a split file is several part messages plus a master
+            // record. Downloading just one part yields a useless slice,
+            // so a split file downloads every part and reassembles the
+            // original with mergeFiles.
+            if (cachedEntity != null && cachedEntity.splitGroupId != null && cachedEntity.totalParts > 1) {
+                downloadSplitFile(cachedEntity)
                 return@launch
             }
 
@@ -1876,10 +2301,169 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    /**
+     * C11: download a whole split file. Every part is fetched (reusing
+     * parts that are already on disk), encrypted parts are decrypted one
+     * by one with the vault session password, and the parts are merged
+     * into the original file. The merged file is recorded as the offline
+     * copy of every part, so tapping any part afterwards opens it.
+     */
+    private suspend fun downloadSplitFile(entity: DriveItemEntity) {
+        val groupId = entity.splitGroupId ?: return
+        val master = synchronized(manifestLock) { currentManifest.splitFileMasters[groupId] }
+        val totalParts = master?.totalParts ?: entity.totalParts
+        if (totalParts <= 1) return
+        val originalName = master?.originalName ?: entity.name
+        val expectedSize = master?.totalSize ?: entity.size * totalParts.toLong()
+        val isEncrypted = master?.isEncrypted ?: entity.isEncrypted
+
+        val parts = try {
+            driveDao.getSplitFileParts(groupId)
+        } catch (e: Exception) {
+            Log.w("DriveRepo", "Split download: could not list parts for $groupId", e)
+            emptyList()
+        }
+        if (parts.size < totalParts) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "ফাইলের সব অংশ পাওয়া যায়নি (${parts.size}/$totalParts) — আবার sync করে দেখুন", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        val orderedParts = parts.sortedBy { it.partIndex }.take(totalParts)
+
+        val password = if (isEncrypted) secureSessionManager.decryptedPassword.value else null
+        if (isEncrypted && password == null) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, context.getString(R.string.unlock_to_upload), Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        if (password != null) secureSessionManager.touchSession()
+
+        val targetDir = File(context.cacheDir, "split_downloads").apply { if (!exists()) mkdirs() }
+        val targetFile = File(targetDir, sanitizeFileName(originalName))
+        if (targetFile.exists() && expectedSize > 0 && targetFile.length() == expectedSize) {
+            // Already reassembled earlier: just (re)record it as the
+            // offline copy of every part.
+            orderedParts.forEach { part ->
+                driveDao.updateFileLocalPaths(part.telegramFileId, part.remoteUniqueId ?: "", targetFile.absolutePath)
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "ফাইলটি ইতিমধ্যে অফলাইনে সংরক্ষিত আছে: $originalName", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+        if (expectedSize > 0 && !FileUtils.hasEnoughSpace(context, expectedSize)) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "ফোনে পর্যাপ্ত জায়গা নেই", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        startTransferService()
+        val downloaded = mutableListOf<File>()
+        val tempDecrypted = mutableListOf<File>()
+        try {
+            for (part in orderedParts) {
+                val partFile = downloadSplitPart(part) ?: run {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "অংশ ${part.partIndex + 1}/$totalParts ডাউনলোড ব্যর্থ হয়েছে", Toast.LENGTH_LONG).show()
+                    }
+                    return
+                }
+                if (isEncrypted && password != null) {
+                    // Each part was encrypted on its own (own salt/IV),
+                    // so decrypt part by part before merging.
+                    val plainPart = File(targetDir, "dec_${System.nanoTime()}_${part.partIndex}.tmp")
+                    try {
+                        encryptionManager.decryptFile(partFile, plainPart, password) {}
+                    } catch (e: Exception) {
+                        Log.w("DriveRepo", "Split download: decrypt failed for part ${part.partIndex}", e)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "ফাইলটি খোলা যায়নি — পাসওয়ার্ড যাচাই করুন", Toast.LENGTH_LONG).show()
+                        }
+                        return
+                    }
+                    tempDecrypted.add(plainPart)
+                    downloaded.add(plainPart)
+                } else {
+                    downloaded.add(partFile)
+                }
+            }
+            // mergeFiles truncates the target first (M35), so a stale
+            // larger file from an earlier attempt cannot corrupt this one.
+            FileUtils.mergeFiles(downloaded, targetFile)
+            if (expectedSize > 0 && targetFile.length() != expectedSize) {
+                Log.w("DriveRepo", "Split download: merged size ${targetFile.length()} != expected $expectedSize for $originalName")
+                targetFile.delete()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "ফাইলটি জোড়া লাগাতে ব্যর্থ হয়েছে — আবার চেষ্টা করুন", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
+            orderedParts.forEach { part ->
+                driveDao.updateFileLocalPaths(part.telegramFileId, part.remoteUniqueId ?: "", targetFile.absolutePath)
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "ডাউনলোড সম্পন্ন: $originalName", Toast.LENGTH_SHORT).show()
+            }
+        } finally {
+            tempDecrypted.forEach { try { it.delete() } catch (_: Exception) {} }
+        }
+    }
+
+    /**
+     * C11: fetch one split part (reusing it if it is already on disk)
+     * and return its local file, or null on failure.
+     */
+    private suspend fun downloadSplitPart(part: DriveItemEntity): File? {
+        if (part.telegramFileId == 0) return null
+        verifyOfflinePath(part.localPath)?.let { File(it) }?.takeIf { it.exists() && it.length() > 0 }?.let { return it }
+        val key = part.remoteUniqueId?.takeIf { it.isNotEmpty() } ?: "dl_${part.telegramFileId}"
+        transferRepository.enqueueTransfer(
+            fileId = part.telegramFileId,
+            remoteUniqueId = key,
+            fileName = part.name,
+            isDownload = true,
+            totalSize = part.size,
+            localPath = null
+        ) {
+            telegramClient.send(TdApi.DownloadFile(part.telegramFileId, 32, 0, 0, false))
+        }
+        // waitForCompletion caps at 30 minutes per call; a big part on a
+        // slow connection can outlast that, so keep waiting while the
+        // transfer is still alive.
+        while (true) {
+            val ok = transferRepository.waitForCompletion(key)
+            val local = driveDao.getItemById(part.id, part.parentChatId)
+                ?.localPath?.let { verifyOfflinePath(it) }?.let { File(it) }
+                ?.takeIf { it.exists() && it.length() > 0 }
+            if (local != null) return local
+            if (!ok) {
+                if (!transferRepository.transfers.value.containsKey(key)) return null
+                // Still running past the 30-minute wait window: wait again.
+            } else {
+                // The transfer reported success but left no usable file.
+                return null
+            }
+        }
+    }
+
+    private fun sanitizeFileName(name: String): String {
+        val clean = name.replace('/', '_').replace('\\', '_').trim()
+        return clean.ifEmpty { "download_${System.currentTimeMillis()}" }
+    }
+
     fun downloadForPreview(messageId: Long, chatId: Long, fileName: String) {
         scope.launch {
             val cachedEntity = driveDao.getItemById(messageId, chatId)
             if (verifyOfflinePath(cachedEntity?.localPath) != null) return@launch
+
+            // C11: a split file must be reassembled before it can be previewed.
+            if (cachedEntity != null && cachedEntity.splitGroupId != null && cachedEntity.totalParts > 1) {
+                downloadSplitFile(cachedEntity)
+                return@launch
+            }
 
             if (cachedEntity != null && cachedEntity.telegramFileId != 0) {
                 telegramClient.send(TdApi.DownloadFile(cachedEntity.telegramFileId, 32, 0, 0, false))
@@ -1936,24 +2520,101 @@ class DriveRepository @Inject constructor(
                 val virtualId = item.virtualId ?: return@launch
                 val folder = currentManifest.virtualFolders[virtualId] ?: return@launch
                 synchronized(manifestLock) {
-                    currentManifest = compactManifest(currentManifest.copy(virtualFolders = currentManifest.virtualFolders + (virtualId to folder.copy(name = newName))))
+                    currentManifest = compactManifest(currentManifest.copy(virtualFolders = currentManifest.virtualFolders + (virtualId to folder.copy(name = newName)), updatedAt = System.currentTimeMillis() / 1000))
                 }
                 saveCloudManifestDebounced()
                 driveDao.renameItem(item.id, item.parentChatId, newName)
             } else if (item is DriveItem.File) {
-                val vfTag = if (item.virtualParentId != "0") " [VF:${item.virtualParentId}]" else ""
-                telegramClient.send(TdApi.EditMessageCaption(item.parentChatId, item.id, null, TdApi.FormattedText("$newName$vfTag", emptyArray()), false)) { editResult ->
-                    if (editResult is TdApi.Message) {
-                        scope.launch { driveDao.renameItem(item.id, item.parentChatId, newName) }
-                    } else {
-                        // Telegram rejected the rename: leave the local
-                        // name unchanged so phone and Telegram stay in sync.
-                        Log.w("DriveRepo", "Rename failed for message ${item.id}: $editResult")
+                // H10: rebuild the caption so the [ENC] and
+                // [TD_SPLIT|...] markers survive the rename, and never
+                // write a literal "[VF:null]" (a null virtualParentId
+                // used to pass the `!= "0"` check). For split files the
+                // whole group is renamed: the master record and every
+                // part caption carry the new name.
+                if (item.splitGroupId != null && item.totalParts > 1) {
+                    renameSplitFile(item, newName)
+                } else {
+                    val caption = buildFileCaption(newName, item.virtualParentId, item.isEncrypted, splitTag = null)
+                    telegramClient.send(TdApi.EditMessageCaption(item.parentChatId, item.id, null, TdApi.FormattedText(caption, emptyArray()), false)) { editResult ->
+                        if (editResult is TdApi.Message) {
+                            scope.launch { driveDao.renameItem(item.id, item.parentChatId, newName) }
+                        } else {
+                            // Telegram rejected the rename: leave the local
+                            // name unchanged so phone and Telegram stay in sync.
+                            Log.w("DriveRepo", "Rename failed for message ${item.id}: $editResult")
+                        }
                     }
                 }
             } else {
                 // Non-virtual folders have no Telegram caption to edit.
                 driveDao.renameItem(item.id, item.parentChatId, newName)
+            }
+        }
+    }
+
+    /**
+     * H10: build a file caption that preserves the markers a rename
+     * used to drop. [splitTag] is the rebuilt [TD_SPLIT|...] tag for a
+     * split part (null for ordinary files). A null/blank virtual-parent
+     * id writes no [VF:] tag at all — never "[VF:null]".
+     */
+    private fun buildFileCaption(newName: String, virtualParentId: String?, isEncrypted: Boolean, splitTag: String?): String {
+        val vfTag = if (!virtualParentId.isNullOrEmpty() && virtualParentId != "0") " [VF:$virtualParentId]" else ""
+        val encTag = if (isEncrypted) " [ENC]" else ""
+        return if (splitTag != null) "$splitTag$vfTag$encTag" else "$newName$vfTag$encTag"
+    }
+
+    /**
+     * H10: rename a whole split file — the master record's original
+     * name and every part caption's NAME field. Parts that fail their
+     * caption edit keep their old name in Telegram and are left alone
+     * locally, so the local DB never claims a rename Telegram refused.
+     */
+    private fun renameSplitFile(item: DriveItem.File, newName: String) {
+        val groupId = item.splitGroupId ?: return
+        scope.launch {
+            val master = synchronized(manifestLock) { currentManifest.splitFileMasters[groupId] }
+            val parts = try {
+                driveDao.getSplitFileParts(groupId)
+            } catch (e: Exception) {
+                Log.w("DriveRepo", "Rename split file: could not list parts for $groupId", e)
+                emptyList()
+            }
+            if (master != null) {
+                synchronized(manifestLock) {
+                    val updated = currentManifest.splitFileMasters.toMutableMap()
+                    updated[groupId] = master.copy(originalName = newName)
+                    currentManifest = compactManifest(currentManifest.copy(
+                        splitFileMasters = updated,
+                        updatedAt = System.currentTimeMillis() / 1000
+                    ))
+                }
+                saveCloudManifestDebounced()
+            }
+            if (parts.isEmpty()) {
+                // No part rows locally: fall back to renaming just this
+                // message's caption.
+                val caption = buildFileCaption(newName, item.virtualParentId, item.isEncrypted, splitTag = null)
+                telegramClient.send(TdApi.EditMessageCaption(item.parentChatId, item.id, null, TdApi.FormattedText(caption, emptyArray()), false)) { editResult ->
+                    if (editResult is TdApi.Message) {
+                        scope.launch { driveDao.renameItem(item.id, item.parentChatId, newName) }
+                    } else {
+                        Log.w("DriveRepo", "Rename failed for message ${item.id}: $editResult")
+                    }
+                }
+                return@launch
+            }
+            val total = master?.totalParts ?: item.totalParts
+            parts.forEach { part ->
+                val splitTag = "[TD_SPLIT|ID:$groupId|PART:${part.partIndex}/$total|NAME:$newName]"
+                val caption = buildFileCaption(newName, part.virtualParentId, part.isEncrypted, splitTag)
+                telegramClient.send(TdApi.EditMessageCaption(part.parentChatId, part.id, null, TdApi.FormattedText(caption, emptyArray()), false)) { editResult ->
+                    if (editResult is TdApi.Message) {
+                        scope.launch { driveDao.renameItem(part.id, part.parentChatId, newName) }
+                    } else {
+                        Log.w("DriveRepo", "Rename failed for split part ${part.id}: $editResult")
+                    }
+                }
             }
         }
     }
@@ -1971,13 +2632,22 @@ class DriveRepository @Inject constructor(
                             // confirmed the delete; otherwise the files stay
                             // mapped and visible, and the delete can be retried.
                             val metadataIdsToDelete = mutableListOf<Long>()
+                            val partIdsToDelete = mutableListOf<Long>()
                             synchronized(manifestLock) {
                                 val updatedFileMappings = currentManifest.fileMappings.toMutableMap()
                                 val updatedSplitMasters = currentManifest.splitFileMasters.toMutableMap()
                                 files.forEach { file ->
                                     updatedFileMappings.remove(file.id.toString())
                                     file.splitGroupId?.let { gid ->
-                                        updatedSplitMasters.remove(gid)?.metadataMessageId?.let { metadataIdsToDelete.add(it) }
+                                        // C11: deleting a split file must
+                                        // remove every part message, not
+                                        // just the master record — the
+                                        // parts used to stay orphaned on
+                                        // Telegram forever.
+                                        updatedSplitMasters.remove(gid)?.let { master ->
+                                            master.metadataMessageId.takeIf { it != 0L }?.let { metadataIdsToDelete.add(it) }
+                                            partIdsToDelete.addAll(master.partMessageIds)
+                                        }
                                     }
                                 }
                                 currentManifest = compactManifest(currentManifest.copy(
@@ -1988,6 +2658,15 @@ class DriveRepository @Inject constructor(
                             }
                             if (metadataIdsToDelete.isNotEmpty() && savedMessagesChatId != 0L) {
                                 telegramClient.send(TdApi.DeleteMessages(savedMessagesChatId, metadataIdsToDelete.toLongArray(), true)) {}
+                            }
+                            val alreadyDeletedIds = files.map { it.id }.toSet()
+                            val remainingPartIds = partIdsToDelete.filter { it != 0L && it !in alreadyDeletedIds }
+                            if (remainingPartIds.isNotEmpty()) {
+                                // Parts live in the same chat as the file
+                                // rows that reference their group.
+                                files.filter { it.splitGroupId != null }.map { it.parentChatId }.toSet().forEach { partChatId ->
+                                    telegramClient.send(TdApi.DeleteMessages(partChatId, remainingPartIds.toLongArray(), true)) {}
+                                }
                             }
                             saveCloudManifestDebounced()
                         }
@@ -2007,9 +2686,32 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    /**
+     * H8: delete a virtual folder and its whole subtree. Phase 1 collects
+     * every descendant file and sub-folder without deleting anything;
+     * phase 2 deletes all files from Telegram; only when Telegram
+     * confirms every delete are the local rows and the manifest updated
+     * — the folder is removed from virtualFolders, its deletion is
+     * recorded in deletedFolderIds (so a later manifest fetch cannot
+     * resurrect it), and every descendant file mapping is dropped.
+     */
     private suspend fun deleteVirtualFolderRecursive(virtualId: String) {
-        val children = driveDao.getItemsByVirtualParentSync(virtualId)
-        val filesByChat = children.filter { !it.isFolder }.groupBy { it.parentChatId }
+        val descendantFiles = mutableListOf<DriveItemEntity>()
+        val descendantFolders = mutableListOf<String>()
+        suspend fun collect(vId: String) {
+            descendantFolders.add(vId)
+            val children = driveDao.getItemsByVirtualParentSync(vId)
+            for (child in children) {
+                if (child.isFolder && child.isVirtual && child.virtualId != null) {
+                    collect(child.virtualId)
+                } else if (!child.isFolder) {
+                    descendantFiles.add(child)
+                }
+            }
+        }
+        collect(virtualId)
+
+        val filesByChat = descendantFiles.groupBy { it.parentChatId }
         var allSucceeded = true
         filesByChat.forEach { (chatId, entities) ->
             val deleteResult = CompletableDeferred<Boolean>()
@@ -2022,12 +2724,34 @@ class DriveRepository @Inject constructor(
                 Log.w("DriveRepo", "DeleteMessages failed for chat $chatId while deleting folder $virtualId")
             }
         }
-        // Only remove local rows when Telegram confirmed every delete;
-        // otherwise the folder stays visible and the delete can be retried.
+        // Only remove local rows and manifest entries when Telegram
+        // confirmed every delete; otherwise the folder stays visible and
+        // the delete can be retried.
         if (!allSucceeded) return
-        val entity = driveDao.getVirtualFolderById(virtualId)
-        if (entity != null) driveDao.deleteItemCompletely(entity.id, entity.parentChatId)
-        children.forEach { child -> driveDao.deleteItemCompletely(child.id, child.parentChatId) }
+        descendantFiles.forEach { child -> driveDao.deleteItemCompletely(child.id, child.parentChatId) }
+        descendantFolders.forEach { folderVirtualId ->
+            driveDao.getVirtualFolderById(folderVirtualId)?.let { entity ->
+                driveDao.deleteItemCompletely(entity.id, entity.parentChatId)
+            }
+        }
+        val deletedAt = System.currentTimeMillis() / 1000
+        synchronized(manifestLock) {
+            val updatedFolders = currentManifest.virtualFolders.toMutableMap()
+            val updatedDeletedIds = currentManifest.deletedFolderIds.toMutableMap()
+            val updatedMappings = currentManifest.fileMappings.toMutableMap()
+            descendantFolders.forEach { folderVirtualId ->
+                updatedFolders.remove(folderVirtualId)
+                updatedDeletedIds[folderVirtualId] = deletedAt
+            }
+            descendantFiles.forEach { child -> updatedMappings.remove(child.id.toString()) }
+            currentManifest = compactManifest(currentManifest.copy(
+                virtualFolders = updatedFolders,
+                deletedFolderIds = updatedDeletedIds,
+                fileMappings = updatedMappings,
+                updatedAt = System.currentTimeMillis() / 1000
+            ))
+        }
+        syncVirtualFoldersToDb()
     }
 
     fun downloadFolderContents(folder: DriveItem.Folder) {
