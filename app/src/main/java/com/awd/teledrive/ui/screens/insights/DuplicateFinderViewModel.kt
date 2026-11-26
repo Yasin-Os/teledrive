@@ -87,13 +87,13 @@ class DuplicateFinderViewModel @Inject constructor(
             _isDeleting.value = true
             val items = driveRepository.getDuplicateGroupItems(group.contentHash, group.size)
             val toDelete = if (items.size > 1) items.drop(1) else emptyList()
-            if (toDelete.isNotEmpty()) {
-                driveRepository.deleteDuplicateItems(toDelete)
-            }
+            // L26: report the count Telegram actually confirmed, not the
+            // count we asked to delete.
+            val deleted = if (toDelete.isNotEmpty()) driveRepository.deleteDuplicateItems(toDelete) else 0
             _groupItems.value = _groupItems.value - group.contentHash
             _expandedGroups.value = _expandedGroups.value - group.contentHash
             _isDeleting.value = false
-            onDone(toDelete.size)
+            onDone(deleted)
         }
     }
 
@@ -107,8 +107,7 @@ class DuplicateFinderViewModel @Inject constructor(
                 val items = driveRepository.getDuplicateGroupItems(group.contentHash, group.size)
                 val toDelete = if (items.size > 1) items.drop(1) else emptyList()
                 if (toDelete.isNotEmpty()) {
-                    driveRepository.deleteDuplicateItems(toDelete)
-                    deleted += toDelete.size
+                    deleted += driveRepository.deleteDuplicateItems(toDelete)
                 }
             }
             _groupItems.value = emptyMap()
