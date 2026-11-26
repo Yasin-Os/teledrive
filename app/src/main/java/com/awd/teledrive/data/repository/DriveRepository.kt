@@ -395,6 +395,13 @@ class DriveRepository @Inject constructor(
     // chars. A manifest that no longer fits in one message is saved as
     // numbered parts instead of being silently dropped (H9).
     private val MANIFEST_PART_PREFIX = "#TELEDRIVE_MANIFEST_PART"
+    // H9 backup follow-up: chunked manual backups use the same header
+    // format as the live manifest (`<prefix> <generation> <index>/<total>`)
+    // and the same splitManifestJson, but a backup-specific prefix, so
+    // the live reader never mistakes a backup part for a live-manifest
+    // part (and vice versa). It starts with MANIFEST_BACKUP_PREFIX, so
+    // the existing backup search finds it.
+    private val MANIFEST_BACKUP_PART_PREFIX = "#TELEDRIVE_MANIFEST_BACKUP_PART"
     private val MANIFEST_SINGLE_MESSAGE_LIMIT = 4000
     private val MANIFEST_CHUNK_SIZE = 3500
     // Chunked-manifest bookkeeping: part index -> message id of the
@@ -405,6 +412,10 @@ class DriveRepository @Inject constructor(
     private val manifestPartMessageIds = ConcurrentHashMap<Int, Long>()
     private var manifestPartGeneration: Long = 0L
     private var lastManifestPartGeneration: Long = 0L
+    // H9 backup follow-up: newest chunked-backup generation, so two
+    // manual backups in the same millisecond never share a generation
+    // (same guard as the live manifest's lastManifestPartGeneration).
+    private var lastManualBackupGeneration: Long = 0L
     // Temporary local message id -> (chunk generation, part index), so
     // UpdateMessageSendSucceeded can fix a chunk id up to its final id.
     private val pendingManifestPartTempIds = ConcurrentHashMap<Long, Pair<Long, Int>>()
@@ -1259,6 +1270,45 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    /**
+     * H9 backup follow-up: group parsed chunked-backup parts by
+     * generation, keeping the newest copy of each index. The backup
+     * list and the chunked restore share this, so one chunked backup
+     * is one list entry and a generation is only trusted when every
+     * part is present. (Same grouping rule as the live manifest's
+     * reassembleChunkedManifest; backup parts are parsed with the same
+     * parseManifestPart.)
+     */
+    private fun groupChunkedBackupParts(parts: List<Pair<Long, ManifestPart>>): Map<Long, Map<Int, Pair<Long, ManifestPart>>> {
+        return parts.groupBy { it.second.generation }
+            .mapValues { (_, genParts) ->
+                genParts.groupBy { it.second.index }
+                    .mapValues { (_, same) -> same.maxByOrNull { it.second.date }!! }
+            }
+    }
+
+    /**
+     * H9 backup follow-up: reassemble one grouped generation. Returns
+     * the manifest, or null when a part is missing, the parts disagree
+     * on the total, or the joined JSON does not decode. Never returns
+     * a partial manifest.
+     */
+    private fun decodeChunkedBackupGeneration(generation: Long, byIndex: Map<Int, Pair<Long, ManifestPart>>): TeleDriveManifest? {
+        val total = byIndex.values.firstOrNull()?.second?.total ?: return null
+        if (byIndex.values.any { it.second.total != total }) {
+            Log.w("DriveRepo", "Chunked backup generation $generation has parts disagreeing on total")
+            return null
+        }
+        if (byIndex.keys.toSet() != (1..total).toSet()) return null
+        val jsonText = (1..total).joinToString("") { byIndex[it]!!.second.payload }
+        return try {
+            json.decodeFromString<TeleDriveManifest>(jsonText)
+        } catch (e: Exception) {
+            Log.w("DriveRepo", "Chunked backup generation $generation failed to decode", e)
+            null
+        }
+    }
+
     private fun compactManifest(manifest: TeleDriveManifest): TeleDriveManifest {
         // Drop only dead mappings ("0"/empty targets). fileMetadataIds
         // must survive: moveMessagesInternal re-points it at the new
@@ -1379,24 +1429,47 @@ class DriveRepository @Inject constructor(
             val searchRequest = TdApi.SearchChatMessages().apply {
                 this.chatId = chatId
                 this.query = MANIFEST_BACKUP_PREFIX
-                this.limit = 50
+                // H9 backup follow-up: one chunked backup is N messages,
+                // so 50 slots could cut a generation in half; 100 is
+                // TDLib's max for this search.
+                this.limit = 100
             }
             telegramClient.send(searchRequest) { result ->
                 if (result is TdApi.Messages) {
-                    val backups = result.messages.mapNotNull { msg ->
+                    val backups = mutableListOf<CloudBackup>()
+                    val partMessages = mutableListOf<Pair<Long, ManifestPart>>()
+                    result.messages.forEach { msg ->
                         val content = msg.content
-                        if (content is TdApi.MessageText && content.text.text.startsWith(MANIFEST_BACKUP_PREFIX)) {
+                        if (content is TdApi.MessageText) {
                             val text = content.text.text
-                            val jsonStartIndex = text.indexOf('{')
-                            if (jsonStartIndex != -1) {
-                                try {
-                                    val manifest = json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex))
-                                    CloudBackup(msg.id, msg.date.toLong() * 1000, manifest.virtualFolders.size)
-                                } catch (e: Exception) { null }
-                            } else null
-                        } else null
+                            if (text.startsWith(MANIFEST_BACKUP_PART_PREFIX)) {
+                                // H9 backup follow-up: one message per
+                                // chunk; grouped below into one entry.
+                                parseManifestPart(text, msg.date)?.let { partMessages += msg.id to it }
+                            } else if (text.startsWith(MANIFEST_BACKUP_PREFIX)) {
+                                val jsonStartIndex = text.indexOf('{')
+                                if (jsonStartIndex != -1) {
+                                    try {
+                                        val manifest = json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex))
+                                        backups += CloudBackup(msg.id, msg.date.toLong() * 1000, manifest.virtualFolders.size)
+                                    } catch (e: Exception) { /* corrupt single backup: skip */ }
+                                }
+                            }
+                        }
                     }
-                    onResult(backups)
+                    // H9 backup follow-up: one chunked backup is ONE list
+                    // entry (grouped by generation). Incomplete or corrupt
+                    // generations are hidden, never listed, so the list
+                    // never offers a backup that cannot be restored.
+                    groupChunkedBackupParts(partMessages).forEach { (generation, byIndex) ->
+                        val manifest = decodeChunkedBackupGeneration(generation, byIndex)
+                        if (manifest == null) {
+                            Log.w("DriveRepo", "Chunked backup generation $generation incomplete or corrupt; hidden from backup list")
+                        } else {
+                            backups += CloudBackup(byIndex[1]!!.first, generation, manifest.virtualFolders.size)
+                        }
+                    }
+                    onResult(backups.sortedByDescending { it.date })
                 } else onResult(emptyList())
             }
         }
@@ -1407,35 +1480,107 @@ class DriveRepository @Inject constructor(
             telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
                 if (result is TdApi.Message && result.content is TdApi.MessageText) {
                     val text = (result.content as TdApi.MessageText).text.text
-                    val jsonStartIndex = text.indexOf('{')
-                    if (jsonStartIndex != -1) {
-                        try {
-                            synchronized(manifestLock) {
-                                currentManifest = compactManifest(json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex)))
-                            }
-                            saveCloudManifestDebounced()
-                            syncVirtualFoldersToDb()
-                            scope.launch { driveDao.resetAllFileVirtualParents(); fetchFiles() }
-                            onResult(true)
-                        } catch (e: Exception) { onResult(false) }
-                    } else onResult(false)
+                    if (text.startsWith(MANIFEST_BACKUP_PART_PREFIX)) {
+                        // H9 backup follow-up: this is one part of a
+                        // chunked backup. Resolve its generation and
+                        // restore only a complete, decodable generation.
+                        val firstPart = parseManifestPart(text, result.date)
+                        if (firstPart == null) {
+                            Log.e("DriveRepo", "Chunked backup restore failed: part message $messageId has a malformed header")
+                            onResult(false)
+                        } else {
+                            restoreChunkedBackup(chatId, firstPart.generation, onResult)
+                        }
+                    } else {
+                        val jsonStartIndex = text.indexOf('{')
+                        if (jsonStartIndex != -1) {
+                            try {
+                                applyRestoredManifest(json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex)))
+                                onResult(true)
+                            } catch (e: Exception) { onResult(false) }
+                        } else onResult(false)
+                    }
                 } else onResult(false)
             }
         }
     }
 
+    /**
+     * H9 backup follow-up: restore one chunked-backup generation. Every
+     * part is fetched and validated first; a missing or corrupt part
+     * fails LOUDLY (Log.e + onResult(false)) and nothing is applied —
+     * a partial manifest is never restored. The Settings UI already
+     * turns onResult(false) into a "restore failed" toast.
+     */
+    private fun restoreChunkedBackup(chatId: Long, generation: Long, onResult: (Boolean) -> Unit) {
+        val searchRequest = TdApi.SearchChatMessages().apply {
+            this.chatId = chatId
+            this.query = MANIFEST_BACKUP_PART_PREFIX
+            this.limit = 100
+        }
+        telegramClient.send(searchRequest) { result ->
+            var restored = false
+            if (result is TdApi.Messages) {
+                val parts = result.messages.mapNotNull { msg ->
+                    val content = msg.content
+                    if (content is TdApi.MessageText && content.text.text.startsWith(MANIFEST_BACKUP_PART_PREFIX)) {
+                        parseManifestPart(content.text.text, msg.date)?.let { msg.id to it }
+                    } else null
+                }
+                val byIndex = groupChunkedBackupParts(parts)[generation]
+                if (byIndex == null) {
+                    Log.e("DriveRepo", "Chunked backup restore failed: no parts found for generation $generation")
+                } else {
+                    val total = byIndex.values.first().second.total
+                    val missing = (1..total).filter { it !in byIndex.keys }
+                    if (missing.isNotEmpty()) {
+                        Log.e("DriveRepo", "Chunked backup restore failed: generation $generation is missing part(s) $missing of $total; refusing partial restore")
+                    } else {
+                        val manifest = decodeChunkedBackupGeneration(generation, byIndex)
+                        if (manifest == null) {
+                            Log.e("DriveRepo", "Chunked backup restore failed: generation $generation is corrupt; refusing partial restore")
+                        } else {
+                            applyRestoredManifest(manifest)
+                            restored = true
+                        }
+                    }
+                }
+            } else {
+                Log.e("DriveRepo", "Chunked backup restore failed: could not list backup parts for generation $generation")
+            }
+            onResult(restored)
+        }
+    }
+
+    /**
+     * H9 backup follow-up: the apply step shared by the legacy
+     * single-message restore and the chunked restore.
+     */
+    private fun applyRestoredManifest(manifest: TeleDriveManifest) {
+        synchronized(manifestLock) {
+            currentManifest = compactManifest(manifest)
+        }
+        saveCloudManifestDebounced()
+        syncVirtualFoldersToDb()
+        scope.launch { driveDao.resetAllFileVirtualParents(); fetchFiles() }
+    }
+
     fun createManualCloudBackup() {
         ensureSavedMessagesChat { chatId ->
-            val text = "$MANIFEST_BACKUP_PREFIX${System.currentTimeMillis()}\n\n${json.encodeToString(compactManifest(currentManifest))}"
-            if (text.length > MANIFEST_SINGLE_MESSAGE_LIMIT) {
-                // A manual backup is a single text message too: an
-                // oversized manifest would fail silently here just like
-                // the live save did (H9). Chunked backups are a
-                // follow-up; for now fail loudly instead of silently.
-                Log.e("DriveRepo", "Manual cloud backup skipped: manifest is ${text.length} chars, over the single-message limit; use Export manifest JSON instead")
-                return@ensureSavedMessagesChat
+            // H9 backup follow-up: same-millisecond guard as the live
+            // manifest, so two taps can never share a generation.
+            val backupTime = maxOf(System.currentTimeMillis(), lastManualBackupGeneration + 1)
+            lastManualBackupGeneration = backupTime
+            val jsonText = json.encodeToString(compactManifest(currentManifest))
+            val text = "$MANIFEST_BACKUP_PREFIX$backupTime\n\n$jsonText"
+            if (text.length <= MANIFEST_SINGLE_MESSAGE_LIMIT) {
+                telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(TdApi.FormattedText(text, emptyArray()), null, true)))
+            } else {
+                // H9 backup follow-up: an oversized manifest is saved as
+                // numbered backup parts (same chunk format as the live
+                // manifest) instead of being skipped.
+                saveChunkedBackup(chatId, backupTime, jsonText)
             }
-            telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(TdApi.FormattedText(text, emptyArray()), null, true)))
         }
     }
 
@@ -1575,6 +1720,45 @@ class DriveRepository @Inject constructor(
                         sentIds.values.forEach { manifestPartFinalIds.remove(it) }
                         Log.e("DriveRepo", "Chunked manifest generation $generation incomplete (${failedCount.get()}/$total parts failed); previous generation kept")
                     }
+                }
+            }
+        }
+    }
+
+    /**
+     * H9 backup follow-up: save an oversized manual backup as numbered
+     * part messages, reusing F6's chunk format (header `<prefix>
+     * <generation> <index>/<total>`) and splitManifestJson. The
+     * generation is the backup timestamp, so the backup list shows one
+     * entry per generation. A generation with a failed part is
+     * incomplete: the list/restore ignore it, and the parts that did
+     * send are deleted best-effort so no unrestorable fragment stays
+     * behind.
+     */
+    private fun saveChunkedBackup(chatId: Long, generation: Long, jsonText: String) {
+        val chunks = splitManifestJson(jsonText)
+        val total = chunks.size
+        val sentIds = ConcurrentHashMap<Int, Long>()
+        val finishedCount = AtomicInteger(0)
+        val failedCount = AtomicInteger(0)
+        chunks.forEachIndexed { index, chunk ->
+            val header = "$MANIFEST_BACKUP_PART_PREFIX $generation ${index + 1}/$total\n"
+            val formatted = TdApi.FormattedText(header + chunk, emptyArray())
+            telegramClient.send(TdApi.SendMessage(chatId, null, null, null, null, TdApi.InputMessageText(formatted, null, true))) { result ->
+                if (result is TdApi.Message) {
+                    sentIds[index + 1] = result.id
+                } else {
+                    failedCount.incrementAndGet()
+                    val error = (result as? TdApi.Error)?.let { " (${it.code} ${it.message})" } ?: ""
+                    Log.e("DriveRepo", "Manual cloud backup part ${index + 1}/$total failed to send$error")
+                }
+                if (finishedCount.incrementAndGet() == total && failedCount.get() > 0) {
+                    // Incomplete generation: delete the parts that did
+                    // send instead of leaving an unrestorable fragment.
+                    if (sentIds.isNotEmpty()) {
+                        telegramClient.send(TdApi.DeleteMessages(chatId, sentIds.values.toLongArray(), true)) {}
+                    }
+                    Log.e("DriveRepo", "Manual cloud backup generation $generation incomplete (${failedCount.get()}/$total parts failed); backup not saved")
                 }
             }
         }
