@@ -1,8 +1,13 @@
 package com.awd.teledrive.ui.screens.security
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.os.SystemClock
 import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.core.BiometricCipherResult
@@ -1062,6 +1067,21 @@ class SecurityViewModel @Inject constructor(
     }
 
     /**
+     * H21: returns true only when a Safe Folder PIN is configured AND either
+     * the vault session is unlocked or Safe Folder PIN lock was explicitly
+     * disabled. Fails closed when secure storage is unavailable because both
+     * [isSafeFolderPinSet] and [isSafeFolderLockEnabled] fail closed to true
+     * while [isSecureModeActive] starts false.
+     */
+    fun isSafeFolderAccessAllowed(
+        isPinSet: Boolean = _isSafeFolderPinSet.value,
+        isLockEnabled: Boolean = _isSafeFolderLockEnabled.value,
+        isSessionUnlocked: Boolean = isSecureModeActive.value
+    ): Boolean {
+        return isPinSet && (!isLockEnabled || isSessionUnlocked)
+    }
+
+    /**
      * Checked when the safe-folder screen (re)appears. If the app was in the
      * background longer than the auto-lock timeout, locks the vault and
      * returns true so the UI can navigate away.
@@ -1073,7 +1093,8 @@ class SecurityViewModel @Inject constructor(
         if (!_isSafeFolderLockEnabled.value) return false
         val minutes = _safeFolderAutoLockMinutes.value
         if (minutes == AUTO_LOCK_NEVER) return false
-        if (backgroundedAt == 1L || SystemClock.elapsedRealtime() - backgroundedAt > minutes * 60_000L) {
+        val now = SystemClock.elapsedRealtime()
+        if (backgroundedAt == 1L || now < backgroundedAt || now - backgroundedAt > minutes * 60_000L) {
             lockSecureMode()
             return true
         }
@@ -1102,4 +1123,22 @@ class SecurityViewModel @Inject constructor(
         }
         return String(result)
     }
+}
+
+internal tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
+    is ContextWrapper -> baseContext.findComponentActivity()
+    else -> null
+}
+
+/**
+ * C8: resolves the single Activity-scoped [SecurityViewModel] so MainActivity,
+ * NavGraph, MasterPasswordScreen, SettingsScreen, SecureStorageScreen, and
+ * SafeFolderUnlockDialog all share one lock/security state instance instead of
+ * separate NavBackStackEntry-scoped instances.
+ */
+@Composable
+fun activitySecurityViewModel(): SecurityViewModel {
+    val activity = LocalContext.current.findComponentActivity()
+    return if (activity != null) hiltViewModel(activity) else hiltViewModel()
 }

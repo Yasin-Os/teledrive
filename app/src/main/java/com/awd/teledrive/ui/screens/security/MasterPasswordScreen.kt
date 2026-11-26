@@ -43,7 +43,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.core.BiometricCipherResult
 import com.awd.teledrive.core.BiometricHelper
 import kotlinx.coroutines.launch
@@ -51,7 +50,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun MasterPasswordScreen(
     onSuccess: () -> Unit,
-    viewModel: SecurityViewModel = hiltViewModel()
+    viewModel: SecurityViewModel = activitySecurityViewModel()
 ) {
     val isPasswordSet by viewModel.isPasswordSet.collectAsState()
     val isBiometricEnabled by viewModel.isBiometricEnabled.collectAsState()

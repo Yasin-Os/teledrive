@@ -3,12 +3,7 @@ package com.awd.teledrive.ui.navigation
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PermMedia
@@ -16,12 +11,10 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -31,17 +24,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import kotlinx.coroutines.launch
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -59,9 +47,13 @@ import com.awd.teledrive.ui.screens.preview.PdfViewerScreen
 import com.awd.teledrive.ui.screens.preview.PreviewScreen
 import com.awd.teledrive.ui.screens.preview.TextViewerScreen
 import com.awd.teledrive.ui.screens.preview.VideoPlayerScreen
+import com.awd.teledrive.ui.screens.security.CreateSafeFolderPinDialog
 import com.awd.teledrive.ui.screens.security.MasterPasswordScreen
 import com.awd.teledrive.ui.screens.security.SafeFolderUnlockDialog
+import com.awd.teledrive.ui.screens.security.SecureStorageLockedGate
+import com.awd.teledrive.ui.screens.security.SecureStorageScreen
 import com.awd.teledrive.ui.screens.security.SecurityViewModel
+import com.awd.teledrive.ui.screens.security.activitySecurityViewModel
 import com.awd.teledrive.ui.screens.settings.AboutScreen
 import com.awd.teledrive.ui.screens.settings.BackupSettingsScreen
 import com.awd.teledrive.ui.screens.settings.CacheDetailsScreen
@@ -110,11 +102,13 @@ sealed class Screen(val route: String, val icon: ImageVector? = null, val labelR
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun NavGraph(navController: NavHostController) {
+fun NavGraph(
+    navController: NavHostController,
+    securityViewModel: SecurityViewModel = activitySecurityViewModel()
+) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
-    
-    val securityViewModel: SecurityViewModel = hiltViewModel()
+
     val loginViewModel: com.awd.teledrive.ui.screens.auth.LoginViewModel = hiltViewModel()
     val settingsViewModel: com.awd.teledrive.ui.screens.settings.SettingsViewModel = hiltViewModel()
     
@@ -161,8 +155,12 @@ fun NavGraph(navController: NavHostController) {
         }
     }
 
-    LaunchedEffect(isLocked, loginUiState) {
-        if (isLocked && loginUiState is com.awd.teledrive.ui.screens.auth.LoginUiState.Success && currentRoute != Screen.Security.route) {
+    LaunchedEffect(isLocked, loginUiState, currentRoute) {
+        if (isLocked &&
+            securityViewModel.isLocked.value &&
+            loginUiState is com.awd.teledrive.ui.screens.auth.LoginUiState.Success &&
+            currentRoute != Screen.Security.route
+        ) {
             navController.navigate(Screen.Security.route) {
                 popUpTo(0) { inclusive = true }
             }
@@ -175,7 +173,8 @@ fun NavGraph(navController: NavHostController) {
             loginUiState !is com.awd.teledrive.ui.screens.auth.LoginUiState.Loading &&
             currentRoute != Screen.Login.route && 
             currentRoute != Screen.Security.route) {
-            
+            HomeViewModel.resetInitialSync()
+            securityViewModel.lockSecureMode()
             navController.navigate(Screen.Login.route) {
                 popUpTo(0) { inclusive = true }
             }
@@ -184,6 +183,10 @@ fun NavGraph(navController: NavHostController) {
 
     val bottomNavScreens = listOf(Screen.Home, Screen.Media, Screen.Settings)
     val shouldShowBottomBar = currentRoute in bottomNavScreens.map { it.route } && currentRoute != Screen.SecureStorage.route
+
+    val startDestination = remember {
+        if (securityViewModel.isLocked.value) Screen.Security.route else Screen.Login.route
+    }
 
     Scaffold(
         bottomBar = {
@@ -231,7 +234,7 @@ fun NavGraph(navController: NavHostController) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = if (isLocked) Screen.Security.route else Screen.Login.route,
+            startDestination = startDestination,
             modifier = Modifier.padding(
                 bottom = if (shouldShowBottomBar) innerPadding.calculateBottomPadding() else 0.dp
             )
@@ -242,7 +245,8 @@ fun NavGraph(navController: NavHostController) {
                         navController.navigate(Screen.Home.route) {
                             popUpTo(Screen.Security.route) { inclusive = true }
                         }
-                    }
+                    },
+                    viewModel = securityViewModel
                 )
             }
             composable(Screen.Login.route) {
@@ -295,7 +299,8 @@ fun NavGraph(navController: NavHostController) {
                     onNavigateToStorageAnalyzer = { navController.navigate(Screen.StorageAnalyzer.route) },
                     onNavigateToDuplicateFinder = { navController.navigate(Screen.DuplicateFinder.route) },
                     onNavigateToBackupHealth = { navController.navigate(Screen.BackupHealth.route) },
-                    onNavigateToAbout = { navController.navigate(Screen.About.route) }
+                    onNavigateToAbout = { navController.navigate(Screen.About.route) },
+                    securityViewModel = securityViewModel
                 )
             }
             composable(Screen.About.route) {
@@ -330,14 +335,36 @@ fun NavGraph(navController: NavHostController) {
                 LogsScreen(onBack = { navController.popBackStack() })
             }
             composable(Screen.SecureStorage.route) {
-                com.awd.teledrive.ui.screens.security.SecureStorageScreen(
-                    onBack = { 
-                        navController.popBackStack()
-                        securityViewModel.lockSecureMode()
-                    },
-                    onNavigateToPreview = { file -> openFileOrPlayVideo(file, false) },
-                    onNavigateToTransfers = { navController.navigate(Screen.Transfers.route) }
-                )
+                val isPinSet by securityViewModel.isSafeFolderPinSet.collectAsState()
+                val isLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
+                val isVaultUnlocked by securityViewModel.isSecureModeActive.collectAsState()
+                val exitSecureStorage: () -> Unit = {
+                    if (!navController.popBackStack()) {
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.SecureStorage.route) { inclusive = true }
+                        }
+                    }
+                    securityViewModel.lockSecureMode()
+                }
+
+                // H21: enforce the Safe Folder PIN/session gate inside the route
+                // itself on every entry (including back-stack restore after process
+                // death or any direct in-app navigation).
+                if (!securityViewModel.isSafeFolderAccessAllowed(isPinSet, isLockEnabled, isVaultUnlocked)) {
+                    SecureStorageLockedGate(
+                        isPinSet = isPinSet,
+                        securityViewModel = securityViewModel,
+                        onBack = exitSecureStorage,
+                        showPrompt = currentRoute == Screen.SecureStorage.route
+                    )
+                } else {
+                    SecureStorageScreen(
+                        onBack = exitSecureStorage,
+                        onNavigateToPreview = { file -> openFileOrPlayVideo(file, false) },
+                        onNavigateToTransfers = { navController.navigate(Screen.Transfers.route) },
+                        securityViewModel = securityViewModel
+                    )
+                }
             }
             composable(
                 route = Screen.Preview.route,
@@ -381,71 +408,13 @@ fun NavGraph(navController: NavHostController) {
 
     // Safe Folder-এর স্বতন্ত্র পিন কোড তৈরি করার ডায়ালগ
     if (showCreateSafePinDialog) {
-        val setupScope = rememberCoroutineScope()
-        var newPin by remember { mutableStateOf("") }
-        var confirmPin by remember { mutableStateOf("") }
-        var error by remember { mutableStateOf<String?>(null) }
-        var isSettingUp by remember { mutableStateOf(false) }
-
-        AlertDialog(
-            onDismissRequest = { if (!isSettingUp) showCreateSafePinDialog = false },
-            title = { Text("Set Safe Folder PIN") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = newPin,
-                        onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(6); error = null },
-                        label = { Text("Enter PIN Code") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        enabled = !isSettingUp,
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = confirmPin,
-                        onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(6); error = null },
-                        label = { Text("Confirm PIN Code") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        enabled = !isSettingUp,
-                        isError = error != null,
-                        supportingText = error?.let { { Text(it) } },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+        CreateSafeFolderPinDialog(
+            onPinCreated = {
+                showCreateSafePinDialog = false
+                navController.navigate(Screen.SecureStorage.route)
             },
-            confirmButton = {
-                Button(
-                    enabled = !isSettingUp,
-                    onClick = {
-                        if (newPin.length < 4) {
-                            error = "Enter at least 4 digits"
-                        } else if (newPin != confirmPin) {
-                            error = "PIN did not match"
-                        } else {
-                            isSettingUp = true
-                            setupScope.launch {
-                                val ok = securityViewModel.setupSafeFolderPin(newPin)
-                                isSettingUp = false
-                                if (ok) {
-                                    showCreateSafePinDialog = false
-                                    navController.navigate(Screen.SecureStorage.route)
-                                } else {
-                                    error = securityViewModel.safePinError.value ?: "Could not set Safe Folder PIN"
-                                }
-                            }
-                        }
-                    }
-                ) { Text(if (isSettingUp) "Saving..." else "Save & Open") }
-            },
-            dismissButton = {
-                TextButton(enabled = !isSettingUp, onClick = { showCreateSafePinDialog = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            }
+            onDismiss = { showCreateSafePinDialog = false },
+            securityViewModel = securityViewModel
         )
     }
 

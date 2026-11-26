@@ -30,6 +30,7 @@ class SecureSettings @Inject constructor(
     // API hash, PINs and password hashes to cleartext SharedPreferences).
     // Reads then behave as "no value stored" and writes throw, so a broken
     // keystore can never silently downgrade the app to cleartext secrets.
+    @Volatile
     private var sharedPreferences: SharedPreferences? = null
 
     /** True only when the encrypted store is usable. */
@@ -66,6 +67,23 @@ class SecureSettings @Inject constructor(
                 null
             }
         }
+    }
+
+    /**
+     * Retries opening the encrypted SharedPreferences without deleting any
+     * stored secrets on disk (C7). Used by the startup recovery UI when the
+     * Keystore was unavailable at process launch.
+     */
+    @Synchronized
+    fun retryInitialization(): Boolean {
+        if (sharedPreferences != null) return true
+        sharedPreferences = try {
+            createEncryptedPreferences()
+        } catch (e: Exception) {
+            Log.e(TAG, "EncryptedSharedPreferences retry failed; stored secrets kept intact", e)
+            null
+        }
+        return sharedPreferences != null
     }
 
     private fun createEncryptedPreferences(): SharedPreferences {

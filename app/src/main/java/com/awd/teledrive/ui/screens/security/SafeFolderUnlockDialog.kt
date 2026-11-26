@@ -29,7 +29,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
 import com.awd.teledrive.core.BiometricCipherResult
 import com.awd.teledrive.core.BiometricHelper
@@ -46,7 +45,7 @@ import kotlinx.coroutines.launch
 fun SafeFolderUnlockDialog(
     onUnlocked: () -> Unit,
     onDismiss: () -> Unit,
-    securityViewModel: SecurityViewModel = hiltViewModel()
+    securityViewModel: SecurityViewModel = activitySecurityViewModel()
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -155,6 +154,79 @@ fun SafeFolderUnlockDialog(
         },
         dismissButton = {
             TextButton(enabled = !isVerifying, onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+@Composable
+fun CreateSafeFolderPinDialog(
+    onPinCreated: () -> Unit,
+    onDismiss: () -> Unit,
+    securityViewModel: SecurityViewModel = activitySecurityViewModel()
+) {
+    val setupScope = rememberCoroutineScope()
+    var newPin by remember { mutableStateOf("") }
+    var confirmPin by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var isSettingUp by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!isSettingUp) onDismiss() },
+        title = { Text("Set Safe Folder PIN") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = newPin,
+                    onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(6); error = null },
+                    label = { Text("Enter PIN Code") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    enabled = !isSettingUp,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = confirmPin,
+                    onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(6); error = null },
+                    label = { Text("Confirm PIN Code") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    enabled = !isSettingUp,
+                    isError = error != null,
+                    supportingText = error?.let { { Text(it) } },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !isSettingUp,
+                onClick = {
+                    if (newPin.length < 4) {
+                        error = "Enter at least 4 digits"
+                    } else if (newPin != confirmPin) {
+                        error = "PIN did not match"
+                    } else {
+                        isSettingUp = true
+                        setupScope.launch {
+                            val ok = securityViewModel.setupSafeFolderPin(newPin)
+                            isSettingUp = false
+                            if (ok) {
+                                onPinCreated()
+                            } else {
+                                error = securityViewModel.safePinError.value ?: "Could not set Safe Folder PIN"
+                            }
+                        }
+                    }
+                }
+            ) { Text(if (isSettingUp) "Saving..." else "Save & Open") }
+        },
+        dismissButton = {
+            TextButton(enabled = !isSettingUp, onClick = onDismiss) {
                 Text(stringResource(R.string.cancel))
             }
         }
