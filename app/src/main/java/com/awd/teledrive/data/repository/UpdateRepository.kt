@@ -19,6 +19,7 @@ import com.awd.teledrive.data.model.GitHubAsset
 import com.awd.teledrive.data.model.GitHubRelease
 import com.awd.teledrive.data.service.TransferService
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,6 +27,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -87,6 +89,11 @@ class UpdateRepository @Inject constructor(
     private val _lastCheckStatus = MutableStateFlow<String?>(null)
     val lastCheckStatus = _lastCheckStatus.asStateFlow()
     private var activeDownloadJob: Job? = null
+    // The connection of the download currently in flight, if any. Kept so
+    // cancelUpdateDownload() can disconnect it and unblock a read() that is
+    // waiting for more bytes (M14).
+    @Volatile
+    private var activeDownloadConnection: HttpURLConnection? = null
     private val isChecking = AtomicBoolean(false)
     private var pendingPermissionApkFile: File? = null
 
@@ -130,6 +137,13 @@ class UpdateRepository @Inject constructor(
     fun onAppResumed() {
         val pendingFile = pendingPermissionApkFile
         if (pendingFile != null && pendingFile.exists()) {
+            // Re-validate before installing: the file may have been replaced
+            // or corrupted while the user was in Settings (L3).
+            if (!isValidApkFile(pendingFile)) {
+                Log.w("UpdateRepository", "Pending APK failed validation, dropping it")
+                pendingPermissionApkFile = null
+                return
+            }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()) {
                 pendingPermissionApkFile = null
                 installApk(pendingFile)
@@ -169,7 +183,18 @@ class UpdateRepository @Inject constructor(
                 val installedVersion = VersionUtils.getVersionName(context).removePrefix("v").trim()
                 val latestVersion = latestRelease.tag_name.removePrefix("v").trim()
 
-                if (isNewerVersion(installedVersion, latestVersion)) {
+                if (VersionUtils.numericCore(installedVersion).isEmpty()) {
+                    // The installed version could not be determined
+                    // (PackageManager returned "Unknown"): never offer an
+                    // update on the basis of an unknown current version (L2).
+                    recordCheckStatus("Check failed")
+                    if (manual) {
+                        _updateState.value = UpdateState.Error("Could not determine installed version")
+                    }
+                    return@withContext
+                }
+
+                if (VersionUtils.isNewerVersion(installedVersion, latestVersion)) {
                     _availableRelease.value = latestRelease
 
                     val cachedApk = getUpdateApkFile(latestVersion)
@@ -225,11 +250,12 @@ class UpdateRepository @Inject constructor(
         val redirectDeferred = async { fetchLatestViaRedirect(cb) }
         val atomDeferred = async { fetchLatestViaAtomFeed(cb) }
 
+        // Prereleases are never offered as updates (H26).
         val candidates = listOfNotNull(
             apiDeferred.await(),
             redirectDeferred.await(),
             atomDeferred.await()
-        )
+        ).filter { !it.prerelease }
 
         if (candidates.isEmpty()) return@coroutineScope null
 
@@ -237,28 +263,17 @@ class UpdateRepository @Inject constructor(
             val vA = a.tag_name.removePrefix("v").trim()
             val vB = b.tag_name.removePrefix("v").trim()
             when {
-                isNewerVersion(vA, vB) -> 1
-                isNewerVersion(vB, vA) -> -1
+                // isNewerVersion(installed, latest) is true when the second
+                // argument is newer, so the argument order is swapped here:
+                // returning 1 must mean "a is newer than b" (C4).
+                VersionUtils.isNewerVersion(vB, vA) -> 1
+                VersionUtils.isNewerVersion(vA, vB) -> -1
                 a.prerelease != b.prerelease -> if (a.prerelease) -1 else 1
                 a.assets.any { it.size > 0 } && b.assets.none { it.size > 0 } -> 1
                 b.assets.any { it.size > 0 } && a.assets.none { it.size > 0 } -> -1
                 else -> 0
             }
         }
-    }
-
-    private fun isNewerVersion(installed: String, latest: String): Boolean {
-        if (latest.isEmpty() || installed == latest) return false
-        val installedParts = installed.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
-        val latestParts = latest.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
-        val maxLen = maxOf(installedParts.size, latestParts.size)
-        for (i in 0 until maxLen) {
-            val inst = installedParts.getOrElse(i) { 0 }
-            val lat = latestParts.getOrElse(i) { 0 }
-            if (lat > inst) return true
-            if (lat < inst) return false
-        }
-        return false
     }
 
     private fun fetchLatestViaApi(cacheBuster: Long): GitHubRelease? {
@@ -273,6 +288,9 @@ class UpdateRepository @Inject constructor(
                     connectTimeout = 7000
                     readTimeout = 7000
                     useCaches = false
+                    // Do not follow redirects blindly: a redirect off https
+                    // must not be trusted for an update check (C5).
+                    instanceFollowRedirects = false
                     setRequestProperty("Accept", "application/vnd.github+json")
                     setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
                     setRequestProperty("User-Agent", "MyCloud-Updater/$cacheBuster")
@@ -287,7 +305,8 @@ class UpdateRepository @Inject constructor(
                         JSONObject(bodyStr)
                     }
                     if (obj != null) {
-                        parseReleaseJson(obj)?.let { return it }
+                        // Prereleases are never offered as updates (H26).
+                        parseReleaseJson(obj)?.let { if (!it.prerelease) return it }
                     }
                 } else {
                     connection.disconnect()
@@ -308,6 +327,7 @@ class UpdateRepository @Inject constructor(
             if (it.isBlank() || it == "null") "Update $tagName" else it
         }
         val htmlUrl = obj.optString("html_url", "https://github.com/$GITHUB_REPO/releases/tag/$tagName")
+        val prerelease = obj.optBoolean("prerelease", false)
 
         val assetsList = mutableListOf<GitHubAsset>()
         val assetsArr = obj.optJSONArray("assets")
@@ -323,13 +343,14 @@ class UpdateRepository @Inject constructor(
             }
         }
         if (assetsList.isEmpty()) {
-            return buildReleaseFromTag(tagName, htmlUrl, name, body)
+            return buildReleaseFromTag(tagName, htmlUrl, name, body, prerelease)
         }
         return GitHubRelease(
             tag_name = tagName,
             name = name,
             body = body,
             html_url = htmlUrl,
+            prerelease = prerelease,
             assets = assetsList
         )
     }
@@ -341,6 +362,9 @@ class UpdateRepository @Inject constructor(
             var redirects = 0
 
             while (redirects < 6) {
+                // Never follow a redirect off https: the tag is only
+                // trusted when it came from github.com over https (C5).
+                if (!currentUrl.startsWith("https://")) return null
                 val url = URL(currentUrl)
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     instanceFollowRedirects = false
@@ -389,6 +413,8 @@ class UpdateRepository @Inject constructor(
                 connectTimeout = 7000
                 readTimeout = 7000
                 useCaches = false
+                // Do not follow redirects blindly (C5).
+                instanceFollowRedirects = false
                 setRequestProperty("Cache-Control", "no-cache")
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
             }
@@ -398,8 +424,43 @@ class UpdateRepository @Inject constructor(
                 val match = Regex("/releases/tag/([^\"'<\\s?]+)").find(xml)
                 val tag = match?.groupValues?.getOrNull(1)?.trim()
                 if (!tag.isNullOrEmpty()) {
-                    buildReleaseFromTag(tag, "https://github.com/$GITHUB_REPO/releases/tag/$tag")
+                    // The Atom feed does not say whether a release is a
+                    // prerelease: look the tag up via the API so the
+                    // prerelease flag (and the real assets) are known (H26).
+                    fetchReleaseByTag(tag)
+                        ?: buildReleaseFromTag(tag, "https://github.com/$GITHUB_REPO/releases/tag/$tag")
                 } else null
+            } else {
+                conn.disconnect()
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Looks a single release up by tag through the GitHub API, so callers
+     * that only know a tag (Atom feed) still get the real prerelease flag
+     * and asset list instead of guessing them (H26).
+     */
+    private fun fetchReleaseByTag(tag: String): GitHubRelease? {
+        return try {
+            val url = URL("https://api.github.com/repos/$GITHUB_REPO/releases/tags/$tag")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 7000
+                readTimeout = 7000
+                useCaches = false
+                instanceFollowRedirects = false
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("User-Agent", "MyCloud-Updater")
+            }
+            if (conn.responseCode == 200) {
+                val bodyStr = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+                parseReleaseJson(JSONObject(bodyStr))
             } else {
                 conn.disconnect()
                 null
@@ -413,7 +474,8 @@ class UpdateRepository @Inject constructor(
         tag: String,
         htmlUrl: String,
         title: String = "MyCloud $tag",
-        notes: String = "Update $tag"
+        notes: String = "Update $tag",
+        prerelease: Boolean = false
     ): GitHubRelease {
         val ver = tag.removePrefix("v").trim()
         // Releases now ship one APK per ABI (ABI splits, see
@@ -429,10 +491,7 @@ class UpdateRepository @Inject constructor(
             listOf("MyCloud-v$ver-$abi-release.apk", "app-$abi-release.apk")
         } + listOf(
             "MyCloud-v$ver-universal-release.apk",
-            "MyCloud-v$ver-universal-debug.apk",
-            "mycloud-v$ver-universal-release.apk",
-            "app-universal-debug.apk",
-            "app-debug.apk"
+            "mycloud-v$ver-universal-release.apk"
         )
         val assets = candidateNames.map { fileName ->
             GitHubAsset(
@@ -445,6 +504,7 @@ class UpdateRepository @Inject constructor(
             name = title,
             body = notes,
             html_url = htmlUrl,
+            prerelease = prerelease,
             assets = assets
         )
     }
@@ -456,7 +516,24 @@ class UpdateRepository @Inject constructor(
 
     private fun getUpdateApkFile(version: String): File {
         val cleanVer = version.removePrefix("v").trim().replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        return File(getUpdateDir(), "MyCloud_v${cleanVer}.apk")
+        // One cache file per ABI: an ABI-less name let a 32-bit download be
+        // resumed or reused as the 64-bit update (and vice versa) (C4).
+        val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val abiSuffix = if (abi.isNotEmpty()) "_$abi" else ""
+        return File(getUpdateDir(), "MyCloud_v${cleanVer}${abiSuffix}.apk")
+    }
+
+    /**
+     * One .part file per candidate URL: resuming a different candidate's
+     * bytes onto the previous candidate's prefix produced a mixed,
+     * corrupt APK (C5).
+     */
+    private fun partFileForCandidate(version: String, candidateUrl: String): File {
+        val fileName = candidateUrl.substringAfterLast('/').substringBefore('?')
+            .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            .ifEmpty { "candidate" }
+        val urlTag = "%08x".format(candidateUrl.hashCode())
+        return File(getUpdateDir(), "MyCloud_v${version}_${urlTag}_$fileName.part")
     }
 
     /**
@@ -537,7 +614,6 @@ class UpdateRepository @Inject constructor(
         startKeepAliveService()
 
         activeDownloadJob = scope.launch {
-            val partFile = File(getUpdateDir(), "MyCloud_v${ver}.apk.part")
             try {
                 _updateState.value = UpdateState.Downloading(0.01f, "0%", "", release)
                 updateProgressNotification(release.tag_name, 1, "Starting...", "")
@@ -546,105 +622,115 @@ class UpdateRepository @Inject constructor(
                 var downloadedComplete = false
 
                 for (attempt in 1..3) {
+                    ensureActive()
                     if (isValidApkFile(finalApkFile)) {
                         downloadedComplete = true
                         break
                     }
 
-                    val existingBytes = if (partFile.exists()) partFile.length() else 0L
-                    var activeConn: HttpURLConnection? = null
-
+                    var attemptDownloaded = false
                     for (candidate in candidateUrls) {
+                        ensureActive()
+                        // Each candidate downloads into its own .part file,
+                        // so a retry never appends one APK's bytes onto
+                        // another APK's prefix (C5).
+                        val partFile = partFileForCandidate(ver, candidate)
+                        val existingBytes = if (partFile.exists()) partFile.length() else 0L
                         val conn = openFollowingRedirects(candidate, existingBytes)
-                        if (conn != null && (conn.responseCode in 200..299)) {
-                            activeConn = conn
-                            break
-                        } else {
+                        if (conn == null || conn.responseCode !in 200..299) {
                             conn?.disconnect()
-                        }
-                    }
-
-                    if (activeConn == null) {
-                        if (attempt < 3) {
-                            delay(1500L * attempt)
                             continue
-                        } else break
-                    }
-
-                    try {
-                        val responseCode = activeConn.responseCode
-                        val isResuming = responseCode == HttpURLConnection.HTTP_PARTIAL && existingBytes > 0L
-                        val contentLength = activeConn.contentLengthLong
-                        val totalBytes = when {
-                            isResuming && contentLength > 0 -> existingBytes + contentLength
-                            contentLength > 0 -> contentLength
-                            else -> release.assets.firstOrNull { it.size > 0 }?.size ?: 0L
                         }
+                        activeDownloadConnection = conn
+                        try {
+                            val responseCode = conn.responseCode
+                            val isResuming = responseCode == HttpURLConnection.HTTP_PARTIAL && existingBytes > 0L
+                            val contentLength = conn.contentLengthLong
+                            val totalBytes = when {
+                                isResuming && contentLength > 0 -> existingBytes + contentLength
+                                contentLength > 0 -> contentLength
+                                else -> release.assets.firstOrNull { it.size > 0 }?.size ?: 0L
+                            }
 
-                        var downloadedBytes = if (isResuming) existingBytes else 0L
-                        if (!isResuming && partFile.exists()) {
-                            partFile.delete()
-                        }
+                            var downloadedBytes = if (isResuming) existingBytes else 0L
+                            if (!isResuming && partFile.exists()) {
+                                partFile.delete()
+                            }
 
-                        var lastUiUpdateTime = 0L
-                        var speedWindowStart = System.currentTimeMillis()
-                        var speedWindowBytes = downloadedBytes
-                        var currentSpeedText = ""
+                            var lastUiUpdateTime = 0L
+                            var speedWindowStart = System.currentTimeMillis()
+                            var speedWindowBytes = downloadedBytes
+                            var currentSpeedText = ""
 
-                        BufferedInputStream(activeConn.inputStream, 128 * 1024).use { input ->
-                            FileOutputStream(partFile, isResuming).use { output ->
-                                val buffer = ByteArray(128 * 1024)
-                                var bytesRead: Int
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    output.write(buffer, 0, bytesRead)
-                                    downloadedBytes += bytesRead
+                            BufferedInputStream(conn.inputStream, 128 * 1024).use { input ->
+                                FileOutputStream(partFile, isResuming).use { output ->
+                                    val buffer = ByteArray(128 * 1024)
+                                    var bytesRead: Int
+                                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                                        // Stop promptly when the download is
+                                        // cancelled instead of reading to
+                                        // completion (M14).
+                                        ensureActive()
+                                        output.write(buffer, 0, bytesRead)
+                                        downloadedBytes += bytesRead
 
-                                    val now = System.currentTimeMillis()
-                                    val elapsedSpeed = now - speedWindowStart
-                                    if (elapsedSpeed >= 600L) {
-                                        val deltaBytes = downloadedBytes - speedWindowBytes
-                                        val bytesPerSec = (deltaBytes * 1000L) / elapsedSpeed.coerceAtLeast(1L)
-                                        currentSpeedText = formatSpeed(bytesPerSec)
-                                        speedWindowStart = now
-                                        speedWindowBytes = downloadedBytes
-                                    }
-
-                                    if (now - lastUiUpdateTime >= 100L || (totalBytes > 0 && downloadedBytes >= totalBytes)) {
-                                        lastUiUpdateTime = now
-                                        val progress = if (totalBytes > 0) {
-                                            (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0.01f, 0.99f)
-                                        } else 0.5f
-
-                                        val dlMb = String.format(Locale.US, "%.1f", downloadedBytes / (1024.0 * 1024.0))
-                                        val progressText = if (totalBytes > 0) {
-                                            val totalMb = String.format(Locale.US, "%.1f", totalBytes / (1024.0 * 1024.0))
-                                            "$dlMb / $totalMb MB"
-                                        } else {
-                                            "$dlMb MB"
+                                        val now = System.currentTimeMillis()
+                                        val elapsedSpeed = now - speedWindowStart
+                                        if (elapsedSpeed >= 600L) {
+                                            val deltaBytes = downloadedBytes - speedWindowBytes
+                                            val bytesPerSec = (deltaBytes * 1000L) / elapsedSpeed.coerceAtLeast(1L)
+                                            currentSpeedText = formatSpeed(bytesPerSec)
+                                            speedWindowStart = now
+                                            speedWindowBytes = downloadedBytes
                                         }
 
-                                        _updateState.value = UpdateState.Downloading(
-                                            progress = progress,
-                                            progressText = progressText,
-                                            speedText = currentSpeedText,
-                                            release = release
-                                        )
-                                        updateProgressNotification(
-                                            tagName = release.tag_name,
-                                            percent = (progress * 100).toInt(),
-                                            progressText = progressText,
-                                            speedText = currentSpeedText
-                                        )
-                                    }
-                                }
-                                output.flush()
-                                try { output.fd.sync() } catch (e: Exception) { Log.w("UpdateRepository", "download fd.sync failed", e) }
-                            }
-                        }
-                        activeConn.disconnect()
+                                        if (now - lastUiUpdateTime >= 100L || (totalBytes > 0 && downloadedBytes >= totalBytes)) {
+                                            lastUiUpdateTime = now
+                                            val progress = if (totalBytes > 0) {
+                                                (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0.01f, 0.99f)
+                                            } else 0.5f
 
-                        // ডাউনলোড স্ট্রিম শেষ হলে ফাইলটি সাথে সাথে রিনেম করে লুপ থেকে বের হয়ে যাবে (বারবার ডাউনলোড হবে না)
-                        if (partFile.exists() && partFile.length() > 2 * 1024 * 1024L) {
+                                            val dlMb = String.format(Locale.US, "%.1f", downloadedBytes / (1024.0 * 1024.0))
+                                            val progressText = if (totalBytes > 0) {
+                                                val totalMb = String.format(Locale.US, "%.1f", totalBytes / (1024.0 * 1024.0))
+                                                "$dlMb / $totalMb MB"
+                                            } else {
+                                                "$dlMb MB"
+                                            }
+
+                                            _updateState.value = UpdateState.Downloading(
+                                                progress = progress,
+                                                progressText = progressText,
+                                                speedText = currentSpeedText,
+                                                release = release
+                                            )
+                                            updateProgressNotification(
+                                                tagName = release.tag_name,
+                                                percent = (progress * 100).toInt(),
+                                                progressText = progressText,
+                                                speedText = currentSpeedText
+                                            )
+                                        }
+                                    }
+                                    output.flush()
+                                    try { output.fd.sync() } catch (e: Exception) { Log.w("UpdateRepository", "download fd.sync failed", e) }
+                                }
+                            }
+
+                            // The stream ended: the download only counts when
+                            // the byte count matches (when the size is known)
+                            // AND the finished file passes the package +
+                            // signature check. Anything else is discarded
+                            // and the next candidate is tried (C5).
+                            if (totalBytes > 0 && downloadedBytes != totalBytes) {
+                                Log.w("UpdateRepository", "Incomplete download for $candidate: $downloadedBytes of $totalBytes bytes")
+                                continue
+                            }
+                            if (!isValidApkFile(partFile)) {
+                                Log.w("UpdateRepository", "Downloaded APK failed validation for $candidate")
+                                partFile.delete()
+                                continue
+                            }
                             if (finalApkFile.exists()) finalApkFile.delete()
                             val renamed = partFile.renameTo(finalApkFile)
                             if (!renamed) {
@@ -653,16 +739,22 @@ class UpdateRepository @Inject constructor(
                             }
                             finalApkFile.setReadable(true, false)
                             downloadedComplete = true
+                            attemptDownloaded = true
                             break
+                        } catch (streamEx: CancellationException) {
+                            throw streamEx
+                        } catch (streamEx: Exception) {
+                            Log.e("UpdateRepository", "Download failed for $candidate on attempt $attempt: ${streamEx.message}")
+                        } finally {
+                            activeDownloadConnection = null
+                            try { conn.disconnect() } catch (_: Exception) { }
                         }
-                    } catch (streamEx: Exception) {
-                        Log.e("UpdateRepository", "Stream interrupted on attempt $attempt: ${streamEx.message}")
-                        activeConn.disconnect()
-                        if (attempt < 3) delay(1200L * attempt)
                     }
+                    if (downloadedComplete) break
+                    if (!attemptDownloaded && attempt < 3) delay(1500L * attempt)
                 }
 
-                if (downloadedComplete && finalApkFile.exists()) {
+                if (downloadedComplete && isValidApkFile(finalApkFile)) {
                     _isDownloadMinimized.value = false
                     _updateState.value = UpdateState.ReadyToInstall(finalApkFile, release)
                     showReadyToInstallNotification(finalApkFile, release.tag_name)
@@ -675,6 +767,15 @@ class UpdateRepository @Inject constructor(
                     cancelNotification()
                     _updateState.value = UpdateState.Error("Download interrupted. Tap App Update in Settings to retry.")
                 }
+            } catch (e: CancellationException) {
+                // A cancelled download is not an error: cancelUpdateDownload()
+                // already set the state to Idle / NewVersionAvailable, so
+                // just make sure it stays there instead of overwriting it
+                // with Error (M14). Re-raise so the job ends cancelled.
+                cancelNotification()
+                val rel = _availableRelease.value
+                _updateState.value = if (rel != null) UpdateState.NewVersionAvailable(rel) else UpdateState.Idle
+                throw e
             } catch (e: Exception) {
                 Log.e("UpdateRepository", "Error downloading APK", e)
                 cancelNotification()
@@ -682,6 +783,7 @@ class UpdateRepository @Inject constructor(
             } finally {
                 // Download over (success, failure or cancellation): let the
                 // keep-alive service stop itself again (P1-16).
+                activeDownloadConnection = null
                 stopKeepAliveService()
             }
         }
@@ -690,6 +792,11 @@ class UpdateRepository @Inject constructor(
     fun cancelUpdateDownload() {
         activeDownloadJob?.cancel()
         activeDownloadJob = null
+        // Unblock a read() that is waiting for more bytes, so the cancelled
+        // job notices the cancellation at once instead of downloading to
+        // completion (M14).
+        try { activeDownloadConnection?.disconnect() } catch (_: Exception) { }
+        activeDownloadConnection = null
         stopKeepAliveService()
         cancelNotification()
         _isDownloadMinimized.value = false
@@ -704,13 +811,26 @@ class UpdateRepository @Inject constructor(
         val supportedAbis = Build.SUPPORTED_ABIS
         val preferredAbi = supportedAbis.firstOrNull() ?: ""
 
-        release.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+        // Assets shipped with the release come back from the GitHub API in
+        // no guaranteed order, so sort them here: this device's ABI first,
+        // in SUPPORTED_ABIS order, then the other ABI splits, then the
+        // legacy universal APK (C4, M5). Debug-signed APKs are never valid
+        // update candidates for the release-signed app (L1).
+        val abiOrder = supportedAbis.toList()
+        fun abiRank(name: String): Int {
+            val lower = name.lowercase(Locale.ROOT)
+            val idx = abiOrder.indexOfFirst { abi -> abi.isNotEmpty() && lower.contains(abi) }
+            return if (idx >= 0) idx else abiOrder.size
+        }
+        val assets = release.assets.toMutableList()
+        if (assets.all { it.size == 0L }) {
+            fetchLatestViaApi(System.currentTimeMillis())?.assets?.let { assets.addAll(it) }
+        }
+        assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+            .filterNot { it.name.contains("debug", ignoreCase = true) }
             .sortedWith(
-                compareByDescending<GitHubAsset> {
-                    it.name.contains("universal", ignoreCase = true)
-                }.thenByDescending {
-                    preferredAbi.isNotEmpty() && it.name.contains(preferredAbi, ignoreCase = true)
-                }
+                compareBy<GitHubAsset> { it.name.contains("universal", ignoreCase = true) }
+                    .thenBy { abiRank(it.name) }
             )
             .forEach { asset ->
                 if (asset.browser_download_url.isNotEmpty()) {
@@ -718,20 +838,13 @@ class UpdateRepository @Inject constructor(
                 }
             }
 
-        if (release.assets.all { it.size == 0L }) {
-            fetchLatestViaApi(System.currentTimeMillis())?.assets?.forEach { asset ->
-                if (asset.name.endsWith(".apk", ignoreCase = true) && asset.browser_download_url.isNotEmpty()) {
-                    list.add(0, asset.browser_download_url)
-                }
-            }
-        }
-
         // With ABI splits there is no universal APK: the release ships one
         // APK per ABI, so the hardcoded fallbacks must include the split
         // names or they would all 404 (P1-20). This device's ABI first,
         // then the other ABI, in both the renamed MyCloud names and the
         // Gradle default split names; the universal names stay as fallbacks
-        // for releases published before splits.
+        // for releases published before splits. Debug names are not
+        // candidates (L1).
         val splitAbis = (listOf(preferredAbi, "arm64-v8a", "armeabi-v7a"))
             .filter { it.isNotEmpty() }.distinct()
         for (abi in splitAbis) {
@@ -739,10 +852,7 @@ class UpdateRepository @Inject constructor(
             list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-$abi-release.apk")
         }
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-release.apk")
-        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/MyCloud-v$ver-universal-debug.apk")
         list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/mycloud-v$ver-universal-release.apk")
-        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-universal-debug.apk")
-        list.add("https://github.com/$GITHUB_REPO/releases/download/${release.tag_name}/app-debug.apk")
 
         return list.distinct()
     }
@@ -752,6 +862,10 @@ class UpdateRepository @Inject constructor(
             var currentUrl = urlStr
             var redirects = 0
             while (redirects < 10) {
+                // Only https is ever trusted for an update download: a
+                // redirect to plain http (or any other scheme) is rejected
+                // instead of followed (C5).
+                if (!currentUrl.startsWith("https://")) return null
                 val url = URL(currentUrl)
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     instanceFollowRedirects = false
@@ -785,6 +899,13 @@ class UpdateRepository @Inject constructor(
     }
 
     fun installApk(apkFile: File) {
+        // Last line of defence: never hand an unverified APK to the
+        // installer, no matter which path reached here (C5).
+        if (!isValidApkFile(apkFile)) {
+            Log.w("UpdateRepository", "Refusing to install unverified APK: ${apkFile.absolutePath}")
+            Toast.makeText(context, "Update file could not be verified. Please retry the download.", Toast.LENGTH_LONG).show()
+            return
+        }
         try {
             if (!apkFile.exists() || apkFile.length() == 0L) {
                 val rel = _availableRelease.value
