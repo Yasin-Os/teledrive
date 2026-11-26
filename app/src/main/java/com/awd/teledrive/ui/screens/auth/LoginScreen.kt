@@ -116,6 +116,7 @@ import kotlinx.coroutines.delay
 import java.text.Collator
 import java.text.Normalizer
 import java.util.Locale
+import com.awd.teledrive.R
 
 // ──────────────────────────────────────────────────────────────
 //  Glassmorphic Dark Theme Tokens
