@@ -75,6 +75,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,6 +87,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -96,6 +98,7 @@ import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.home.DriveListItem
 import com.awd.teledrive.ui.screens.home.FilterSortRow
 import com.awd.teledrive.ui.screens.home.FilterType
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.log10
 import kotlin.math.pow
@@ -193,7 +196,38 @@ fun SecureStorageScreen(
                             }
                             Switch(
                                 checked = isSafeFolderBiometricEnabled,
-                                onCheckedChange = { securityViewModel.setSafeFolderBiometricEnabled(it) }
+                                onCheckedChange = { enabled ->
+                                    if (!enabled) {
+                                        securityViewModel.disableSafeFolderBiometric()
+                                    } else {
+                                        val fragmentActivity = context as? FragmentActivity
+                                        val cipher = securityViewModel.prepareSafeFolderBiometricEnrollCipher()
+                                        if (fragmentActivity == null || cipher == null) {
+                                            Toast.makeText(
+                                                context,
+                                                "Unlock the Safe Folder with your PIN first and ensure strong biometrics are enrolled.",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        } else {
+                                            BiometricHelper.showCryptoPrompt(
+                                                activity = fragmentActivity,
+                                                title = context.getString(R.string.vault_biometric_title),
+                                                subtitle = context.getString(R.string.vault_biometric_subtitle),
+                                                negativeButtonText = context.getString(R.string.cancel),
+                                                cipher = cipher,
+                                                onSuccess = { authedCipher ->
+                                                    val ok = securityViewModel.enableSafeFolderBiometricWithCipher(authedCipher)
+                                                    if (!ok) {
+                                                        Toast.makeText(context, "Could not enable biometric unlock", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                },
+                                                onError = { message ->
+                                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             )
                         }
                     }
@@ -258,13 +292,15 @@ fun SecureStorageScreen(
     }
 
     if (showChangeSafePinDialog) {
+        val pinScope = rememberCoroutineScope()
         var oldPin by remember { mutableStateOf("") }
         var newPin by remember { mutableStateOf("") }
         var confirmPin by remember { mutableStateOf("") }
         var err by remember { mutableStateOf<String?>(null) }
+        var isUpdatingPin by remember { mutableStateOf(false) }
 
         AlertDialog(
-            onDismissRequest = { showChangeSafePinDialog = false },
+            onDismissRequest = { if (!isUpdatingPin) showChangeSafePinDialog = false },
             title = { Text("Change Safe Folder PIN") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -274,6 +310,7 @@ fun SecureStorageScreen(
                         label = { Text("Current PIN") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        enabled = !isUpdatingPin,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -283,6 +320,7 @@ fun SecureStorageScreen(
                         label = { Text("New PIN (4-6 digits)") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        enabled = !isUpdatingPin,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -292,6 +330,7 @@ fun SecureStorageScreen(
                         label = { Text("Confirm New PIN") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        enabled = !isUpdatingPin,
                         isError = err != null,
                         supportingText = err?.let { { Text(it) } },
                         singleLine = true,
@@ -300,21 +339,33 @@ fun SecureStorageScreen(
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    if (newPin.length < 4) {
-                        err = "Enter at least 4 digits"
-                    } else if (newPin != confirmPin) {
-                        err = "New PIN did not match"
-                    } else if (securityViewModel.changeSafeFolderPin(oldPin, newPin)) {
-                        showChangeSafePinDialog = false
-                        Toast.makeText(context, "Safe Folder PIN updated", Toast.LENGTH_SHORT).show()
-                    } else {
-                        err = "Current PIN is incorrect"
+                Button(
+                    enabled = !isUpdatingPin,
+                    onClick = {
+                        if (newPin.length < 4) {
+                            err = "Enter at least 4 digits"
+                        } else if (newPin != confirmPin) {
+                            err = "New PIN did not match"
+                        } else {
+                            isUpdatingPin = true
+                            pinScope.launch {
+                                val updated = securityViewModel.changeSafeFolderPin(oldPin, newPin)
+                                isUpdatingPin = false
+                                if (updated) {
+                                    showChangeSafePinDialog = false
+                                    Toast.makeText(context, "Safe Folder PIN updated", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    err = securityViewModel.safePinError.value ?: "Current PIN is incorrect"
+                                }
+                            }
+                        }
                     }
-                }) { Text("Update PIN") }
+                ) { Text(if (isUpdatingPin) "Updating..." else "Update PIN") }
             },
             dismissButton = {
-                TextButton(onClick = { showChangeSafePinDialog = false }) { Text(stringResource(R.string.cancel)) }
+                TextButton(enabled = !isUpdatingPin, onClick = { showChangeSafePinDialog = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
             }
         )
     }

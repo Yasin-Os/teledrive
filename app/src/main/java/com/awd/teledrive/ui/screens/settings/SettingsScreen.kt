@@ -96,6 +96,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
 import com.awd.teledrive.core.BiometricHelper
@@ -231,7 +232,38 @@ fun SettingsScreen(
         onSetSecurityEnabled = { securityViewModel.setSecurityEnabled(it) },
         onCreateAppPin = { pin -> securityViewModel.setPassword(pin) },
         onChangeAppPin = { oldPin, newPin -> securityViewModel.changeAppLockPin(oldPin, newPin) },
-        onSetBiometricEnabled = { securityViewModel.setBiometricEnabled(it) },
+        onSetBiometricEnabled = { enabled ->
+            if (!enabled) {
+                securityViewModel.disableAppLockBiometric()
+            } else {
+                val fragmentActivity = context as? FragmentActivity
+                val cipher = securityViewModel.prepareAppLockBiometricEnrollCipher()
+                if (fragmentActivity == null || cipher == null) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.settings_biometric_not_available),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    BiometricHelper.showCryptoPrompt(
+                        activity = fragmentActivity,
+                        title = context.getString(R.string.biometric_unlock),
+                        subtitle = context.getString(R.string.biometric_subtitle),
+                        negativeButtonText = context.getString(R.string.cancel),
+                        cipher = cipher,
+                        onSuccess = { authedCipher ->
+                            val ok = securityViewModel.enableAppLockBiometricWithCipher(authedCipher)
+                            if (!ok) {
+                                Toast.makeText(context, "Could not enable biometric unlock", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onError = { message ->
+                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
+            }
+        },
         onSetAutoBackupEnabled = { backupViewModel.setAutoBackupEnabled(it) },
         onSetBackupWifiOnly = { backupViewModel.setBackupWifiOnly(it) },
         onTriggerManualBackup = { backupViewModel.triggerManualBackup() },
@@ -286,8 +318,8 @@ fun SettingsContent(
     onSetDarkMode: (Boolean) -> Unit,
     onSetThemeColor: (Color) -> Unit,
     onSetSecurityEnabled: (Boolean) -> Unit,
-    onCreateAppPin: (String) -> Unit,
-    onChangeAppPin: (String, String) -> Boolean,
+    onCreateAppPin: suspend (String) -> Boolean,
+    onChangeAppPin: suspend (String, String) -> Boolean,
     onSetBiometricEnabled: (Boolean) -> Unit,
     onSetAutoBackupEnabled: (Boolean) -> Unit,
     onSetBackupWifiOnly: (Boolean) -> Unit,
@@ -420,15 +452,28 @@ fun SettingsContent(
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    if (newPin.length != 4) err = context.getString(R.string.err_pin_4_digits)
-                    else if (newPin != confirmPin) err = context.getString(R.string.err_pin_mismatch)
-                    else {
-                        onCreateAppPin(newPin)
-                        showCreateAppPinDialog = false
-                        Toast.makeText(context, context.getString(R.string.pin_lock_enabled), Toast.LENGTH_SHORT).show()
+                val createPinScope = rememberCoroutineScope()
+                var isSaving by remember { mutableStateOf(false) }
+                Button(
+                    enabled = !isSaving,
+                    onClick = {
+                        if (newPin.length != 4) err = context.getString(R.string.err_pin_4_digits)
+                        else if (newPin != confirmPin) err = context.getString(R.string.err_pin_mismatch)
+                        else {
+                            isSaving = true
+                            createPinScope.launch {
+                                val saved = onCreateAppPin(newPin)
+                                isSaving = false
+                                if (saved) {
+                                    showCreateAppPinDialog = false
+                                    Toast.makeText(context, context.getString(R.string.pin_lock_enabled), Toast.LENGTH_SHORT).show()
+                                } else {
+                                    err = "Could not save PIN"
+                                }
+                            }
+                        }
                     }
-                }) { Text(stringResource(R.string.save)) }
+                ) { Text(stringResource(R.string.save)) }
             },
             dismissButton = {
                 TextButton(onClick = { showCreateAppPinDialog = false; onSetSecurityEnabled(false) }) { Text(stringResource(R.string.cancel)) }
@@ -437,13 +482,15 @@ fun SettingsContent(
     }
 
     if (showChangeAppPinDialog) {
+        val changePinScope = rememberCoroutineScope()
         var oldPin by remember { mutableStateOf("") }
         var newPin by remember { mutableStateOf("") }
         var confirmPin by remember { mutableStateOf("") }
         var err by remember { mutableStateOf<String?>(null) }
+        var isUpdating by remember { mutableStateOf(false) }
 
         AlertDialog(
-            onDismissRequest = { showChangeAppPinDialog = false },
+            onDismissRequest = { if (!isUpdating) showChangeAppPinDialog = false },
             title = { Text(stringResource(R.string.change_app_pin)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -452,6 +499,7 @@ fun SettingsContent(
                             value = oldPin, onValueChange = { oldPin = it.filter { c -> c.isDigit() }.take(4); err = null },
                             label = { Text(stringResource(R.string.current_pin)) }, visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            enabled = !isUpdating,
                             singleLine = true, modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -459,29 +507,43 @@ fun SettingsContent(
                         value = newPin, onValueChange = { newPin = it.filter { c -> c.isDigit() }.take(4); err = null },
                         label = { Text(stringResource(R.string.new_pin_4_digit)) }, visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        enabled = !isUpdating,
                         singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = confirmPin, onValueChange = { confirmPin = it.filter { c -> c.isDigit() }.take(4); err = null },
                         label = { Text(stringResource(R.string.confirm_new_pin)) }, visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        enabled = !isUpdating,
                         isError = err != null, supportingText = err?.let { { Text(it) } },
                         singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    if (newPin.length != 4) err = context.getString(R.string.err_new_pin_4_digits)
-                    else if (newPin != confirmPin) err = context.getString(R.string.err_new_pin_mismatch)
-                    else if (onChangeAppPin(oldPin, newPin)) {
-                        showChangeAppPinDialog = false
-                        Toast.makeText(context, context.getString(R.string.pin_updated), Toast.LENGTH_SHORT).show()
-                    } else err = context.getString(R.string.err_current_pin_incorrect)
-                }) { Text(stringResource(R.string.update)) }
+                Button(
+                    enabled = !isUpdating,
+                    onClick = {
+                        if (newPin.length != 4) err = context.getString(R.string.err_new_pin_4_digits)
+                        else if (newPin != confirmPin) err = context.getString(R.string.err_new_pin_mismatch)
+                        else {
+                            isUpdating = true
+                            changePinScope.launch {
+                                val updated = onChangeAppPin(oldPin, newPin)
+                                isUpdating = false
+                                if (updated) {
+                                    showChangeAppPinDialog = false
+                                    Toast.makeText(context, context.getString(R.string.pin_updated), Toast.LENGTH_SHORT).show()
+                                } else {
+                                    err = context.getString(R.string.err_current_pin_incorrect)
+                                }
+                            }
+                        }
+                    }
+                ) { Text(stringResource(R.string.update)) }
             },
             dismissButton = {
-                TextButton(onClick = { showChangeAppPinDialog = false }) { Text(stringResource(R.string.cancel)) }
+                TextButton(enabled = !isUpdating, onClick = { showChangeAppPinDialog = false }) { Text(stringResource(R.string.cancel)) }
             }
         )
     }

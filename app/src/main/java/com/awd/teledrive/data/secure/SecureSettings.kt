@@ -96,6 +96,21 @@ class SecureSettings @Inject constructor(
         requirePrefs().edit().remove(key).apply()
     }
 
+    /**
+     * Atomically applies multiple edits and flushes them synchronously with
+     * commit() (see M17). Throws IllegalStateException if secure storage is
+     * unavailable or if commit() returns false, so security-critical state
+     * changes (e.g. writing a wrapped DEK and removing a legacy plaintext PIN)
+     * either durably succeed together or fail closed.
+     */
+    fun editSync(block: SharedPreferences.Editor.() -> Unit) {
+        val editor = requirePrefs().edit()
+        editor.block()
+        if (!editor.commit()) {
+            throw IllegalStateException("Failed to persist secure settings transaction")
+        }
+    }
+
     fun getString(key: String, defaultValue: String? = null): String? {
         return sharedPreferences?.getString(key, defaultValue) ?: defaultValue
     }
