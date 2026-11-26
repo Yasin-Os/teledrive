@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.drinkless.tdlib.TdApi
 import java.io.File
@@ -69,6 +70,20 @@ class TransferRepository @Inject constructor(
     private val pausedIds = ConcurrentHashMap.newKeySet<String>()
     private val lastEmitTime = ConcurrentHashMap<String, Long>()
 
+    // M34: every Room write for transfers runs through this
+    // single-threaded dispatcher, in launch order. Independent
+    // scope.launch calls could reorder — a deleteTransfer running
+    // before its insertTransfer — leaving a stale row that comes back
+    // as "Failed" on the next launch.
+    private val dbWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
+
+    // H20: a transfer paused while still queued keeps its block here so
+    // resume can start it later; startedBlocks is the single-flight
+    // guard so a block can never run twice (a queued launch and a
+    // resume relaunch racing for the semaphore).
+    private val pendingBlocks = ConcurrentHashMap<String, suspend () -> Unit>()
+    private val startedBlocks = ConcurrentHashMap.newKeySet<String>()
+
     private val _transfers = MutableStateFlow<Map<String, TransferInfo>>(emptyMap())
     val transfers: StateFlow<Map<String, TransferInfo>> = _transfers.asStateFlow()
 
@@ -109,7 +124,7 @@ class TransferRepository @Inject constructor(
     )
 
     private fun persistInsert(info: TransferInfo) {
-        scope.launch {
+        scope.launch(dbWriteDispatcher) {
             try { transferDao.insertTransfer(info.toEntity()) } catch (e: Exception) {}
         }
     }
@@ -121,7 +136,7 @@ class TransferRepository @Inject constructor(
             if (now - last < persistThrottleMs) return
             lastPersistTime[info.remoteUniqueId] = now
         }
-        scope.launch {
+        scope.launch(dbWriteDispatcher) {
             try {
                 transferDao.updateProgressFull(info.remoteUniqueId, info.progress, info.status, info.downloadedSize)
             } catch (e: Exception) {}
@@ -157,7 +172,12 @@ class TransferRepository @Inject constructor(
 
     init {
         scope.launch {
-            try { transferDao.clearCompleted() } catch (e: Exception) { Log.w("TransferRepo", "clearCompleted failed", e) }
+            // M34: clear completed rows on the serialized write
+            // dispatcher before restoring, so the restore cannot read
+            // rows the clear was about to delete.
+            withContext(dbWriteDispatcher) {
+                try { transferDao.clearCompleted() } catch (e: Exception) { Log.w("TransferRepo", "clearCompleted failed", e) }
+            }
 
             restorePersistedTransfers()
 
@@ -221,7 +241,26 @@ class TransferRepository @Inject constructor(
     fun completeAndCleanupTransfer(key: String, uniqueId: String = "", fileId: Int = 0, success: Boolean = true) {
         val info = activeMap.remove(key)
         if (uniqueId.isNotEmpty()) activeMap.remove(uniqueId)
-        if (fileId != 0) fileIdToKey.remove(fileId)
+        // M15: a finished transfer must not keep its file-id mapping or
+        // its paused flag. Callers that complete by key only pass
+        // fileId = 0, which used to leak the fileIdToKey entry; and the
+        // paused flag was never cleared here at all, so a later transfer
+        // reusing the same key had its updates dropped by the collector.
+        // Only remove the file-id mapping if it still points at this
+        // transfer — the id may already belong to a newer transfer.
+        val effectiveFileId = if (fileId != 0) fileId else info?.fileId ?: 0
+        if (effectiveFileId != 0) {
+            val mappedKey = fileIdToKey[effectiveFileId]
+            if (mappedKey == key || (uniqueId.isNotEmpty() && mappedKey == uniqueId)) {
+                fileIdToKey.remove(effectiveFileId)
+            }
+        }
+        pausedIds.remove(key)
+        if (uniqueId.isNotEmpty()) pausedIds.remove(uniqueId)
+        pendingBlocks.remove(key)
+        if (uniqueId.isNotEmpty()) pendingBlocks.remove(uniqueId)
+        startedBlocks.remove(key)
+        if (uniqueId.isNotEmpty()) startedBlocks.remove(uniqueId)
         info?.localPath?.let { pathToKey.remove(it) }
         lastEmitTime.remove(key)
         lastPersistTime.remove(key)
@@ -235,11 +274,14 @@ class TransferRepository @Inject constructor(
             activeMap.remove(oldK)
             completionDeferreds.remove(oldK)?.complete(success)
             idMigrationMap.remove(oldK)
+            pausedIds.remove(oldK)
+            pendingBlocks.remove(oldK)
+            startedBlocks.remove(oldK)
         }
 
         publishState()
 
-        scope.launch {
+        scope.launch(dbWriteDispatcher) {
             try {
                 transferDao.deleteTransfer(key)
                 if (uniqueId.isNotEmpty()) transferDao.deleteTransfer(uniqueId)
@@ -273,16 +315,45 @@ class TransferRepository @Inject constructor(
         activeMap[key] = info
         if (fileId != 0) fileIdToKey[fileId] = key
         if (!localPath.isNullOrEmpty()) pathToKey[localPath] = key
+        pendingBlocks[key] = block
         publishState()
         persistInsert(info)
 
+        startTransferBlock(key, fileId, remoteUniqueId, isDownload, block)
+    }
+
+    /**
+     * Runs a queued transfer's block under the transfer semaphore. The
+     * block is also retained in [pendingBlocks] until it starts, so a
+     * transfer paused while queued can be started later by
+     * [resumeTransfer] instead of running while paused.
+     */
+    private fun startTransferBlock(
+        key: String,
+        fileId: Int,
+        remoteUniqueId: String,
+        isDownload: Boolean,
+        block: suspend () -> Unit
+    ) {
         val semaphore = if (isDownload) downloadSemaphore else uploadSemaphore
         scope.launch {
             semaphore.withPermit {
                 if (!activeMap.containsKey(key) && idMigrationMap[key] == null) {
                     return@withPermit
                 }
+                // H20: paused while still queued — do not run the block
+                // now. It stays retained in pendingBlocks and resume
+                // starts it; running it here would upload/download a
+                // transfer the user paused.
                 val currentKey = idMigrationMap[key] ?: key
+                if (pausedIds.contains(currentKey) || pausedIds.contains(key)) {
+                    return@withPermit
+                }
+                // Single-flight: a resume relaunch racing this launch
+                // for the semaphore must not run the block a second time.
+                if (!startedBlocks.add(key)) {
+                    return@withPermit
+                }
                 activeMap[currentKey]?.let { current ->
                     val started = current.copy(
                         status = if (isDownload) Status.DOWNLOADING else Status.UPLOADING,
@@ -292,11 +363,41 @@ class TransferRepository @Inject constructor(
                     publishState()
                     persistProgress(started, force = true)
                 }
+                // The block is running now: forget the retained copy so a
+                // later resume cannot launch it again.
+                pendingBlocks.remove(key)
                 try {
                     block()
                 } catch (e: Exception) {
                     Log.e("TransferRepo", "Transfer error: ${e.message}")
                     completeAndCleanupTransfer(key, remoteUniqueId, fileId, success = false)
+                } finally {
+                    startedBlocks.remove(key)
+                    // M16: an upload block that returns normally has
+                    // finished its work — it waits for completion inside.
+                    // If the entry is still here, no completion update
+                    // ever arrived and it would sit in Uploading until
+                    // the 30-minute waiter timeout. Complete it as
+                    // failed so the entry, the deferred and the DB row
+                    // do not leak. Downloads are excluded on purpose:
+                    // their block returns right after issuing
+                    // DownloadFile and the entry legitimately lives on
+                    // until the file-update collector completes it.
+                    if (!isDownload) {
+                        val liveKey = idMigrationMap[key] ?: key
+                        val live = activeMap[liveKey] ?: activeMap[remoteUniqueId]
+                        // Fail it only if this block is still the live
+                        // upload. Skip when paused (resume owns it now),
+                        // or when the entry's file id moved on — resume
+                        // re-issued the upload under a new file id and the
+                        // collector has already picked that one up.
+                        val stillThisUpload = live != null &&
+                            live.status != Status.PAUSED &&
+                            (fileId == 0 || live.fileId == fileId)
+                        if (stillThisUpload) {
+                            completeAndCleanupTransfer(liveKey, remoteUniqueId, fileId, success = false)
+                        }
+                    }
                 }
             }
         }
@@ -322,7 +423,7 @@ class TransferRepository @Inject constructor(
         }
         activeMap[targetKey] = updated
         publishState()
-        scope.launch {
+        scope.launch(dbWriteDispatcher) {
             try {
                 if (oldId != targetKey) transferDao.updateUniqueId(oldId, targetKey)
                 if (newFileId != 0) transferDao.updateFileId(targetKey, newFileId)
@@ -413,6 +514,27 @@ class TransferRepository @Inject constructor(
         } else if (!info.isDownload) {
             activeMap[targetId] = info.copy(status = Status.UPLOADING)
             publishState()
+            // H20: pausing an upload cancelled its preliminary upload
+            // at the TDLib level, so only flipping the status left the
+            // transfer stalled forever. Re-issue the upload for the
+            // local file: TDLib resumes (or restarts) the byte upload
+            // and the file-update collector picks the progress up again
+            // (by file id, or by local path if the resumed upload gets
+            // a new file id). All uploads here are sent as documents,
+            // so FileTypeDocument matches the original send.
+            // fileId == 0 means the send has not reached TDLib yet —
+            // there is nothing to re-issue; the running block sends it,
+            // or the queued block is relaunched below.
+            val path = info.localPath
+            if (info.fileId != 0 && !path.isNullOrEmpty() && File(path).exists()) {
+                telegramClient.send(TdApi.UploadFile(TdApi.InputFileLocal(path), TdApi.FileTypeDocument(), 32))
+            }
+        }
+        // H20: the block never started (paused while queued) — start it
+        // now. startTransferBlock's single-flight guard makes a resume
+        // racing the original queued launch safe.
+        pendingBlocks.remove(targetId)?.let { retained ->
+            startTransferBlock(targetId, info.fileId, targetId, info.isDownload, retained)
         }
         activeMap[targetId]?.let { persistProgress(it, force = true) }
     }
@@ -453,7 +575,7 @@ class TransferRepository @Inject constructor(
             v.status == TransferRepository.Status.COMPLETED || v.status == TransferRepository.Status.CANCELLED || v.status == TransferRepository.Status.FAILED
         }
         publishState()
-        scope.launch {
+        scope.launch(dbWriteDispatcher) {
             try { transferDao.clearCompleted() } catch (e: Exception) { Log.w("TransferRepo", "clearCompleted failed", e) }
         }
     }
