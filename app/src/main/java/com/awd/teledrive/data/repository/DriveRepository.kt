@@ -86,6 +86,10 @@ class DriveRepository @Inject constructor(
 ) {
     companion object {
         const val SAFE_SPACE_VIRTUAL_ID = "vf_safe_space"
+        // H14: separate prefs set ("key|mtime" entries) tracking the
+        // last-modified time of each backed-up file, so a file edited
+        // without a size change is backed up again.
+        private const val KEY_BACKED_UP_MTIME = "backed_up_mtime_v1"
         private const val DEDICATED_CHANNEL_TITLE = "MyCloud Storage"
         private const val PREF_STORAGE_CHAT_ID = "dedicated_storage_chat_id"
         private const val PREF_CHANNEL_PHOTO_SET = "dedicated_channel_photo_set_"
@@ -311,6 +315,9 @@ class DriveRepository @Inject constructor(
             // Last *successful* backup: only stamped when a file really
             // finished uploading (unlike last_backup_time, which is also
             // stamped after a run where nothing succeeded).
+            // H14: record the file's last-modified time too, so a later
+            // edit (same size) is detected and re-backed-up.
+            recordBackupMtime(fileKey)
             val now = System.currentTimeMillis()
             secureSettings.saveLong("last_successful_backup_time", now)
             // Data uploaded this month (key "path_length" carries the size).
@@ -692,10 +699,149 @@ class DriveRepository @Inject constructor(
         return clean.trimEnd('/')
     }
 
-    fun collectTargetBackupFiles(rawFolders: List<String>): List<File> {
+    /**
+     * H14: one backup candidate. [file] is the local file to upload — null
+     * for SAF targets when the scan was asked not to materialize copies
+     * (health check): only [key], [name], [size] and [lastModified] are
+     * meaningful then. [sourceFolder] is the backup folder the target
+     * belongs to (used to group pending files in the health snapshot).
+     */
+    data class BackupTargetFile(
+        val key: String,
+        val file: File?,
+        val name: String,
+        val size: Long,
+        val lastModified: Long,
+        val sourceFolder: String
+    )
+
+    /**
+     * H14: dedup is not just "key in backedUpSet" — the key is
+     * path_length, so a file edited without a size change was never
+     * re-backed-up. This checker also tracks last-modified times in a
+     * separate prefs set (entries "key|mtime"): a key with no recorded
+     * mtime is grandfathered (recorded now, treated as backed-up); a
+     * changed mtime means the file was edited and is pending again.
+     */
+    private inner class BackupDedupChecker(
+        private val backedUp: Set<String>,
+        private val mtimes: MutableMap<String, Long>
+    ) {
+        private val grandfathers = mutableMapOf<String, Long>()
+
+        fun isBackedUp(key: String, lastModified: Long): Boolean {
+            if (!backedUp.contains(key)) return false
+            val recorded = mtimes[key]
+            if (recorded == null) {
+                grandfathers[key] = lastModified
+                return true
+            }
+            return recorded == lastModified
+        }
+
+        fun flushGrandfathers() {
+            if (grandfathers.isEmpty()) return
+            try {
+                val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+                val current = (customPrefs.getStringSet(KEY_BACKED_UP_MTIME, emptySet()) ?: emptySet()).toMutableSet()
+                grandfathers.forEach { (key, mtime) -> current.add("$key|$mtime") }
+                customPrefs.edit().putStringSet(KEY_BACKED_UP_MTIME, current).apply()
+            } catch (_: Exception) { }
+        }
+    }
+
+    private fun readBackupMtimes(): MutableMap<String, Long> {
+        val out = mutableMapOf<String, Long>()
+        try {
+            val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            val entries = customPrefs.getStringSet(KEY_BACKED_UP_MTIME, emptySet()) ?: emptySet()
+            entries.forEach { entry ->
+                val mtime = entry.substringAfterLast("|").toLongOrNull() ?: return@forEach
+                out[entry.substringBeforeLast("|")] = mtime
+            }
+        } catch (_: Exception) { }
+        return out
+    }
+
+    /** Best-effort last-modified for a backup key: regular file or SAF doc. */
+    private fun backupMtimeForKey(key: String): Long? {
+        return try {
+            if (key.startsWith("doc_")) {
+                val uriStr = key.removePrefix("doc_").substringBeforeLast("_")
+                DocumentFile.fromSingleUri(context, Uri.parse(uriStr))?.lastModified()?.takeIf { it > 0L }
+            } else {
+                val path = key.substringBeforeLast("_")
+                File(path).let { if (it.exists()) it.lastModified() else null }?.takeIf { it > 0L }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    /** Record the current last-modified time for a key that just backed up. */
+    private fun recordBackupMtime(key: String) {
+        val mtime = backupMtimeForKey(key) ?: return
+        try {
+            val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            val current = (customPrefs.getStringSet(KEY_BACKED_UP_MTIME, emptySet()) ?: emptySet()).toMutableSet()
+            current.removeAll { it.substringBeforeLast("|") == key }
+            current.add("$key|$mtime")
+            customPrefs.edit().putStringSet(KEY_BACKED_UP_MTIME, current).apply()
+        } catch (_: Exception) { }
+    }
+
+    /**
+     * H14: SAF temp copies from earlier runs (crashed/interrupted, or left
+     * behind before this fix) used to pile up in cacheDir forever. Sweep
+     * ones older than an hour — no single-file upload runs longer than
+     * that, so nothing in flight is touched.
+     */
+    private fun sweepStaleSafTempFiles() {
+        try {
+            val cutoff = System.currentTimeMillis() - 60 * 60 * 1000L
+            context.cacheDir.listFiles()?.forEach { f ->
+                if (f.isFile && f.name.startsWith("saf_") && f.lastModified() < cutoff) f.delete()
+            }
+        } catch (_: Exception) { }
+    }
+
+    /** Unique SAF temp name: a hash of the doc URI stops same-name files in different subfolders from overwriting each other. */
+    private fun safTempName(uri: Uri, name: String): String {
+        val hash = uri.toString().hashCode().toUInt().toString(16)
+        val safeName = name.replace('/', '_').replace(Regex("[\u0000-\u001F]"), "_")
+        return "saf_${hash}_$safeName"
+    }
+
+    /**
+     * H14: delete a SAF temp copy once its upload is recorded as backed up.
+     * Called after uploadFileAndWait returns; if the record is not there
+     * yet (the message-send callback can lag the transfer), the hourly
+     * stale-temp sweep above picks it up on the next scan.
+     */
+    fun cleanupSafTempFile(target: BackupTargetFile) {
+        val file = target.file ?: return
+        if (!target.key.startsWith("doc_")) return
+        try {
+            val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            val backedUpSet = customPrefs.getStringSet("backed_up_paths_v3", emptySet()) ?: emptySet()
+            if (backedUpSet.contains(target.key) && file.absolutePath.startsWith(context.cacheDir.absolutePath)) {
+                file.delete()
+            }
+        } catch (_: Exception) { }
+    }
+
+    /**
+     * Collects the files that still need backing up. [materializeSafCopies]
+     * controls whether SAF docs are copied to cacheDir temp files (the
+     * upload paths need real files) or reported without a copy (the health
+     * snapshot only counts them — H14: opening Backup Health used to copy
+     * GBs of SAF files into cacheDir and never delete them).
+     */
+    fun collectTargetBackupFiles(rawFolders: List<String>, materializeSafCopies: Boolean = true): List<BackupTargetFile> {
         val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
         val backedUpSet = customPrefs.getStringSet("backed_up_paths_v3", emptySet()) ?: emptySet()
-        val foundFiles = LinkedHashMap<String, File>()
+        val dedup = BackupDedupChecker(backedUpSet, readBackupMtimes())
+        val foundFiles = LinkedHashMap<String, BackupTargetFile>()
+
+        sweepStaleSafTempFiles()
 
         val normalizedPaths = rawFolders.map { normalizeFolderPath(it) }.filter { it.isNotEmpty() }
 
@@ -703,11 +849,11 @@ class DriveRepository @Inject constructor(
             val dir = File(path)
             if (dir.exists()) {
                 if (dir.isDirectory) {
-                    scanDirFast(dir, backedUpSet, foundFiles)
+                    scanDirFast(dir, dedup, foundFiles, path)
                 } else if (dir.isFile && dir.length() > 0) {
                     val key = "${dir.absolutePath}_${dir.length()}"
-                    if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
-                        foundFiles[dir.absolutePath] = dir
+                    if (!dedup.isBackedUp(key, dir.lastModified()) && !inFlightBackupKeys.contains(key)) {
+                        foundFiles[key] = BackupTargetFile(key, dir, dir.name, dir.length(), dir.lastModified(), dir.parent ?: path)
                     }
                 }
             }
@@ -760,8 +906,8 @@ class DriveRepository @Inject constructor(
                                 val f = File(filePath)
                                 if (f.exists() && f.isFile && f.length() > 0 && !f.name.startsWith(".")) {
                                     val key = "${f.absolutePath}_${f.length()}"
-                                    if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
-                                        foundFiles[f.absolutePath] = f
+                                    if (!dedup.isBackedUp(key, f.lastModified()) && !inFlightBackupKeys.contains(key)) {
+                                        foundFiles[key] = BackupTargetFile(key, f, f.name, f.length(), f.lastModified(), f.parent ?: "")
                                     }
                                 }
                             }
@@ -776,49 +922,65 @@ class DriveRepository @Inject constructor(
                 val treeUri = Uri.parse(uriStr)
                 val docDir = DocumentFile.fromTreeUri(context, treeUri)
                 if (docDir != null && docDir.exists()) {
-                    scanDocumentTreeFallback(docDir, backedUpSet, foundFiles)
+                    scanDocumentTreeFallback(docDir, dedup, foundFiles, materializeSafCopies, normalizeFolderPath(uriStr))
                 }
             } catch (e: Exception) { Log.w("DriveRepo", "collectTargetBackupFiles failed", e) }
         }
 
-        return foundFiles.values.sortedBy { it.lastModified() }
+        dedup.flushGrandfathers()
+        return foundFiles.values.sortedBy { it.lastModified }
     }
 
-    private fun scanDirFast(dir: File, backedUpSet: Set<String>, out: MutableMap<String, File>) {
+    private fun scanDirFast(dir: File, dedup: BackupDedupChecker, out: MutableMap<String, BackupTargetFile>, sourceFolder: String) {
         val list = dir.listFiles() ?: return
         for (child in list) {
             if (child.name.startsWith(".")) continue
             if (child.isDirectory) {
-                scanDirFast(child, backedUpSet, out)
+                scanDirFast(child, dedup, out, sourceFolder)
             } else if (child.isFile && child.length() > 0) {
                 val key = "${child.absolutePath}_${child.length()}"
-                if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
-                    out[child.absolutePath] = child
+                if (!dedup.isBackedUp(key, child.lastModified()) && !inFlightBackupKeys.contains(key)) {
+                    out[key] = BackupTargetFile(key, child, child.name, child.length(), child.lastModified(), sourceFolder)
                 }
             }
         }
     }
 
-    private fun scanDocumentTreeFallback(docDir: DocumentFile, backedUpSet: Set<String>, out: MutableMap<String, File>) {
+    private fun scanDocumentTreeFallback(docDir: DocumentFile, dedup: BackupDedupChecker, out: MutableMap<String, BackupTargetFile>, materializeCopies: Boolean, sourceFolder: String) {
         for (doc in docDir.listFiles()) {
             val name = doc.name ?: continue
             if (name.startsWith(".")) continue
             if (doc.isDirectory) {
-                scanDocumentTreeFallback(doc, backedUpSet, out)
+                scanDocumentTreeFallback(doc, dedup, out, materializeCopies, sourceFolder)
             } else if (doc.isFile && doc.length() > 0) {
+                // H14: the scan key is "doc_<uri>_<length>" — the same key
+                // the upload path records, so a backed-up SAF file is not
+                // scanned again (the old code re-derived the key from the
+                // temp file's path, which never matched).
                 val key = "doc_${doc.uri}_${doc.length()}"
-                if (!backedUpSet.contains(key) && !inFlightBackupKeys.contains(key)) {
-                    val tempFile = File(context.cacheDir, name)
-                    try {
-                        context.contentResolver.openInputStream(doc.uri)?.use { input ->
-                            FileOutputStream(tempFile).use { output ->
-                                input.copyTo(output, bufferSize = 512 * 1024)
+                val mtime = doc.lastModified()
+                if (!dedup.isBackedUp(key, mtime) && !inFlightBackupKeys.contains(key)) {
+                    if (!materializeCopies) {
+                        // H14: health checks only count pending files — no
+                        // copy is needed, and copying GBs into cacheDir
+                        // (never deleted) was the old behaviour.
+                        out[key] = BackupTargetFile(key, null, name, doc.length(), mtime, sourceFolder)
+                    } else {
+                        // H14: the temp used to be named just the doc name —
+                        // same-name files in different subfolders overwrote
+                        // each other. The name now carries a hash of the URI.
+                        val tempFile = File(context.cacheDir, safTempName(doc.uri, name))
+                        try {
+                            context.contentResolver.openInputStream(doc.uri)?.use { input ->
+                                FileOutputStream(tempFile).use { output ->
+                                    input.copyTo(output, bufferSize = 512 * 1024)
+                                }
                             }
-                        }
-                        if (tempFile.exists() && tempFile.length() > 0) {
-                            out[key] = tempFile
-                        }
-                    } catch (e: Exception) { Log.w("DriveRepo", "scanDocumentTreeFallback failed", e) }
+                            if (tempFile.exists() && tempFile.length() > 0) {
+                                out[key] = BackupTargetFile(key, tempFile, name, doc.length(), mtime, sourceFolder)
+                            }
+                        } catch (e: Exception) { Log.w("DriveRepo", "scanDocumentTreeFallback failed", e) }
+                    }
                 }
             }
         }
@@ -850,20 +1012,29 @@ class DriveRepository @Inject constructor(
                 val filesToUpload = collectTargetBackupFiles(backupFolders)
                 if (filesToUpload.isEmpty()) return@launch
 
-                for (file in filesToUpload) {
+                for (target in filesToUpload) {
                     if (!isBackupNetworkAllowedFor(manual)) break
+                    val file = target.file ?: continue
                     if (!file.exists() || file.length() <= 0L) continue
 
-                    val bKey = "${file.absolutePath}_${file.length()}"
+                    // H14: use the scan key — NOT a key re-derived from the
+                    // temp file's path (for SAF targets that never matched
+                    // the recorded key, so every SAF file re-uploaded
+                    // forever). The upload name is the real file name, not
+                    // the temp file's name.
+                    val bKey = target.key
                     val alreadyDone = customPrefs.getStringSet("backed_up_paths_v3", emptySet())?.contains(bKey) == true
                     if (alreadyDone || !inFlightBackupKeys.add(bKey)) continue
 
                     uploadFileAndWait(
                         filePath = file.absolutePath,
-                        originalFileName = file.name,
+                        originalFileName = target.name,
                         forceDeleteSource = deleteEnabled,
                         backupTrackingKey = bKey
                     )
+                    // H14: a SAF temp copy is deleted once its upload is
+                    // recorded (the stale-temp sweep is the backstop).
+                    cleanupSafTempFile(target)
                     delay(80)
                 }
                 secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
@@ -1163,7 +1334,7 @@ class DriveRepository @Inject constructor(
                     DriveItem.File(
                         entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType,
                         entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred,
-                        entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted
+                        entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt
                     )
                 }
         }
@@ -1421,7 +1592,7 @@ class DriveRepository @Inject constructor(
                     DriveItem.File(
                         entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType,
                         entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred,
-                        entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted
+                        entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt
                     )
                 }
         }
@@ -1434,7 +1605,7 @@ class DriveRepository @Inject constructor(
                     DriveItem.File(
                         entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType,
                         entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred,
-                        entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted
+                        entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt
                     )
                 }
         }
@@ -1446,7 +1617,7 @@ class DriveRepository @Inject constructor(
                 if (entity.isFolder) {
                     DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
                 } else {
-                    DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                    DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt)
                 }
             }
         }
@@ -1464,7 +1635,7 @@ class DriveRepository @Inject constructor(
                 .sortedByDescending { it.createdAt }
                 .map { entity ->
                     if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
-                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt)
                 }
         }.debounce(25)
     }
@@ -1479,7 +1650,7 @@ class DriveRepository @Inject constructor(
                 .sortedByDescending { it.createdAt }
                 .map { entity ->
                     if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
-                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt)
                 }
         }
     }
@@ -1490,7 +1661,7 @@ class DriveRepository @Inject constructor(
                 .sortedByDescending { it.createdAt }
                 .map { entity ->
                     if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
-                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt)
                 }
         }
     }
@@ -1508,12 +1679,15 @@ class DriveRepository @Inject constructor(
         query: String,
         filters: SmartSearchFilters
     ): Flow<List<SmartSearchResult>> {
+        // M9: content search used to index only previewed files. Kick off a
+        // one-time backfill of the rest the first time anyone searches.
+        backfillContentIndex()
         return driveDao.smartSearchRaw(buildSmartSearchQuery(query, filters)).map { rows ->
             rows.filter { (!it.item.isFolder || it.item.isVirtual) && it.item.virtualParentId != SAFE_SPACE_VIRTUAL_ID }
                 .map { row ->
                     val entity = row.item
                     val item = if (entity.isFolder) DriveItem.Folder(entity.id, entity.parentChatId, entity.name, entity.id, entity.isStarred, entity.isVirtual, entity.virtualId, entity.virtualParentId, entity.isSecure)
-                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted)
+                    else DriveItem.File(entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId, verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath), entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts, entity.virtualParentId, entity.isEncrypted, entity.createdAt)
                     SmartSearchResult(item, row.matchedInContent != 0)
                 }
         }
@@ -1547,6 +1721,33 @@ class DriveRepository @Inject constructor(
 
     private val contentSearchIndexer by lazy { ContentSearchIndexer(driveDao) }
 
+    // M9: backfill runs at most once per process, in the background.
+    private val contentBackfillStarted = AtomicBoolean(false)
+
+    /**
+     * M9: index the text of files that were never previewed (content
+     * indexing used to run only from PreviewViewModel). Capped so one
+     * process never does unbounded work; the indexer filters by
+     * extension/mime, skips encrypted files and never throws.
+     */
+    fun backfillContentIndex() {
+        if (!contentBackfillStarted.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                var indexed = 0
+                repeat(10) {
+                    if (indexed >= 500) return@repeat
+                    val batch = driveDao.getUnindexedTextFiles(50)
+                    if (batch.isEmpty()) return@repeat
+                    contentSearchIndexer.backfill(batch.map { entityToFile(it) })
+                    indexed += batch.size
+                }
+            } catch (_: Exception) {
+                // Best-effort only: a failed backfill must never break search.
+            }
+        }
+    }
+
     // ---- Vault 2.0 encrypt-on-hide (Batch 7b vault side) ----
 
     /**
@@ -1574,7 +1775,12 @@ class DriveRepository @Inject constructor(
             if (result is TdApi.Messages) {
                 if (result.messages.isEmpty()) {
                     if (fromMessageId != 0L) {
-                        scope.launch { driveDao.deleteFilesByChatNotInList(chatId, allFetchedIds) }
+                        scope.launch {
+                            driveDao.deleteFilesByChatNotInList(chatId, allFetchedIds)
+                            // M9: prune content-index rows whose file is
+                            // gone, so deleted files stop matching search.
+                            driveDao.deleteOrphanFileContent()
+                        }
                     }
                     return@send
                 }
@@ -2504,17 +2710,33 @@ class DriveRepository @Inject constructor(
         }
         if (file.isEncrypted) {
             scope.launch(Dispatchers.IO) {
-                try {
-                    val downloadDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "MyCloud")
-                    if (!downloadDir.exists()) downloadDir.mkdirs()
-                    val dest = File(downloadDir, file.name)
-                    val password = secureSessionManager.decryptedPassword.value
-                    if (password != null) {
-                        secureSessionManager.touchSession()
-                        encryptionManager.decryptFile(source, dest, password) { }
+                // M1: the old code wrote straight into the public Downloads
+                // dir (deprecated API, EACCES on Android 10+), ignored the
+                // user's chosen download folder, and toasted success even
+                // when the vault session had expired (password null meant
+                // the decrypt was skipped, but "Saved successfully" still
+                // showed). Decrypt to a cache temp file, then route through
+                // saveToPublicDownloads (MediaStore / user-folder aware,
+                // honest toast), and delete the temp afterwards.
+                val password = secureSessionManager.decryptedPassword.value
+                if (password == null) {
+                    scope.launch(Dispatchers.Main) {
+                        Toast.makeText(context, context.getString(R.string.save_vault_locked), Toast.LENGTH_SHORT).show()
                     }
-                    scope.launch(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.save_success), Toast.LENGTH_SHORT).show() }
-                } catch (e: Exception) { Log.w("DriveRepo", "saveToPublicStorage failed", e) }
+                    return@launch
+                }
+                val tempFile = File(context.cacheDir, "decrypt_${System.currentTimeMillis()}_${file.name}")
+                try {
+                    secureSessionManager.touchSession()
+                    encryptionManager.decryptFile(source, tempFile, password) { }
+                    transferRepository.saveToPublicDownloads(tempFile.absolutePath, file.name) { tempFile.delete() }
+                } catch (e: Exception) {
+                    Log.w("DriveRepo", "saveToPublicStorage failed", e)
+                    tempFile.delete()
+                    scope.launch(Dispatchers.Main) {
+                        Toast.makeText(context, context.getString(R.string.save_failed), Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
         } else {
             transferRepository.saveToPublicDownloads(source.absolutePath, file.name)
@@ -2638,7 +2860,13 @@ class DriveRepository @Inject constructor(
                 telegramClient.send(TdApi.DeleteMessages(chatId, ids, true)) { result ->
                     if (result is TdApi.Ok) {
                         scope.launch {
-                            files.forEach { f -> driveDao.deleteItemCompletely(f.id, chatId) }
+                            files.forEach { f ->
+                                driveDao.deleteItemCompletely(f.id, chatId)
+                                // M9: the content index used to keep rows
+                                // for deleted files, so they stayed
+                                // searchable after deletion.
+                                if (f.remoteUniqueId.isNotBlank()) driveDao.deleteFileContent(f.remoteUniqueId)
+                            }
                             // Only drop the manifest mappings once Telegram
                             // confirmed the delete; otherwise the files stay
                             // mapped and visible, and the delete can be retried.
@@ -2739,7 +2967,11 @@ class DriveRepository @Inject constructor(
         // confirmed every delete; otherwise the folder stays visible and
         // the delete can be retried.
         if (!allSucceeded) return
-        descendantFiles.forEach { child -> driveDao.deleteItemCompletely(child.id, child.parentChatId) }
+        descendantFiles.forEach { child ->
+            driveDao.deleteItemCompletely(child.id, child.parentChatId)
+            // M9: drop the content-index row too (see permanentlyDeleteItems).
+            if (!child.remoteUniqueId.isNullOrBlank()) driveDao.deleteFileContent(child.remoteUniqueId)
+        }
         descendantFolders.forEach { folderVirtualId ->
             driveDao.getVirtualFolderById(folderVirtualId)?.let { entity ->
                 driveDao.deleteItemCompletely(entity.id, entity.parentChatId)
@@ -2997,7 +3229,7 @@ class DriveRepository @Inject constructor(
         entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType, entity.telegramFileId,
         verifyOfflinePath(entity.thumbnailPath), verifyOfflinePath(entity.localPath),
         entity.isStarred, entity.remoteUniqueId ?: "", entity.splitGroupId, entity.totalParts,
-        entity.virtualParentId, entity.isEncrypted
+        entity.virtualParentId, entity.isEncrypted, entity.createdAt
     )
 
     /** SHA-256 hex of a file's content, streamed so large files never load into memory. Null on any read error. */
@@ -3076,9 +3308,13 @@ class DriveRepository @Inject constructor(
         val backedUpSet = customPrefs.getStringSet("backed_up_paths_v3", emptySet()) ?: emptySet()
         val failedKeys = customPrefs.getStringSet("backup_failed_v1", emptySet()) ?: emptySet()
 
-        val pendingFiles = collectTargetBackupFiles(folders)
-        val pendingInfos = pendingFiles.map { f ->
-            BackupFileInfo("${f.absolutePath}_${f.length()}", f.absolutePath, f.name, f.length())
+        // H14: health only counts pending files — pass
+        // materializeSafCopies = false so opening Backup Health does not
+        // copy GBs of SAF files into cacheDir. SAF targets have no local
+        // file; their path for folder grouping is "sourceFolder/name".
+        val pendingFiles = collectTargetBackupFiles(folders, materializeSafCopies = false)
+        val pendingInfos = pendingFiles.map { t ->
+            BackupFileInfo(t.key, t.file?.absolutePath ?: "${t.sourceFolder}/${t.name}", t.name, t.size)
         }
 
         val folderStatuses = (folders + "Other").distinct().map { folder ->
@@ -3138,7 +3374,9 @@ class DriveRepository @Inject constructor(
             if (fileKey.startsWith("doc_")) {
                 val uriStr = fileKey.removePrefix("doc_").substringBeforeLast("_")
                 val name = backupKeyToInfo(fileKey).name
-                val tempFile = File(context.cacheDir, name)
+                // H14: same unique temp name as the scan (a bare doc name
+                // collided across subfolders).
+                val tempFile = File(context.cacheDir, safTempName(Uri.parse(uriStr), name))
                 context.contentResolver.openInputStream(Uri.parse(uriStr))?.use { input ->
                     FileOutputStream(tempFile).use { output ->
                         input.copyTo(output, bufferSize = 512 * 1024)
@@ -3146,6 +3384,7 @@ class DriveRepository @Inject constructor(
                 }
                 if (tempFile.exists() && tempFile.length() > 0) {
                     uploadFileAndWait(tempFile.absolutePath, name, forceDeleteSource = false, backupTrackingKey = fileKey)
+                    cleanupSafTempFile(BackupTargetFile(fileKey, tempFile, name, tempFile.length(), tempFile.lastModified(), ""))
                 }
             } else {
                 val path = fileKey.substringBeforeLast("_")
