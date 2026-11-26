@@ -31,6 +31,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -40,6 +41,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import kotlinx.coroutines.launch
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -379,12 +381,14 @@ fun NavGraph(navController: NavHostController) {
 
     // Safe Folder-এর স্বতন্ত্র পিন কোড তৈরি করার ডায়ালগ
     if (showCreateSafePinDialog) {
+        val setupScope = rememberCoroutineScope()
         var newPin by remember { mutableStateOf("") }
         var confirmPin by remember { mutableStateOf("") }
         var error by remember { mutableStateOf<String?>(null) }
+        var isSettingUp by remember { mutableStateOf(false) }
 
         AlertDialog(
-            onDismissRequest = { showCreateSafePinDialog = false },
+            onDismissRequest = { if (!isSettingUp) showCreateSafePinDialog = false },
             title = { Text("Set Safe Folder PIN") },
             text = {
                 Column {
@@ -394,6 +398,7 @@ fun NavGraph(navController: NavHostController) {
                         label = { Text("Enter PIN Code") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        enabled = !isSettingUp,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -404,6 +409,7 @@ fun NavGraph(navController: NavHostController) {
                         label = { Text("Confirm PIN Code") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        enabled = !isSettingUp,
                         isError = error != null,
                         supportingText = error?.let { { Text(it) } },
                         singleLine = true,
@@ -412,20 +418,33 @@ fun NavGraph(navController: NavHostController) {
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    if (newPin.length < 4) {
-                        error = "Enter at least 4 digits"
-                    } else if (newPin != confirmPin) {
-                        error = "PIN did not match"
-                    } else {
-                        securityViewModel.setupSafeFolderPin(newPin)
-                        showCreateSafePinDialog = false
-                        navController.navigate(Screen.SecureStorage.route)
+                Button(
+                    enabled = !isSettingUp,
+                    onClick = {
+                        if (newPin.length < 4) {
+                            error = "Enter at least 4 digits"
+                        } else if (newPin != confirmPin) {
+                            error = "PIN did not match"
+                        } else {
+                            isSettingUp = true
+                            setupScope.launch {
+                                val ok = securityViewModel.setupSafeFolderPin(newPin)
+                                isSettingUp = false
+                                if (ok) {
+                                    showCreateSafePinDialog = false
+                                    navController.navigate(Screen.SecureStorage.route)
+                                } else {
+                                    error = securityViewModel.safePinError.value ?: "Could not set Safe Folder PIN"
+                                }
+                            }
+                        }
                     }
-                }) { Text("Save & Open") }
+                ) { Text(if (isSettingUp) "Saving..." else "Save & Open") }
             },
             dismissButton = {
-                TextButton(onClick = { showCreateSafePinDialog = false }) { Text(stringResource(R.string.cancel)) }
+                TextButton(enabled = !isSettingUp, onClick = { showCreateSafePinDialog = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
             }
         )
     }

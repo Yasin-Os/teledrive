@@ -275,6 +275,9 @@ interface DriveDao {
     @Query("UPDATE drive_items SET localPath = :encryptedPath, isEncrypted = 1 WHERE id = :itemId AND parentChatId = :chatId")
     suspend fun markLocalCopyEncrypted(itemId: Long, chatId: Long, encryptedPath: String)
 
+    @Query("SELECT * FROM drive_items WHERE (isEncrypted = 1 OR localPath LIKE '%.enc') AND localPath IS NOT NULL AND localPath != ''")
+    suspend fun getEncryptedLocalItems(): List<DriveItemEntity>
+
     @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     fun getAllFiles(): Flow<List<DriveItemEntity>>
 

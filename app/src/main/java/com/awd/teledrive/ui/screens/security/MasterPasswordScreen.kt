@@ -31,6 +31,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,7 +44,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import com.awd.teledrive.core.BiometricCipherResult
 import com.awd.teledrive.core.BiometricHelper
+import kotlinx.coroutines.launch
 
 @Composable
 fun MasterPasswordScreen(
@@ -59,15 +62,27 @@ fun MasterPasswordScreen(
     val triggerBiometric = {
         val activity = context as? FragmentActivity
         if (activity != null && isPasswordSet && isBiometricEnabled) {
-            BiometricHelper.showPrompt(
-                activity = activity,
-                title = "Unlock MyCloud",
-                onSuccess = {
-                    viewModel.unlockAppWithBiometric()
-                    onSuccess()
-                },
-                onError = {}
-            )
+            when (val prep = viewModel.prepareAppLockBiometricUnlockCipher()) {
+                is BiometricCipherResult.Ready -> {
+                    BiometricHelper.showCryptoPrompt(
+                        activity = activity,
+                        title = "Unlock MyCloud",
+                        subtitle = "Verify your identity with biometrics",
+                        negativeButtonText = "Use PIN",
+                        cipher = prep.cipher,
+                        onSuccess = { authedCipher ->
+                            if (viewModel.unlockAppWithBiometric(authedCipher)) {
+                                onSuccess()
+                            }
+                        },
+                        onError = {}
+                    )
+                }
+                is BiometricCipherResult.KeyInvalidated,
+                is BiometricCipherResult.Unavailable -> {
+                    // Fall back to PIN entry on screen.
+                }
+            }
         }
     }
 
@@ -89,8 +104,9 @@ fun MasterPasswordScreen(
             } else false
         },
         onSetPin = { pin ->
-            viewModel.setPassword(pin)
-            onSuccess()
+            if (viewModel.setPassword(pin)) {
+                onSuccess()
+            }
         },
         onBiometricClick = triggerBiometric
     )
@@ -102,46 +118,59 @@ fun PinLockScreenContent(
     isBiometricEnabled: Boolean,
     externalError: String?,
     lockoutRemainingSeconds: Long = 0,
-    onVerifyPin: (String) -> Boolean,
-    onSetPin: (String) -> Unit,
+    onVerifyPin: suspend (String) -> Boolean,
+    onSetPin: suspend (String) -> Unit,
     onBiometricClick: () -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var pin by remember { mutableStateOf("") }
     var firstPin by remember { mutableStateOf("") }
     var isConfirmStep by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
+    var isProcessing by remember { mutableStateOf(false) }
 
     val handleDigit: (String) -> Unit = { digit ->
-        if (lockoutRemainingSeconds > 0) {
+        if (isProcessing) {
+            // Ignore extra taps while KDF is running.
+        } else if (lockoutRemainingSeconds > 0) {
             localError = "Too many wrong attempts. Try again in ${lockoutRemainingSeconds}s"
         } else {
             localError = null
             if (pin.length < 4) {
-            val nextPin = pin + digit
-            pin = nextPin
-            if (nextPin.length == 4) {
-                if (isPasswordSet) {
-                    if (!onVerifyPin(nextPin)) {
-                        localError = "Incorrect PIN"
-                        pin = ""
-                    }
-                } else {
-                    if (!isConfirmStep) {
-                        firstPin = nextPin
-                        pin = ""
-                        isConfirmStep = true
+                val nextPin = pin + digit
+                pin = nextPin
+                if (nextPin.length == 4) {
+                    if (isPasswordSet) {
+                        isProcessing = true
+                        scope.launch {
+                            val ok = onVerifyPin(nextPin)
+                            isProcessing = false
+                            if (!ok) {
+                                localError = "Incorrect PIN"
+                                pin = ""
+                            }
+                        }
                     } else {
-                        if (nextPin == firstPin) {
-                            onSetPin(nextPin)
-                        } else {
-                            localError = "PIN did not match. Try again."
+                        if (!isConfirmStep) {
+                            firstPin = nextPin
                             pin = ""
-                            firstPin = ""
-                            isConfirmStep = false
+                            isConfirmStep = true
+                        } else {
+                            if (nextPin == firstPin) {
+                                isProcessing = true
+                                scope.launch {
+                                    onSetPin(nextPin)
+                                    isProcessing = false
+                                }
+                            } else {
+                                localError = "PIN did not match. Try again."
+                                pin = ""
+                                firstPin = ""
+                                isConfirmStep = false
+                            }
                         }
                     }
                 }
-            }
             }
         }
     }

@@ -9,6 +9,7 @@ import com.awd.teledrive.R
 import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.data.repository.TransferRepository
 import com.awd.teledrive.data.secure.EncryptionManager
+import com.awd.teledrive.data.secure.LegacyEncryptedFileException
 import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,6 +35,11 @@ class PreviewViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
+    companion object {
+        private const val TAG = "PreviewViewModel"
+        private const val PREVIEW_TEMP_DIR = "vault_preview_tmp"
+    }
+
     private val chatId: Long = savedStateHandle.get<Long>("chatId") ?: 0L
     private val initialFileId: Long = savedStateHandle.get<Long>("fileId") ?: 0L
     private val isMediaOnly: Boolean = savedStateHandle.get<Boolean>("isMediaOnly") ?: false
@@ -68,13 +74,18 @@ class PreviewViewModel @Inject constructor(
     val isOpening = _isOpening.asStateFlow()
 
     init {
-        // Observe both items and secure session state.
+        // Observe both items and vault session unlock state. Immediately purge
+        // decrypted plaintext previews if the vault locks or times out.
         viewModelScope.launch {
-            kotlinx.coroutines.flow.combine(items, secureSessionManager.decryptedPassword) { itemList, password ->
-                itemList to password
-            }.collect { (itemList, password) ->
+            kotlinx.coroutines.flow.combine(items, secureSessionManager.isSessionUnlocked) { itemList, unlocked ->
+                itemList to unlocked
+            }.collect { (itemList, unlocked) ->
+                if (!unlocked) {
+                    cleanupDecryptedPreviews()
+                    return@collect
+                }
                 itemList.forEach { file ->
-                    if (file.isEncrypted && file.localPath != null && password != null && !_decryptedPaths.value.containsKey(file.id)) {
+                    if (file.isEncrypted && file.localPath != null && !_decryptedPaths.value.containsKey(file.id)) {
                         decryptForPreview(file)
                     }
                 }
@@ -121,65 +132,110 @@ class PreviewViewModel @Inject constructor(
     }
 
     private fun decryptForPreview(file: DriveItem.File) {
-        val password = secureSessionManager.decryptedPassword.value ?: return
-        val localPath = file.localPath ?: return
-        if (_isDecrypting.value[file.id] == true) return
+        val dek = secureSessionManager.getSessionKeyCopy() ?: return
+        val localPath = file.localPath ?: run {
+            dek.fill(0)
+            return
+        }
+        if (_isDecrypting.value[file.id] == true) {
+            dek.fill(0)
+            return
+        }
 
         viewModelScope.launch {
             _isDecrypting.value = _isDecrypting.value + (file.id to true)
             _isOpening.value = _isOpening.value + (file.id to true)
-            withContext(Dispatchers.IO) {
-                try {
+            try {
+                withContext(Dispatchers.IO) {
                     val encryptedFile = File(localPath)
-                    val decryptedFile = File(context.cacheDir, "prev_dec_${file.id}_${file.name}")
-                    // Ensure decryption is tracked in the Transfer menu
-                    transferRepository.addTransfer(
-                        fileId = file.telegramFileId,
-                        remoteUniqueId = file.remoteUniqueId,
-                        fileName = file.name,
-                        isDownload = true,
-                        totalSize = file.size,
-                        status = context.getString(R.string.decrypting)
-                    )
+                    val tempDir = File(context.cacheDir, PREVIEW_TEMP_DIR).apply { if (!exists()) mkdirs() }
+                    val decryptedFile = File(tempDir, "prev_dec_${file.id}_${sanitizeTempName(file.name)}")
+                    try {
+                        // Ensure decryption is tracked in the Transfer menu
+                        transferRepository.addTransfer(
+                            fileId = file.telegramFileId,
+                            remoteUniqueId = file.remoteUniqueId,
+                            fileName = file.name,
+                            isDownload = true,
+                            totalSize = file.size,
+                            status = context.getString(R.string.decrypting)
+                        )
 
-                    encryptionManager.decryptFile(encryptedFile, decryptedFile, password) { progress ->
+                        encryptionManager.decryptFile(encryptedFile, decryptedFile, dek) { progress ->
+                            transferRepository.updateTransferManual(
+                                file.remoteUniqueId,
+                                progress,
+                                context.getString(R.string.decrypting_perc, (progress * 100).toInt()),
+                                throttled = true
+                            )
+                        }
+
+                        // If the vault locked while decrypting, discard the plaintext immediately.
+                        if (!secureSessionManager.isUnlocked()) {
+                            decryptedFile.delete()
+                            return@withContext
+                        }
+
+                        // Mark as Completed when done
                         transferRepository.updateTransferManual(
-                            file.remoteUniqueId, 
-                            progress, 
-                            context.getString(R.string.decrypting_perc, (progress * 100).toInt()),
-                            throttled = true
+                            file.remoteUniqueId,
+                            1.0f,
+                            TransferRepository.Status.COMPLETED
+                        )
+
+                        _decryptedPaths.value = _decryptedPaths.value + (file.id to decryptedFile.absolutePath)
+                    } catch (e: LegacyEncryptedFileException) {
+                        decryptedFile.delete()
+                        Log.w(TAG, "Legacy encrypted file requires migration before preview: ${file.id}", e)
+                        transferRepository.updateTransferManual(
+                            file.remoteUniqueId,
+                            0f,
+                            context.getString(
+                                R.string.failed_with_error,
+                                "Legacy encrypted file — unlock with your Safe Folder PIN to migrate"
+                            )
+                        )
+                    } catch (e: Exception) {
+                        decryptedFile.delete()
+                        Log.w(TAG, "Decryption failed for file ${file.id}", e)
+                        transferRepository.updateTransferManual(
+                            file.remoteUniqueId,
+                            0f,
+                            context.getString(R.string.failed_with_error, "Decryption failed")
                         )
                     }
-
-                    // Mark as Completed when done
-                    transferRepository.updateTransferManual(
-                        file.remoteUniqueId,
-                        1.0f,
-                        TransferRepository.Status.COMPLETED
-                    )
-
-                    _decryptedPaths.value = _decryptedPaths.value + (file.id to decryptedFile.absolutePath)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    transferRepository.updateTransferManual(
-                        file.remoteUniqueId,
-                        0f,
-                        context.getString(R.string.failed_with_error, e.message ?: "Decryption failed")
-                    )
-                } finally {
-                    _isDecrypting.value = _isDecrypting.value - file.id
-                    _isOpening.value = _isOpening.value - file.id
                 }
+            } finally {
+                dek.fill(0)
+                _isDecrypting.value = _isDecrypting.value - file.id
+                _isOpening.value = _isOpening.value - file.id
+            }
+        }
+    }
+
+    private fun sanitizeTempName(rawName: String): String {
+        val base = rawName.substringAfterLast('/').substringAfterLast('\\')
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .trimStart('.')
+            .take(80)
+        return base.ifEmpty { "file" }
+    }
+
+    private fun cleanupDecryptedPreviews() {
+        val paths = _decryptedPaths.value.values.toList()
+        _decryptedPaths.value = emptyMap()
+        paths.forEach { path ->
+            try {
+                File(path).delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "cleanupDecryptedPreviews: temp file delete failed", e)
             }
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        // Cleanup decrypted preview files
-        _decryptedPaths.value.values.forEach { path ->
-            try { File(path).delete() } catch (e: Exception) { Log.w("PreviewViewModel", "onCleared: temp file delete failed", e) }
-        }
+        cleanupDecryptedPreviews()
     }
 
     fun deleteItem(file: DriveItem.File) {

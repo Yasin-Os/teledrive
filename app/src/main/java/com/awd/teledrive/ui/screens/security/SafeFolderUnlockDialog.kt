@@ -20,6 +20,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -30,34 +31,16 @@ import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
+import com.awd.teledrive.core.BiometricCipherResult
 import com.awd.teledrive.core.BiometricHelper
+import kotlinx.coroutines.launch
 
 /**
- * Vault 2.0 safe-folder unlock dialog — drop-in replacement for the inline
- * PIN dialog in NavGraph (showSafePinUnlockDialog). Same PIN flow, plus:
- * - a "Unlock with biometrics" button (only when the user opted in and the
- *   device can do a strong biometric check; on success the vault unlocks
- *   from the stored safe PIN, exactly like the PIN path — the PIN stays
- *   the fallback);
- * - the existing safe-PIN lockout is surfaced with a live-ticking
- *   remaining-seconds message, and the PIN field + Unlock button are
- *   disabled while locked (the old dialog showed the message only after
- *   tapping Unlock and left the input enabled).
- *
- * Swap-in (NavGraph): replace the `if (showSafePinUnlockDialog) {...}`
- * block with:
- *   if (showSafePinUnlockDialog) {
- *       SafeFolderUnlockDialog(
- *           onUnlocked = {
- *               showSafePinUnlockDialog = false
- *               navController.navigate(Screen.SecureStorage.route)
- *           },
- *           onDismiss = { showSafePinUnlockDialog = false },
- *           securityViewModel = securityViewModel
- *       )
- *   }
- * and remove the now-unused safePinError / safePinLockoutRemaining collects
- * at the top of NavGraph if nothing else uses them.
+ * Vault 2.0 safe-folder unlock dialog:
+ * - PIN unlock derives the KEK and unwraps the per-vault DEK off the main thread.
+ * - Biometric unlock uses a Keystore CryptoObject so the DEK can only be
+ *   unwrapped after hardware-verified BIOMETRIC_STRONG authentication.
+ * - Live-ticking PIN lockout countdown disables input while locked out.
  */
 @Composable
 fun SafeFolderUnlockDialog(
@@ -66,6 +49,7 @@ fun SafeFolderUnlockDialog(
     securityViewModel: SecurityViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val safePinError by securityViewModel.safePinError.collectAsState()
     val safePinLockoutRemaining by securityViewModel.safePinLockoutRemainingSeconds.collectAsState()
     val isSafeFolderBiometricEnabled by securityViewModel.isSafeFolderBiometricEnabled.collectAsState()
@@ -76,9 +60,8 @@ fun SafeFolderUnlockDialog(
 
     var pin by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var isVerifying by remember { mutableStateOf(false) }
 
-    // Live lockout message (ticks every second from the ViewModel ticker);
-    // otherwise the last PIN error, if any.
     val lockoutMessage = if (isLockedOut) {
         stringResource(R.string.vault_pin_locked_out, safePinLockoutRemaining)
     } else {
@@ -86,7 +69,7 @@ fun SafeFolderUnlockDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isVerifying) onDismiss() },
         title = { Text(stringResource(R.string.vault_unlock_title)) },
         text = {
             Column {
@@ -99,7 +82,7 @@ fun SafeFolderUnlockDialog(
                     label = { Text(stringResource(R.string.vault_enter_pin)) },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    enabled = !isLockedOut,
+                    enabled = !isLockedOut && !isVerifying,
                     isError = error != null || isLockedOut,
                     supportingText = (lockoutMessage ?: error)?.let { { Text(it) } },
                     singleLine = true,
@@ -108,20 +91,35 @@ fun SafeFolderUnlockDialog(
                 if (showBiometric) {
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedButton(
+                        enabled = !isVerifying,
                         onClick = {
                             val activity = context as? FragmentActivity ?: return@OutlinedButton
-                            BiometricHelper.showPrompt(
-                                activity = activity,
-                                title = context.getString(R.string.biometric_unlock),
-                                onSuccess = {
-                                    if (securityViewModel.unlockSafeFolderWithBiometric()) {
-                                        onUnlocked()
-                                    } else {
-                                        error = context.getString(R.string.vault_incorrect_pin)
-                                    }
-                                },
-                                onError = { message -> error = message }
-                            )
+                            when (val prep = securityViewModel.prepareSafeFolderBiometricUnlockCipher()) {
+                                is BiometricCipherResult.Ready -> {
+                                    BiometricHelper.showCryptoPrompt(
+                                        activity = activity,
+                                        title = context.getString(R.string.biometric_unlock),
+                                        subtitle = context.getString(R.string.vault_biometric_subtitle),
+                                        negativeButtonText = context.getString(R.string.vault_unlock_title),
+                                        cipher = prep.cipher,
+                                        onSuccess = { authedCipher ->
+                                            if (securityViewModel.unlockSafeFolderWithBiometric(authedCipher)) {
+                                                onUnlocked()
+                                            } else {
+                                                error = securityViewModel.safePinError.value
+                                                    ?: context.getString(R.string.vault_incorrect_pin)
+                                            }
+                                        },
+                                        onError = { message -> error = message }
+                                    )
+                                }
+                                is BiometricCipherResult.KeyInvalidated -> {
+                                    error = "Biometrics changed on this device. Unlock with your PIN and re-enable biometric unlock."
+                                }
+                                is BiometricCipherResult.Unavailable -> {
+                                    error = prep.reason
+                                }
+                            }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -134,20 +132,31 @@ fun SafeFolderUnlockDialog(
         },
         confirmButton = {
             Button(
-                enabled = !isLockedOut,
+                enabled = !isLockedOut && !isVerifying,
                 onClick = {
                     if (isLockedOut) {
                         error = lockoutMessage
-                    } else if (securityViewModel.verifySafeFolderPin(pin)) {
-                        onUnlocked()
                     } else {
-                        error = safePinError ?: context.getString(R.string.vault_incorrect_pin)
+                        isVerifying = true
+                        scope.launch {
+                            val unlocked = securityViewModel.verifySafeFolderPin(pin)
+                            isVerifying = false
+                            if (unlocked) {
+                                onUnlocked()
+                            } else {
+                                error = securityViewModel.safePinError.value
+                                    ?: safePinError
+                                    ?: context.getString(R.string.vault_incorrect_pin)
+                            }
+                        }
                     }
                 }
             ) { Text(stringResource(R.string.unlock)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
+            TextButton(enabled = !isVerifying, onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
         }
     )
 }

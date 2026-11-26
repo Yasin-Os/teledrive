@@ -25,7 +25,7 @@ class StarredViewModel @Inject constructor(
     private val secureSessionManager: SecureSessionManager
 ) : ViewModel() {
 
-    private val isSecureModeActive = secureSessionManager.decryptedPassword.map { it != null }
+    private val isSecureModeActive = secureSessionManager.isSessionUnlocked
 
     val starredItems: StateFlow<List<DriveItem>> = combine(
         driveRepository.getStarredItems(),

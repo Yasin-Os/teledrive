@@ -1967,6 +1967,13 @@ class DriveRepository @Inject constructor(
         driveDao.markLocalCopyEncrypted(itemId, chatId, encryptedPath)
     }
 
+    /** Returns distinct on-device paths of encrypted local files for migration. */
+    suspend fun getEncryptedLocalFilePaths(): List<String> {
+        return driveDao.getEncryptedLocalItems()
+            .mapNotNull { it.localPath }
+            .distinct()
+    }
+
     fun fetchFiles(chatId: Long? = null) {
         ensureSavedMessagesChat { resolvedChatId ->
             telegramClient.send(TdApi.LoadChats(TdApi.ChatListMain(), 20)) {
@@ -2377,8 +2384,7 @@ class DriveRepository @Inject constructor(
     ) {
         startTransferService()
         val isSecure = isChatSecure(targetChatId) || (virtualFolderId != null && isVirtualFolderSecure(virtualFolderId))
-        val password = secureSessionManager.decryptedPassword.value
-        if (isSecure && password == null) {
+        if (isSecure && !secureSessionManager.isUnlocked()) {
             if (backupTrackingKey != null) inFlightBackupKeys.remove(backupTrackingKey)
             scope.launch(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.unlock_to_upload), Toast.LENGTH_LONG).show() }
             // C11: a split part that never starts must still report its
@@ -2386,8 +2392,8 @@ class DriveRepository @Inject constructor(
             try { onUploadCompleted(false) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
             return
         }
-        // The session password is being used: reset its inactivity timer.
-        if (password != null) secureSessionManager.touchSession()
+        // Reset the session inactivity timer while a secure upload is queued.
+        if (isSecure) secureSessionManager.touchSession()
 
         val tempId = "up_${System.nanoTime()}"
         val originalSourceFile = File(filePath)
@@ -2433,16 +2439,27 @@ class DriveRepository @Inject constructor(
             var tempThumbFile: File? = null
             var inputThumb: TdApi.InputThumbnail? = null
             
-            if (isSecure && password != null) {
+            if (isSecure) {
+                val activeDek = secureSessionManager.getSessionKeyCopy()
+                if (activeDek == null) {
+                    if (backupTrackingKey != null) {
+                        inFlightBackupKeys.remove(backupTrackingKey)
+                        recordBackupFailed(backupTrackingKey)
+                    }
+                    transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
+                    try { onUploadCompleted(false) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
+                    return@enqueueTransfer
+                }
                 try {
                     tempEncFile = File(context.cacheDir, "enc_${System.nanoTime()}_$originalFileName")
-                    encryptionManager.encryptFile(uploadReadyFile, tempEncFile, password) { progress ->
+                    encryptionManager.encryptFile(uploadReadyFile, tempEncFile, activeDek) { progress ->
                         transferRepository.updateTransferManual(tempId, progress, context.getString(R.string.encrypting_perc, (progress * 100).toInt()), throttled = true)
                     }
                     finalPath = tempEncFile.absolutePath
                     finalCaption = if (caption != null) "$caption [ENC]" else "$originalFileName [ENC]"
                     transferRepository.updateRemoteUniqueId(tempId, tempId, 0, finalPath)
                 } catch (e: Exception) {
+                    tempEncFile?.delete()
                     if (backupTrackingKey != null) {
                         inFlightBackupKeys.remove(backupTrackingKey)
                         recordBackupFailed(backupTrackingKey)
@@ -2450,6 +2467,8 @@ class DriveRepository @Inject constructor(
                     transferRepository.updateTransferManual(tempId, 0f, TransferRepository.Status.FAILED)
                     try { onUploadCompleted(false) } catch (e: Exception) { Log.w("DriveRepo", "onUploadCompleted callback failed", e) }
                     return@enqueueTransfer 
+                } finally {
+                    activeDek.fill(0)
                 }
             } else {
                 generateUploadThumbnail(uploadReadyFile, originalFileName)?.let { (thumbObj, tFile) ->
@@ -2755,18 +2774,18 @@ class DriveRepository @Inject constructor(
         }
         val orderedParts = parts.sortedBy { it.partIndex }.take(totalParts)
 
-        val password = if (isEncrypted) secureSessionManager.decryptedPassword.value else null
-        if (isEncrypted && password == null) {
+        val dek = if (isEncrypted) secureSessionManager.getSessionKeyCopy() else null
+        if (isEncrypted && dek == null) {
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, context.getString(R.string.unlock_to_upload), Toast.LENGTH_LONG).show()
             }
             return
         }
-        if (password != null) secureSessionManager.touchSession()
 
         val targetDir = File(context.cacheDir, "split_downloads").apply { if (!exists()) mkdirs() }
         val targetFile = File(targetDir, sanitizeFileName(originalName))
         if (targetFile.exists() && expectedSize > 0 && targetFile.length() == expectedSize) {
+            dek?.fill(0)
             // Already reassembled earlier: just (re)record it as the
             // offline copy of every part.
             orderedParts.forEach { part ->
@@ -2778,6 +2797,7 @@ class DriveRepository @Inject constructor(
             return
         }
         if (expectedSize > 0 && !FileUtils.hasEnoughSpace(context, expectedSize)) {
+            dek?.fill(0)
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, "ফোনে পর্যাপ্ত জায়গা নেই", Toast.LENGTH_LONG).show()
             }
@@ -2795,14 +2815,15 @@ class DriveRepository @Inject constructor(
                     }
                     return
                 }
-                if (isEncrypted && password != null) {
-                    // Each part was encrypted on its own (own salt/IV),
+                if (isEncrypted && dek != null) {
+                    // Each part was encrypted on its own (own fileSalt/noncePrefix),
                     // so decrypt part by part before merging.
                     val plainPart = File(targetDir, "dec_${System.nanoTime()}_${part.partIndex}.tmp")
                     try {
-                        encryptionManager.decryptFile(partFile, plainPart, password) {}
+                        encryptionManager.decryptFile(partFile, plainPart, dek) {}
                     } catch (e: Exception) {
                         Log.w("DriveRepo", "Split download: decrypt failed for part ${part.partIndex}", e)
+                        plainPart.delete()
                         withContext(Dispatchers.Main) {
                             Toast.makeText(context, "ফাইলটি খোলা যায়নি — পাসওয়ার্ড যাচাই করুন", Toast.LENGTH_LONG).show()
                         }
@@ -2832,6 +2853,7 @@ class DriveRepository @Inject constructor(
                 Toast.makeText(context, "ডাউনলোড সম্পন্ন: $originalName", Toast.LENGTH_SHORT).show()
             }
         } finally {
+            dek?.fill(0)
             tempDecrypted.forEach { try { it.delete() } catch (_: Exception) {} }
         }
     }
@@ -2925,17 +2947,16 @@ class DriveRepository @Inject constructor(
                 // showed). Decrypt to a cache temp file, then route through
                 // saveToPublicDownloads (MediaStore / user-folder aware,
                 // honest toast), and delete the temp afterwards.
-                val password = secureSessionManager.decryptedPassword.value
-                if (password == null) {
+                val dek = secureSessionManager.getSessionKeyCopy()
+                if (dek == null) {
                     scope.launch(Dispatchers.Main) {
                         Toast.makeText(context, context.getString(R.string.save_vault_locked), Toast.LENGTH_SHORT).show()
                     }
                     return@launch
                 }
-                val tempFile = File(context.cacheDir, "decrypt_${System.currentTimeMillis()}_${file.name}")
+                val tempFile = File(context.cacheDir, "decrypt_${System.currentTimeMillis()}_${sanitizeFileName(file.name)}")
                 try {
-                    secureSessionManager.touchSession()
-                    encryptionManager.decryptFile(source, tempFile, password) { }
+                    encryptionManager.decryptFile(source, tempFile, dek) { }
                     transferRepository.saveToPublicDownloads(tempFile.absolutePath, file.name) { tempFile.delete() }
                 } catch (e: Exception) {
                     Log.w("DriveRepo", "saveToPublicStorage failed", e)
@@ -2943,6 +2964,8 @@ class DriveRepository @Inject constructor(
                     scope.launch(Dispatchers.Main) {
                         Toast.makeText(context, context.getString(R.string.save_failed), Toast.LENGTH_SHORT).show()
                     }
+                } finally {
+                    dek.fill(0)
                 }
             }
         } else {

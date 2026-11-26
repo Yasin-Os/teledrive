@@ -60,13 +60,22 @@ class SecureStorageViewModel @Inject constructor(
 
     // Vault 2.0: encrypt the local copy when hiding. Default OFF.
     private val _isEncryptOnHideEnabled = MutableStateFlow(
-        secureSettings.getBoolean(KEY_ENCRYPT_ON_HIDE, false)
+        try {
+            secureSettings.getBooleanStrict(KEY_ENCRYPT_ON_HIDE, false)
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "Secure storage unavailable when reading encrypt-on-hide preference", e)
+            false
+        }
     )
     val isEncryptOnHideEnabled = _isEncryptOnHideEnabled.asStateFlow()
 
     fun setEncryptOnHideEnabled(enabled: Boolean) {
-        secureSettings.saveBoolean(KEY_ENCRYPT_ON_HIDE, enabled)
-        _isEncryptOnHideEnabled.value = enabled
+        try {
+            secureSettings.saveBoolean(KEY_ENCRYPT_ON_HIDE, enabled)
+            _isEncryptOnHideEnabled.value = enabled
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Cannot update encrypt-on-hide: secure storage unavailable", e)
+        }
     }
 
     // ক্লাউডের যে ফাইলগুলো এখনো সাধারণ ক্লাউডে আছে (Safe Folder-এ হাইড করার জন্য পিকারে দেখাবে)
@@ -134,44 +143,47 @@ class SecureStorageViewModel @Inject constructor(
 
     /**
      * Vault 2.0, encrypt-on-hide: for each file that has a local copy on
-     * this device, encrypt that copy with the safe-folder PIN (the session
-     * password — the same credential PreviewViewModel decrypts with on open)
-     * into a ".enc" file next to the original. The plaintext local copy is
-     * deleted only once the new path is recorded in the database, so a
-     * failure can never silently lose the file. Files with no local copy
-     * are hidden as before; the copy stored in Telegram is untouched.
-     * Unhide is unaffected: it only restores the main-list visibility, and
-     * an encrypted local copy still opens through the existing decrypt
-     * path (PreviewViewModel.decryptForPreview).
+     * this device, encrypt that copy with the active per-vault 256-bit DEK
+     * (never directly with the PIN) into a ".enc" file next to the original.
+     * The plaintext local copy is deleted only once the new path is recorded
+     * in the database, so a failure can never silently lose the file. Files
+     * with no local copy are hidden as before; the copy stored in Telegram is
+     * untouched.
      */
     private suspend fun encryptLocalCopies(files: List<DriveItem.File>) {
-        val password = secureSessionManager.decryptedPassword.value ?: run {
-            Log.w(TAG, "Encrypt-on-hide skipped: no vault session (safe PIN) available")
+        val dek = secureSessionManager.getSessionKeyCopy() ?: run {
+            Log.w(TAG, "Encrypt-on-hide skipped: no active vault DEK session available")
             return
         }
-        withContext(Dispatchers.IO) {
-            for (file in files) {
-                if (file.isEncrypted) continue
-                val localPath = file.localPath ?: continue
-                val localFile = File(localPath)
-                if (!localFile.exists() || !localFile.isFile) continue
-                val encFile = File(localFile.parentFile, localFile.name + ".enc")
-                try {
-                    if (encFile.exists()) encFile.delete()
-                    encryptionManager.encryptFile(localFile, encFile, password)
-                    if (persistEncryptedLocalCopy(file, encFile.absolutePath)) {
-                        localFile.delete()
-                    } else {
-                        // The new path could not be recorded yet: roll back
-                        // so the plaintext local copy is never silently lost.
-                        encFile.delete()
-                        Log.w(TAG, "Encrypt-on-hide rolled back for ${file.name}: encrypted path not recorded")
+        try {
+            withContext(Dispatchers.IO) {
+                for (file in files) {
+                    if (file.isEncrypted) continue
+                    val localPath = file.localPath ?: continue
+                    val localFile = File(localPath)
+                    if (!localFile.exists() || !localFile.isFile) continue
+                    val parentDir = localFile.parentFile ?: continue
+                    val encFile = File(parentDir, localFile.name + ".enc")
+                    try {
+                        secureSessionManager.touchSession()
+                        if (encFile.exists()) encFile.delete()
+                        encryptionManager.encryptFile(localFile, encFile, dek)
+                        if (persistEncryptedLocalCopy(file, encFile.absolutePath)) {
+                            localFile.delete()
+                        } else {
+                            // The new path could not be recorded yet: roll back
+                            // so the plaintext local copy is never silently lost.
+                            encFile.delete()
+                            Log.w(TAG, "Encrypt-on-hide rolled back for ${file.name}: encrypted path not recorded")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Encrypt-on-hide failed for ${file.name}", e)
+                        if (encFile.exists()) encFile.delete()
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Encrypt-on-hide failed for ${file.name}", e)
-                    if (encFile.exists()) encFile.delete()
                 }
             }
+        } finally {
+            dek.fill(0)
         }
     }
 
