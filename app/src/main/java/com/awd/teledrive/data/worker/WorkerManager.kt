@@ -71,11 +71,13 @@ class TeleDriveWorkerManager @Inject constructor(
 
     fun triggerOneTimeBackup() {
         try {
-            // ওয়ার্কারের জন্য অপেক্ষা না করে সাথে সাথে সরাসরি ব্যাকআপ ও আপলোড শুরু করবে।
+            // H7: this used to ALSO run the backup immediately in-process
+            // (runImmediateFolderBackup) before enqueueing the worker —
+            // and BackupViewModel ran it a third time. The manual worker
+            // below is now the single backup run: it scans, uploads and
+            // reports progress through its foreground notification.
             // এটি ম্যানুয়াল "Backup Now" — ব্যবহারকারীর স্পষ্ট নির্দেশ বলে
             // Auto Backup টগল ও Wi-Fi Only এখানে প্রযোজ্য নয়।
-            driveRepository.runImmediateFolderBackup(manual = true)
-
             val lastBackupTime = secureSettings.getLong("last_backup_time", 0L)
             val data = Data.Builder()
                 .putLong("last_backup_time", lastBackupTime)
@@ -131,5 +133,12 @@ class TeleDriveWorkerManager @Inject constructor(
 
     fun getBackupWorkInfo(): kotlinx.coroutines.flow.Flow<List<WorkInfo>> {
         return WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow("media_backup_worker")
+    }
+
+    // H7: the manual "Backup Now" run lives under its own unique-work
+    // name; the BackupViewModel watches it to refresh the displayed
+    // last-backup time when the run finishes.
+    fun getManualBackupWorkInfo(): kotlinx.coroutines.flow.Flow<List<WorkInfo>> {
+        return WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow("manual_backup_worker")
     }
 }
