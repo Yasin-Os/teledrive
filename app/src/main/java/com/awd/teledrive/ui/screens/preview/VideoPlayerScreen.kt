@@ -31,6 +31,7 @@ import android.view.WindowManager
 import android.widget.Toast
 import android.util.Log
 import android.os.SystemClock
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -958,6 +959,30 @@ fun VideoPlayerScreen(
     var isBuffering by remember { mutableStateOf(false) }
     var playbackError by remember(activeMediaUrl) { mutableStateOf<String?>(null) }
     var isUserExiting by remember { mutableStateOf(false) }
+    val playerViewRef = remember { AtomicReference<PlayerView?>(null) }
+
+    val exitPlayer: () -> Unit = {
+        if (!isUserExiting) {
+            isUserExiting = true
+            playerViewRef.getAndSet(null)?.player = null
+            resetWindowBrightness(activity)
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            if (!isAudioPlayerMode) {
+                viewModel.stopWatching()
+                if (BackgroundAudioEngine.activePlayer === exoPlayer) {
+                    BackgroundAudioEngine.stopAndRelease(context)
+                }
+            }
+            onBack()
+        }
+    }
+
+    // Handle system back explicitly so VideoPlayerScreen always sits above any
+    // exiting destination's BackHandler (e.g. Home/Media/Safe Folder) and runs
+    // the exact same player/window cleanup as the on-screen back button.
+    BackHandler(enabled = !isUserExiting) {
+        exitPlayer()
+    }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var lastNotificationUpdateMs by remember { mutableLongStateOf(0L) }
@@ -1183,8 +1208,11 @@ fun VideoPlayerScreen(
         }
         exoPlayer.addListener(listener)
         onDispose {
-            resetWindowBrightness(activity)
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            playerViewRef.getAndSet(null)?.player = null
+            if (!isUserExiting) {
+                resetWindowBrightness(activity)
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
             exoPlayer.removeListener(listener)
             // M30: clear global singleton callbacks on dispose so notification
             // Next/Prev can never mutate disposed composable state.
@@ -1194,7 +1222,8 @@ fun VideoPlayerScreen(
             if (BackgroundAudioEngine.onSkipNextCallback === nextCb) {
                 BackgroundAudioEngine.onSkipNextCallback = null
             }
-            if (!isAudioPlayerMode) {
+            if (!isAudioPlayerMode && BackgroundAudioEngine.activePlayer === exoPlayer) {
+                viewModel.stopWatching()
                 BackgroundAudioEngine.stopAndRelease(context)
             }
         }
@@ -1239,11 +1268,7 @@ fun VideoPlayerScreen(
                 .statusBarsPadding()
         ) {
             IconButton(
-                onClick = {
-                    isUserExiting = true
-                    resetWindowBrightness(activity)
-                    onBack()
-                },
+                onClick = exitPlayer,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(8.dp)
@@ -1270,11 +1295,7 @@ fun VideoPlayerScreen(
                     textAlign = TextAlign.Center
                 )
                 OutlinedButton(
-                    onClick = {
-                        isUserExiting = true
-                        resetWindowBrightness(activity)
-                        onBack()
-                    }
+                    onClick = exitPlayer
                 ) {
                     Text(stringResource(R.string.back), color = Color.White)
                 }
@@ -1284,7 +1305,10 @@ fun VideoPlayerScreen(
     }
 
     if (isAudioPlayerMode) {
-        LaunchedEffect(Unit) { resetWindowBrightness(activity) }
+        LaunchedEffect(Unit) {
+            playerViewRef.getAndSet(null)?.player = null
+            resetWindowBrightness(activity)
+        }
         PlayItVinylAudioPlayerUI(
             fileName = fileName,
             isPlaying = isPlaying,
@@ -1297,11 +1321,7 @@ fun VideoPlayerScreen(
             isVideoSource = !isNativeAudioFile,
             playlist = playlist,
             activeMediaUrl = activeMediaUrl,
-            onBack = {
-                isUserExiting = true
-                resetWindowBrightness(activity)
-                onBack()
-            },
+            onBack = exitPlayer,
             onSwitchToVideo = { isAudioPlayerMode = false },
             onCycleSpeed = cyclePlaybackSpeed,
             onSelectTrack = { item ->
@@ -1480,14 +1500,15 @@ fun VideoPlayerScreen(
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
-                    player = exoPlayer
+                    player = if (isUserExiting) null else exoPlayer
                     useController = false
                     this.resizeMode = resizeMode
                     setBackgroundColor(android.graphics.Color.BLACK)
-                }
+                }.also { playerViewRef.set(it) }
             },
             update = { view ->
-                view.player = exoPlayer
+                playerViewRef.set(view)
+                view.player = if (isUserExiting) null else exoPlayer
                 view.resizeMode = resizeMode
             },
             modifier = Modifier.fillMaxSize()
@@ -1644,12 +1665,7 @@ fun VideoPlayerScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = {
-                                isUserExiting = true
-                                resetWindowBrightness(activity)
-                                BackgroundAudioEngine.stopAndRelease(context)
-                                onBack()
-                            }
+                            onClick = exitPlayer
                         ) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                         }

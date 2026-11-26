@@ -1,5 +1,6 @@
 package com.awd.teledrive.ui.navigation
 
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -160,6 +161,14 @@ fun NavGraph(
         }
     }
 
+    val openVideoPlayer: (String) -> Unit = { playTarget ->
+        if (navController.currentDestination?.route != Screen.VideoPlayer.route) {
+            navController.navigate(Screen.VideoPlayer.createRoute(playTarget)) {
+                launchSingleTop = true
+            }
+        }
+    }
+
     val openFileOrPlayVideo: (DriveItem.File, Boolean) -> Unit = { file, isMediaOnly ->
         // H1: never open hidden Safe Folder or encrypted files directly without
         // passing the Safe Folder access gate first.
@@ -175,8 +184,8 @@ fun NavGraph(
                 } else {
                     "tdstream://${file.parentChatId}|${file.id}|${file.telegramFileId}|${file.size}|${file.name}"
                 }
-                navController.navigate(Screen.VideoPlayer.createRoute(playTarget))
-            } else {
+                openVideoPlayer(playTarget)
+            } else if (navController.currentDestination?.route != Screen.Preview.route) {
                 navController.navigate(
                     Screen.Preview.createRoute(
                         chatId = file.parentChatId,
@@ -184,7 +193,9 @@ fun NavGraph(
                         isMediaOnly = isMediaOnly,
                         virtualParentId = file.virtualParentId ?: "0"
                     )
-                )
+                ) {
+                    launchSingleTop = true
+                }
             }
         }
     }
@@ -411,17 +422,25 @@ fun NavGraph(
             ) {
                 PreviewScreen(
                     onBack = { navController.popBackStack() },
-                    onOpenPlayer = { path -> navController.navigate(Screen.VideoPlayer.createRoute(path)) },
+                    onOpenPlayer = openVideoPlayer,
                     onOpenPdf = { path -> navController.navigate(Screen.PdfViewer.createRoute(path)) },
                     onOpenText = { path -> navController.navigate(Screen.TextViewer.createRoute(path)) }
                 )
             }
             composable(
                 route = Screen.VideoPlayer.route,
-                arguments = listOf(navArgument("path") { type = NavType.StringType })
+                arguments = listOf(navArgument("path") { type = NavType.StringType }),
+                popExitTransition = { ExitTransition.None }
             ) { backStackEntry ->
                 val path = backStackEntry.arguments?.getString("path") ?: ""
-                VideoPlayerScreen(url = path, onBack = { navController.popBackStack() })
+                VideoPlayerScreen(
+                    url = path,
+                    onBack = {
+                        if (navController.currentDestination?.route == Screen.VideoPlayer.route) {
+                            navController.popBackStack()
+                        }
+                    }
+                )
             }
             composable(
                 route = Screen.PdfViewer.route,
