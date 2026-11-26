@@ -711,4 +711,31 @@ class TransferRepository @Inject constructor(
             return false
         }
     }
+
+    /**
+     * H4: clears all in-memory transfer tracking maps and wipes the Room
+     * `transfers` table on logout so no previous account's transfers leak
+     * into the next session.
+     */
+    suspend fun clearAllTransfers() {
+        completionDeferreds.values.forEach { it.complete(false) }
+        completionDeferreds.clear()
+        activeMap.clear()
+        fileIdToKey.clear()
+        pathToKey.clear()
+        idMigrationMap.clear()
+        pausedIds.clear()
+        pendingBlocks.clear()
+        startedBlocks.clear()
+        lastEmitTime.clear()
+        lastPersistTime.clear()
+        publishState()
+        withContext(dbWriteDispatcher) {
+            try {
+                transferDao.deleteAllTransfers()
+            } catch (e: Exception) {
+                Log.w("TransferRepo", "clearAllTransfers: DB delete failed", e)
+            }
+        }
+    }
 }

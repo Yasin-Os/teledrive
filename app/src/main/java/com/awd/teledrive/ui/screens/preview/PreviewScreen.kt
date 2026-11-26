@@ -182,6 +182,7 @@ fun PreviewScreen(
             onOpenPlayer = onOpenPlayer,
             onOpenPdf = onOpenPdf,
             onOpenText = onOpenText,
+            onPageChanged = viewModel::setActiveFile,
             onToggleStarred = viewModel::toggleStarred,
             onSaveToDevice = viewModel::saveToDevice,
             onAutoDownload = viewModel::autoDownloadForPreview,
@@ -207,6 +208,7 @@ fun PreviewPager(
     onOpenPlayer: (String) -> Unit,
     onOpenPdf: (String) -> Unit,
     onOpenText: (String) -> Unit,
+    onPageChanged: (DriveItem.File) -> Unit,
     onToggleStarred: (DriveItem.File) -> Unit,
     onSaveToDevice: (DriveItem.File) -> Unit,
     onAutoDownload: (DriveItem.File) -> Unit,
@@ -225,15 +227,19 @@ fun PreviewPager(
     var editedOverridePath by remember(currentFile.id) { mutableStateOf<String?>(null) }
 
     // পেজ পরিবর্তন হলে জুম রিসেট ও পাশের ছবি প্রি-লোড করা হবে যাতে সোয়াইপ সুপার ফাস্ট হয়
+    // H11: notify ViewModel of the single active page for lazy decryption and
+    // never pre-decrypt adjacent encrypted items.
     LaunchedEffect(pagerState.currentPage, items.size) {
         isCurrentPageZoomed = false
         if (items.isNotEmpty() && pagerState.currentPage < items.size) {
-            onAutoDownload(items[pagerState.currentPage])
+            val active = items[pagerState.currentPage]
+            onPageChanged(active)
+            onAutoDownload(active)
             items.getOrNull(pagerState.currentPage + 1)?.let { next ->
-                if (next.mimeType.startsWith("image/")) onAutoDownload(next)
+                if (!next.isEncrypted && next.mimeType.startsWith("image/")) onAutoDownload(next)
             }
             items.getOrNull(pagerState.currentPage - 1)?.let { prev ->
-                if (prev.mimeType.startsWith("image/")) onAutoDownload(prev)
+                if (!prev.isEncrypted && prev.mimeType.startsWith("image/")) onAutoDownload(prev)
             }
         }
     }
@@ -245,6 +251,7 @@ fun PreviewPager(
         PhotoEditorScreen(
             imagePath = editingImagePath!!,
             fileName = currentFile.name,
+            allowPublicGallery = !currentFile.isEncrypted,
             onCancel = { editingImagePath = null },
             onSaveEdited = { savedFile ->
                 editedOverridePath = savedFile.absolutePath
@@ -388,18 +395,23 @@ fun PreviewPager(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // H11: never hand decrypted preview files to external apps via Share.
                     GalleryActionButton(
                         icon = Icons.Default.Share,
                         label = stringResource(R.string.share),
-                        enabled = currentDisplayPath != null,
+                        enabled = currentDisplayPath != null && !currentFile.isEncrypted,
                         onClick = {
-                            currentDisplayPath?.let {
-                                FileSharingHelper.shareFile(context, it, currentFile.mimeType)
+                            if (!currentFile.isEncrypted) {
+                                currentDisplayPath?.let {
+                                    FileSharingHelper.shareFile(context, it, currentFile.mimeType)
+                                }
                             }
                         }
                     )
 
-                    if (currentFile.mimeType.startsWith("image/")) {
+                    // H11: PhotoEditor writes edited copies to the public gallery,
+                    // so do not offer it for encrypted vault images.
+                    if (currentFile.mimeType.startsWith("image/") && !currentFile.isEncrypted) {
                         GalleryActionButton(
                             icon = Icons.Default.Edit,
                             label = stringResource(R.string.edit),
@@ -472,6 +484,7 @@ private fun GalleryActionButton(
 fun PhotoEditorScreen(
     imagePath: String,
     fileName: String,
+    allowPublicGallery: Boolean = true,
     onCancel: () -> Unit,
     onSaveEdited: (File) -> Unit
 ) {
@@ -589,9 +602,16 @@ fun PhotoEditorScreen(
                                 filterName = selectedFilter,
                                 cropRect = Rect(cropLeft, cropTop, cropRight, cropBottom)
                             )
-                            val outFile = saveBitmapToGalleryAndCache(context, finalBmp, "Edited_$fileName")
+                            val outFile = saveBitmapToGalleryAndCache(
+                                context = context,
+                                bitmap = finalBmp,
+                                fileName = "Edited_$fileName",
+                                saveToGallery = allowPublicGallery
+                            )
                             withContext(Dispatchers.Main) {
-                                Toast.makeText(context, context.getString(R.string.saved_to_gallery), Toast.LENGTH_SHORT).show()
+                                if (allowPublicGallery && outFile != null) {
+                                    Toast.makeText(context, context.getString(R.string.saved_to_gallery), Toast.LENGTH_SHORT).show()
+                                }
                                 if (outFile != null) onSaveEdited(outFile) else onCancel()
                             }
                         } finally {
@@ -922,16 +942,36 @@ private fun renderEditedBitmap(
     return out
 }
 
-private fun saveBitmapToGalleryAndCache(context: Context, bitmap: Bitmap, fileName: String): File? {
+private fun sanitizeEditorFileName(rawName: String): String {
+    val base = rawName.substringAfterLast('/').substringAfterLast('\\')
+        .replace("..", "_")
+        .replace(Regex("[^A-Za-z0-9._-]"), "_")
+        .trimStart('.')
+        .take(80)
+    return base.ifEmpty { "edited.jpg" }
+}
+
+private fun saveBitmapToGalleryAndCache(
+    context: Context,
+    bitmap: Bitmap,
+    fileName: String,
+    saveToGallery: Boolean = true
+): File? {
     return try {
-        val cacheOut = File(context.cacheDir, "edited_${System.currentTimeMillis()}_$fileName")
+        val safeName = sanitizeEditorFileName(fileName)
+        val outDir = File(context.cacheDir, if (saveToGallery) "shared" else "vault_preview_tmp")
+            .apply { if (!exists()) mkdirs() }
+        val cacheOut = File(outDir, "edited_${System.currentTimeMillis()}_$safeName")
+        if (!cacheOut.canonicalPath.startsWith(outDir.canonicalPath + File.separator)) {
+            return null
+        }
         FileOutputStream(cacheOut).use { out ->
             bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (saveToGallery && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
             }
@@ -965,7 +1005,9 @@ fun PreviewContent(
 ) {
     val context = LocalContext.current
     val isImage = file.mimeType.startsWith("image/")
-    val isStreamableMedia = !file.isEncrypted && (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/"))
+    val isAudioOrVideo = file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/")
+    val isStreamableMedia = !file.isEncrypted && isAudioOrVideo
+    val isEncryptedPlayableMedia = file.isEncrypted && isAudioOrVideo && displayPath != null && File(displayPath).exists()
 
     var isMediaRendering by remember(displayPath) { mutableStateOf(false) }
     val isWaitingForDecryption = file.isEncrypted && file.localPath != null && displayPath == null
@@ -988,7 +1030,7 @@ fun PreviewContent(
     val triggerStreamOrPlay = {
         if (displayPath != null && File(displayPath).exists()) {
             onOpenPlayer(displayPath)
-        } else {
+        } else if (!file.isEncrypted) {
             onLoadFile()
             val streamToken = "tdstream://${file.parentChatId}|${file.id}|${file.telegramFileId}|${file.size}|${file.name}"
             onOpenPlayer(streamToken)
@@ -1130,7 +1172,7 @@ fun PreviewContent(
                         modifier = Modifier.size(110.dp),
                         tint = color
                     )
-                    if (isStreamableMedia) {
+                    if (isStreamableMedia || isEncryptedPlayableMedia) {
                         Surface(
                             onClick = triggerStreamOrPlay,
                             shape = CircleShape,
@@ -1159,7 +1201,7 @@ fun PreviewContent(
                 )
                 Spacer(modifier = Modifier.height(32.dp))
 
-                if (isStreamableMedia) {
+                if (isStreamableMedia || isEncryptedPlayableMedia) {
                     Button(
                         onClick = triggerStreamOrPlay,
                         modifier = Modifier.fillMaxWidth(),
@@ -1171,21 +1213,31 @@ fun PreviewContent(
                     }
                 } else if (displayPath != null) {
                     val isInternalDoc = file.mimeType == "application/pdf" || file.mimeType.startsWith("text/") || file.name.endsWith(".txt", true)
-                    Button(
-                        onClick = {
-                            if (isInternalDoc) {
-                                if (file.mimeType == "application/pdf") onOpenPdf(displayPath)
-                                else onOpenText(displayPath)
-                            } else {
-                                FileSharingHelper.openFileExternally(context, displayPath, file.mimeType)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(stringResource(R.string.open_media))
+                    if (isInternalDoc || !file.isEncrypted) {
+                        Button(
+                            onClick = {
+                                if (isInternalDoc) {
+                                    if (file.mimeType == "application/pdf") onOpenPdf(displayPath)
+                                    else onOpenText(displayPath)
+                                } else {
+                                    FileSharingHelper.openFileExternally(context, displayPath, file.mimeType)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.open_media))
+                        }
+                    } else {
+                        // H11: never hand decrypted vault files of unsupported types to external apps.
+                        Text(
+                            text = "External apps cannot open encrypted vault files directly",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.7f),
+                            textAlign = TextAlign.Center
+                        )
                     }
                 } else {
                     OutlinedButton(

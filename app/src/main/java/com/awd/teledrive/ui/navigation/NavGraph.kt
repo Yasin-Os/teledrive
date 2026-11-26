@@ -37,6 +37,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
 import com.awd.teledrive.R
+import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.auth.LoginScreen
 import com.awd.teledrive.ui.screens.home.HomeScreen
@@ -104,7 +105,8 @@ sealed class Screen(val route: String, val icon: ImageVector? = null, val labelR
 @Composable
 fun NavGraph(
     navController: NavHostController,
-    securityViewModel: SecurityViewModel = activitySecurityViewModel()
+    securityViewModel: SecurityViewModel = activitySecurityViewModel(),
+    onSensitiveScreenChanged: (Boolean) -> Unit = {}
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -113,6 +115,8 @@ fun NavGraph(
     val settingsViewModel: com.awd.teledrive.ui.screens.settings.SettingsViewModel = hiltViewModel()
     
     val isLocked by securityViewModel.isLocked.collectAsState()
+    val isSecurityEnabled by securityViewModel.isSecurityEnabled.collectAsState()
+    val isSecureModeActive by securityViewModel.isSecureModeActive.collectAsState()
     val loginUiState by loginViewModel.uiState.collectAsState()
     val showCacheWarning by settingsViewModel.showCacheWarning.collectAsState()
 
@@ -121,6 +125,27 @@ fun NavGraph(
 
     var showSafePinUnlockDialog by remember { mutableStateOf(false) }
     var showCreateSafePinDialog by remember { mutableStateOf(false) }
+
+    // M36: keep FLAG_SECURE active on PIN, Safe Folder, Login, vault-content
+    // viewers, PIN dialogs, and whenever App Lock / Vault session is active so
+    // sensitive content never leaks into screenshots, recordings, or Recents.
+    val currentVirtualParentArg = navBackStackEntry?.arguments?.getString("virtualParentId")
+    val currentPathArg = navBackStackEntry?.arguments?.getString("path")
+    val isViewingSafeContent = currentVirtualParentArg == DriveRepository.SAFE_SPACE_VIRTUAL_ID ||
+        (currentPathArg != null && currentPathArg.contains("vault_preview_tmp"))
+    val isSensitiveScreen = isLocked ||
+        isSecurityEnabled ||
+        isSecureModeActive ||
+        showSafePinUnlockDialog ||
+        showCreateSafePinDialog ||
+        isViewingSafeContent ||
+        currentRoute == Screen.Security.route ||
+        currentRoute == Screen.SecureStorage.route ||
+        currentRoute == Screen.Login.route
+
+    LaunchedEffect(isSensitiveScreen) {
+        onSensitiveScreenChanged(isSensitiveScreen)
+    }
 
     // Safe Folder সম্পূর্ণ আলাদা পিন লজিক (শুধুমাত্র পিন কোড, কোনো বায়োমেট্রিক নয়)
     val triggerSafeFolderOpen = {
@@ -134,24 +159,31 @@ fun NavGraph(
     }
 
     val openFileOrPlayVideo: (DriveItem.File, Boolean) -> Unit = { file, isMediaOnly ->
-        val isDirectPlayable = !file.isEncrypted && (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/"))
-        if (isDirectPlayable) {
-            val localFile = file.localPath?.let { File(it) }
-            val playTarget = if (localFile != null && localFile.exists()) {
-                localFile.absolutePath
-            } else {
-                "tdstream://${file.parentChatId}|${file.id}|${file.telegramFileId}|${file.size}|${file.name}"
-            }
-            navController.navigate(Screen.VideoPlayer.createRoute(playTarget))
+        // H1: never open hidden Safe Folder or encrypted files directly without
+        // passing the Safe Folder access gate first.
+        val isSafeFile = file.virtualParentId == DriveRepository.SAFE_SPACE_VIRTUAL_ID || file.isEncrypted
+        if (isSafeFile && !securityViewModel.isSafeFolderAccessAllowed()) {
+            triggerSafeFolderOpen()
         } else {
-            navController.navigate(
-                Screen.Preview.createRoute(
-                    chatId = file.parentChatId,
-                    fileId = file.id,
-                    isMediaOnly = isMediaOnly,
-                    virtualParentId = file.virtualParentId ?: "0"
+            val isDirectPlayable = !file.isEncrypted && (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/"))
+            if (isDirectPlayable) {
+                val localFile = file.localPath?.let { File(it) }
+                val playTarget = if (localFile != null && localFile.exists()) {
+                    localFile.absolutePath
+                } else {
+                    "tdstream://${file.parentChatId}|${file.id}|${file.telegramFileId}|${file.size}|${file.name}"
+                }
+                navController.navigate(Screen.VideoPlayer.createRoute(playTarget))
+            } else {
+                navController.navigate(
+                    Screen.Preview.createRoute(
+                        chatId = file.parentChatId,
+                        fileId = file.id,
+                        isMediaOnly = isMediaOnly,
+                        virtualParentId = file.virtualParentId ?: "0"
+                    )
                 )
-            )
+            }
         }
     }
 

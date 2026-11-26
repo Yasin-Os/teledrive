@@ -160,9 +160,20 @@ class SettingsViewModel @Inject constructor(
         _currentLanguage.value = code
     }
 
-    fun logout() {
-        secureSettings.saveBoolean("active_provider_google", false)
-        authRepository.logoutAll()
+    private val _isLoggingOut = MutableStateFlow(false)
+    val isLoggingOut = _isLoggingOut.asStateFlow()
+
+    fun logout(onComplete: () -> Unit = {}) {
+        if (_isLoggingOut.value) return
+        _isLoggingOut.value = true
+        viewModelScope.launch {
+            try {
+                authRepository.logoutAndWait()
+            } finally {
+                _isLoggingOut.value = false
+                onComplete()
+            }
+        }
     }
 
     fun saveApiCredentials(apiId: Int, apiHash: String) {

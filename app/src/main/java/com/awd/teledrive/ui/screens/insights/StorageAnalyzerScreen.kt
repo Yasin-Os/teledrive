@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
 import com.awd.teledrive.core.utils.FileUtils
+import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.domain.model.DriveItem
 import com.awd.teledrive.ui.screens.settings.AnalysisItem
 
@@ -217,7 +218,13 @@ fun StorageAnalyzerScreen(
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
 
-            if (largestFiles.isEmpty()) {
+            val publicLargestFiles = largestFiles.filterNot { entity ->
+                entity.virtualParentId == DriveRepository.SAFE_SPACE_VIRTUAL_ID ||
+                    entity.isEncrypted ||
+                    entity.isSecure
+            }
+
+            if (publicLargestFiles.isEmpty()) {
                 Text(
                     text = stringResource(R.string.no_results),
                     style = MaterialTheme.typography.bodyMedium,
@@ -225,7 +232,7 @@ fun StorageAnalyzerScreen(
                     modifier = Modifier.padding(16.dp)
                 )
             } else {
-                largestFiles.forEach { entity ->
+                publicLargestFiles.forEach { entity ->
                     ListItem(
                         headlineContent = {
                             Text(entity.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -241,7 +248,12 @@ fun StorageAnalyzerScreen(
                             )
                         },
                         modifier = Modifier.clickable {
-                            onNavigateToPreview(viewModel.toFile(entity))
+                            if (entity.virtualParentId != DriveRepository.SAFE_SPACE_VIRTUAL_ID &&
+                                !entity.isEncrypted &&
+                                !entity.isSecure
+                            ) {
+                                onNavigateToPreview(viewModel.toFile(entity))
+                            }
                         }
                     )
                 }

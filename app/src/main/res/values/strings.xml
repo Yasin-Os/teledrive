@@ -510,7 +510,7 @@
     <string name="login_password_subtitle">Enter your Two-Step Verification password</string>
     <string name="login_password_label">Enter password</string>
     <string name="login_search_country">Search country or code...</string>
-    <string name="login_security">End-to-End Encrypted • MyCloud</string>
+    <string name="login_security">Telegram Cloud Storage • MyCloud</string>
     <string name="login_api_step1">Open my.telegram.org in your browser and log in with your Telegram phone number.</string>
     <string name="login_api_step2">Tap \"API development tools\".</string>
     <string name="login_api_step3">Create a new app — any name and platform will do.</string>

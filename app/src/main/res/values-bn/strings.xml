@@ -510,7 +510,7 @@
     <string name="login_password_subtitle">আপনার Two-Step Verification পাসওয়ার্ড লিখুন</string>
     <string name="login_password_label">পাসওয়ার্ড লিখুন</string>
     <string name="login_search_country">দেশ বা কোড খুঁজুন...</string>
-    <string name="login_security">End-to-End Encrypted • MyCloud</string>
+    <string name="login_security">Telegram ক্লাউড স্টোরেজ • MyCloud</string>
     <string name="login_api_step1">ব্রাউজারে my.telegram.org খুলুন এবং আপনার Telegram ফোন নম্বর দিয়ে লগইন করুন।</string>
     <string name="login_api_step2">\"API development tools\"-এ চাপ দিন।</string>
     <string name="login_api_step3">একটি নতুন অ্যাপ তৈরি করুন — যেকোনো নাম ও প্ল্যাটফর্ম চলবে।</string>

@@ -1414,12 +1414,8 @@ class DriveRepository @Inject constructor(
 
     fun importManifestFromJson(jsonStr: String): Boolean {
         return try {
-            synchronized(manifestLock) {
-                currentManifest = compactManifest(json.decodeFromString<TeleDriveManifest>(jsonStr))
-            }
-            saveCloudManifestDebounced()
-            syncVirtualFoldersToDb()
-            scope.launch { driveDao.resetAllFileVirtualParents(); fetchFiles() }
+            val decoded = json.decodeFromString<TeleDriveManifest>(jsonStr)
+            applyRestoredManifest(decoded)
             true
         } catch (e: Exception) { false }
     }
@@ -1553,12 +1549,25 @@ class DriveRepository @Inject constructor(
     }
 
     /**
-     * H9 backup follow-up: the apply step shared by the legacy
-     * single-message restore and the chunked restore.
+     * H9 backup follow-up + H1: the apply step shared by JSON import,
+     * legacy single-message restore, and chunked restore. Existing Safe
+     * Folder mappings are always preserved, and resetAllFileVirtualParents()
+     * leaves Safe Folder / encrypted / secure rows untouched so restoring an
+     * older manifest never dumps hidden files into the public root.
      */
     private fun applyRestoredManifest(manifest: TeleDriveManifest) {
         synchronized(manifestLock) {
-            currentManifest = compactManifest(manifest)
+            val preservedSafeMappings = currentManifest.fileMappings.filterValues { it == SAFE_SPACE_VIRTUAL_ID }
+            val merged = if (preservedSafeMappings.isEmpty()) {
+                manifest
+            } else {
+                val updatedMappings = manifest.fileMappings.toMutableMap()
+                preservedSafeMappings.forEach { (id, parent) ->
+                    updatedMappings[id] = parent
+                }
+                manifest.copy(fileMappings = updatedMappings)
+            }
+            currentManifest = compactManifest(merged)
         }
         saveCloudManifestDebounced()
         syncVirtualFoldersToDb()
@@ -1791,7 +1800,7 @@ class DriveRepository @Inject constructor(
 
     fun getAllFiles(): Flow<List<DriveItem.File>> {
         return driveDao.getAllFiles().map { entities ->
-            entities.filter { it.virtualParentId != SAFE_SPACE_VIRTUAL_ID }
+            entities.filter { it.virtualParentId != SAFE_SPACE_VIRTUAL_ID && !it.isEncrypted && !it.isSecure }
                 .map { entity ->
                     DriveItem.File(
                         entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType,
@@ -1804,7 +1813,7 @@ class DriveRepository @Inject constructor(
 
     fun getAllFilesPage(limit: Int, offset: Int): Flow<List<DriveItem.File>> {
         return driveDao.getAllFilesPage(limit, offset).map { entities ->
-            entities.filter { it.virtualParentId != SAFE_SPACE_VIRTUAL_ID }
+            entities.filter { it.virtualParentId != SAFE_SPACE_VIRTUAL_ID && !it.isEncrypted && !it.isSecure }
                 .map { entity ->
                     DriveItem.File(
                         entity.id, entity.parentChatId, entity.name, entity.size, entity.mimeType,
@@ -3507,7 +3516,9 @@ class DriveRepository @Inject constructor(
      */
     suspend fun scanDownloadedFilesForHashes(onProgress: (Int, Int) -> Unit = { _, _ -> }): Int =
         withContext(Dispatchers.IO) {
-            val items = driveDao.getUnhashedDownloadedFiles()
+            val items = driveDao.getUnhashedDownloadedFiles().filterNot {
+                it.virtualParentId == SAFE_SPACE_VIRTUAL_ID || it.isEncrypted || it.isSecure
+            }
             var hashed = 0
             items.forEachIndexed { index, entity ->
                 val uniqueId = entity.remoteUniqueId
@@ -3525,14 +3536,16 @@ class DriveRepository @Inject constructor(
         }
 
     /**
-     * L26: deletes the given entities and returns how many Telegram
-     * actually confirmed as deleted. The old version was fire-and-forget,
-     * so the caller reported "Deleted N copies" before Telegram had
-     * confirmed anything (or even when it refused).
+     * L26 + H1: deletes the given entities (never touching Safe Folder,
+     * encrypted, or secure items) and returns how many Telegram actually
+     * confirmed as deleted.
      */
     suspend fun deleteDuplicateItems(entities: List<DriveItemEntity>): Int {
-        if (entities.isEmpty()) return 0
-        val files = entities.map { entityToFile(it) }.filterIsInstance<DriveItem.File>()
+        val publicEntities = entities.filterNot {
+            it.virtualParentId == SAFE_SPACE_VIRTUAL_ID || it.isEncrypted || it.isSecure
+        }
+        if (publicEntities.isEmpty()) return 0
+        val files = publicEntities.map { entityToFile(it) }.filterIsInstance<DriveItem.File>()
         var deleted = 0
         files.groupBy { it.parentChatId }.forEach { (chatId, chatFiles) ->
             if (deleteFilesFromChat(chatId, chatFiles)) deleted += chatFiles.size
@@ -3710,6 +3723,82 @@ class DriveRepository @Inject constructor(
             .replace(Regex("^(enc|up|bkp|send)_\\d+_"), "")
             .replace(Regex("^(enc|up|bkp|send)_"), "")
             .replace(Regex("\\s*\\[VF:[^]]+]"), "")
+    }
+
+    /**
+     * H4: wipes all account-scoped local state on logout — in-memory channel/
+     * manifest/upload state, Room tables (drive_items, transfers, file_hashes,
+     * file_content_fts, recent_searches), PREF_STORAGE_CHAT_ID, backup
+     * tracking sets (backed_up_paths_v3 / mtime / failed), and any decrypted
+     * preview temp files.
+     */
+    suspend fun clearAllLocalUserDataOnLogout() = withContext(Dispatchers.IO) {
+        manifestSaveDebounceJob?.cancel()
+        manifestSaveDebounceJob = null
+        watcherDebounceJob?.cancel()
+        watcherDebounceJob = null
+
+        synchronized(channelInitLock) {
+            savedMessagesChatId = 0L
+            legacySavedMessagesId = 0L
+            _savedMessagesChatIdFlow.value = 0L
+            isDiscoveringChannel = false
+            pendingChatCallbacks.clear()
+        }
+
+        synchronized(manifestLock) {
+            currentManifest = TeleDriveManifest(updatedAt = 0)
+            manifestMessageId = 0L
+            manifestPartMessageIds.clear()
+            manifestPartGeneration = 0L
+            lastManifestPartGeneration = 0L
+            lastManualBackupGeneration = 0L
+            pendingManifestPartTempIds.clear()
+            manifestPartFinalIds.clear()
+        }
+
+        pendingUploadTempIds.clear()
+        pendingAutoDeleteFiles.clear()
+        pendingBackupKeys.clear()
+        inFlightBackupKeys.clear()
+        splitUploads.clear()
+        pendingSplitPartTempIds.clear()
+
+        try {
+            secureSettings.removeString(PREF_STORAGE_CHAT_ID)
+        } catch (e: Exception) {
+            Log.w("DriveRepo", "clearAllLocalUserDataOnLogout: failed to clear storage chat pref", e)
+        }
+
+        try {
+            val customPrefs = context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE)
+            customPrefs.edit()
+                .remove("backed_up_paths_v3")
+                .remove(KEY_BACKED_UP_MTIME)
+                .remove("backup_failed_v1")
+                .commit()
+        } catch (e: Exception) {
+            Log.w("DriveRepo", "clearAllLocalUserDataOnLogout: failed to clear backup prefs", e)
+        }
+
+        try {
+            driveDao.clearAllUserData()
+        } catch (e: Exception) {
+            Log.w("DriveRepo", "clearAllLocalUserDataOnLogout: failed to clear Room user tables", e)
+        }
+
+        transferRepository.clearAllTransfers()
+
+        try {
+            File(context.cacheDir, "vault_preview_tmp").deleteRecursively()
+            context.cacheDir.listFiles()?.forEach { f ->
+                if (f.name.startsWith("prev_dec_") || f.name.startsWith("decrypt_")) {
+                    f.deleteRecursively()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("DriveRepo", "clearAllLocalUserDataOnLogout: failed to purge preview temp files", e)
+        }
     }
 
     private data class SplitMetadata(val groupId: String, val partIndex: Int, val totalParts: Int, val originalName: String)
