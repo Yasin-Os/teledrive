@@ -2,6 +2,7 @@ package com.awd.teledrive.ui.screens.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkInfo
 import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.data.repository.SettingsRepository
 import com.awd.teledrive.data.secure.SecureSettings
@@ -56,6 +57,16 @@ class BackupViewModel @Inject constructor(
             // থাকলে পুরোনো ওয়ার্কার বাতিল করা হয়। আগের কোড এখানে
             // টগল জোর করে চালু আর Wi-Fi Only জোর করে বন্ধ করে দিত।
             workerManager.scheduleBackup(settingsRepository.isAutoBackupEnabled.value)
+        }
+        // H7: the manual worker is now the only "Backup Now" run, so
+        // the immediate run's onFinished no longer refreshes this.
+        // Refresh the displayed time whenever a manual run succeeds.
+        viewModelScope.launch {
+            workerManager.getManualBackupWorkInfo().collect { infos ->
+                if (infos.any { it.state == WorkInfo.State.SUCCEEDED }) {
+                    _lastBackupTime.value = secureSettings.getLong("last_backup_time", 0L)
+                }
+            }
         }
     }
 
@@ -119,14 +130,15 @@ class BackupViewModel @Inject constructor(
         viewModelScope.launch {
             _feedback.emit(BackupFeedback.Starting)
         }
-        // "Last backup" must reflect when a backup actually finished, not
-        // when it started: refresh it from the persisted value once the
-        // immediate run completes.
+        // H7: "Backup Now" used to run the backup three times at once —
+        // the immediate run here, another immediate run inside
+        // triggerOneTimeBackup(), and the manual worker itself —
+        // overlapping on the same files and racing delete_after_backup.
+        // Now the manual worker is the single backup run; the immediate
+        // runs are gone. The displayed last-backup time is refreshed by
+        // the manual-work observer in init when the run succeeds.
         // ম্যানুয়াল ব্যাকআপ: ব্যবহারকারীর স্পষ্ট নির্দেশ, তাই Auto Backup
         // টগল ও Wi-Fi Only এখানে প্রযোজ্য নয়।
-        driveRepository.runImmediateFolderBackup(manual = true) {
-            _lastBackupTime.value = secureSettings.getLong("last_backup_time", 0L)
-        }
         workerManager.triggerOneTimeBackup()
     }
 }

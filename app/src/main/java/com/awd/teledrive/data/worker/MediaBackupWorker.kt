@@ -20,6 +20,7 @@ import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -48,8 +49,6 @@ class MediaBackupWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            setForeground(createForegroundInfo(0, 0))
-
             val entryPoint = EntryPointAccessors.fromApplication(
                 applicationContext,
                 MediaBackupWorkerEntryPoint::class.java
@@ -63,6 +62,11 @@ class MediaBackupWorker(
             // ওয়ার্কারের constraints-ই প্রথম প্রতিরক্ষা; এটি দ্বিতীয়
             // স্তর — যাতে পুরোনো constraint-এ এনকিউ হওয়া রানও মোবাইল
             // ডাটা খরচ করতে না পারে।
+            // H7: these checks used to run AFTER an unconditional
+            // setForeground() — on Android 12+ a run that should do
+            // nothing (auto-backup off, mobile data) crashed with
+            // ForegroundServiceStartNotAllowedException and retried 5
+            // times. Decide first; go foreground only for a real run.
             if (!inputData.getBoolean("manual", false)) {
                 val settingsRepository = entryPoint.settingsRepository()
                 if (!settingsRepository.isAutoBackupEnabled.value) {
@@ -75,6 +79,8 @@ class MediaBackupWorker(
 
             val backupFolders = secureSettings.getStringList("backup_folders")
             if (backupFolders.isEmpty()) return@withContext Result.success()
+
+            safeSetForeground(createForegroundInfo(0, 0))
 
             val chatId = driveRepository.awaitSavedMessagesChatId()
             if (chatId == 0L) return@withContext retryOrFail()
@@ -101,7 +107,7 @@ class MediaBackupWorker(
                     "total" to totalCount
                 ))
                 
-                setForeground(createForegroundInfo(currentCount, totalCount))
+                safeSetForeground(createForegroundInfo(currentCount, totalCount))
 
                 driveRepository.uploadFileAndWait(
                     filePath = originalPath,
@@ -114,8 +120,23 @@ class MediaBackupWorker(
             
             secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
             Result.success()
+        } catch (e: CancellationException) {
+            // H27: cancellation is not a failure — let it propagate so
+            // WorkManager stops the work instead of retrying it.
+            throw e
         } catch (e: Exception) {
             retryOrFail()
+        }
+    }
+
+    // H7: starting a foreground service can be refused on Android 12+
+    // when the app is in the background. That must not fail (and retry)
+    // the backup itself — the work continues without the notification.
+    private suspend fun safeSetForeground(info: ForegroundInfo) {
+        try {
+            setForeground(info)
+        } catch (e: Exception) {
+            android.util.Log.w("MediaBackupWorker", "setForeground failed, continuing without it", e)
         }
     }
 

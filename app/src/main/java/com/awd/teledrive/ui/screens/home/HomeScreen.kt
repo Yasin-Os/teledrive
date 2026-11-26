@@ -385,7 +385,7 @@ fun HomeContent(
     )
 
     val isOffline = connectivityStatus == ConnectivityObserver.Status.Unavailable || connectivityStatus == ConnectivityObserver.Status.Lost
-    var selectedItems by remember { mutableStateOf(setOf<Long>()) }
+    var selectedItems by remember { mutableStateOf(setOf<String>()) }
     val isSelectionMode = selectedItems.isNotEmpty()
     var showFolderDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf<List<DriveItem>?>(null) }
@@ -694,7 +694,7 @@ fun HomeContent(
                         actions = {
                             IconButton(onClick = {
                                 val files = items.filterIsInstance<DriveItem.File>()
-                                selectedItems = if (selectedItems.size >= files.size && files.isNotEmpty()) emptySet() else files.map { it.id }.toSet()
+                                selectedItems = if (selectedItems.size >= files.size && files.isNotEmpty()) emptySet() else files.map { it.selectionKey() }.toSet()
                             }) {
                                 val files = items.filterIsInstance<DriveItem.File>()
                                 Icon(
@@ -703,15 +703,15 @@ fun HomeContent(
                                 )
                             }
                             IconButton(onClick = {
-                                val selectedFiles = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>()
-                                val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
+                                val selectedFiles = items.filter { it.selectionKey() in selectedItems }.filterIsInstance<DriveItem.File>()
+                                val selectedFolders = items.filter { it.selectionKey() in selectedItems }.filterIsInstance<DriveItem.Folder>()
                                 selectedFiles.forEach { onDownloadFile(it.id, it.parentChatId, it.name) }
                                 selectedFolders.forEach { onDownloadFolderContents(it) }
                                 selectedItems = emptySet()
                             }) {
                                 Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
                             }
-                            IconButton(onClick = { showDeleteConfirm = items.filter { it.id in selectedItems } }) {
+                            IconButton(onClick = { showDeleteConfirm = items.filter { it.selectionKey() in selectedItems } }) {
                                 Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete))
                             }
                         }
@@ -1122,10 +1122,24 @@ private fun UploadTransferBarItem(
     )
 }
 
+// H25: a Telegram message id repeats in every chat (Room's primary
+// key is the (id, parentChatId) pair), so a bare id is not an identity.
+// Selection keys, Lazy keys and bulk-action filters all use the
+// (parentChatId, id) pair — selecting a file in one chat must never
+// select, download or delete the same-id file in another chat.
+private fun DriveItem.selectionKey(): String = "$parentChatId:$id"
+
 private fun findItemTransfer(transfers: Map<String, TransferInfo>, item: DriveItem): TransferInfo? {
     if (item !is DriveItem.File) return null
+    // M20: match by Telegram unique id, then by TDLib file id only —
+    // never by file name: two different files with the same name would
+    // show each other's progress, and pause/cancel would hit the wrong
+    // row. The file-id fallback is guarded against 0 (unset), which
+    // would otherwise match every not-yet-sent transfer.
     return transfers[item.remoteUniqueId]
-        ?: transfers.values.find { it.fileId == item.telegramFileId || it.fileName == item.name }
+        ?: item.telegramFileId.takeIf { it != 0 }?.let { fid ->
+            transfers.values.find { it.fileId == fid }
+        }
 }
 
 @Composable
@@ -1134,10 +1148,10 @@ private fun HomeDriveItemsList(
     transfersFlow: StateFlow<Map<String, TransferInfo>>,
     isGridView: Boolean,
     contentMatchedIds: Set<Long> = emptySet(),
-    selectedItems: Set<Long>,
+    selectedItems: Set<String>,
     isSelectionMode: Boolean,
-    onToggleSelection: (Long) -> Unit,
-    onSelectOnly: (Long) -> Unit,
+    onToggleSelection: (String) -> Unit,
+    onSelectOnly: (String) -> Unit,
     onFileClick: (DriveItem.File) -> Unit,
     onNavigateToFolder: (Long?, String?, String?) -> Unit,
     onToggleStarred: (DriveItem) -> Unit,
@@ -1158,17 +1172,17 @@ private fun HomeDriveItemsList(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier.fillMaxSize()
         ) {
-            items(items, key = { it.id }) { item ->
-                val isSelected = selectedItems.contains(item.id)
+            items(items, key = { it.selectionKey() }) { item ->
+                val isSelected = selectedItems.contains(item.selectionKey())
                 DriveGridItem(
                     item = item, isSelected = isSelected, activeTransfer = findItemTransfer(transfers, item),
                     matchedInContent = contentMatchedIds.contains(item.id),
                     onClick = {
-                        if (isSelectionMode) onToggleSelection(item.id)
+                        if (isSelectionMode) onToggleSelection(item.selectionKey())
                         else if (item is DriveItem.File) onFileClick(item)
                         else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                     },
-                    onLongClick = { if (!isSelectionMode) onSelectOnly(item.id) },
+                    onLongClick = { if (!isSelectionMode) onSelectOnly(item.selectionKey()) },
                     onStarClick = { onToggleStarred(item) },
                     onShareClick = { onShareClick(item) },
                     onDownloadClick = {
@@ -1189,17 +1203,17 @@ private fun HomeDriveItemsList(
             contentPadding = PaddingValues(bottom = 88.dp, top = 4.dp),
             modifier = Modifier.fillMaxSize()
         ) {
-            items(items, key = { it.id }) { item ->
-                val isSelected = selectedItems.contains(item.id)
+            items(items, key = { it.selectionKey() }) { item ->
+                val isSelected = selectedItems.contains(item.selectionKey())
                 DriveListItem(
                     item = item, isSelected = isSelected, activeTransfer = findItemTransfer(transfers, item),
                     matchedInContent = contentMatchedIds.contains(item.id),
                     onClick = {
-                        if (isSelectionMode) onToggleSelection(item.id)
+                        if (isSelectionMode) onToggleSelection(item.selectionKey())
                         else if (item is DriveItem.File) onFileClick(item)
                         else if (item is DriveItem.Folder) onNavigateToFolder(null, item.virtualId, item.name)
                     },
-                    onLongClick = { if (!isSelectionMode) onSelectOnly(item.id) },
+                    onLongClick = { if (!isSelectionMode) onSelectOnly(item.selectionKey()) },
                     onStarClick = { onToggleStarred(item) },
                     onShareClick = { onShareClick(item) },
                     onDownloadClick = {
@@ -1541,8 +1555,8 @@ fun GoogleFilesDashboardSection(
             }
         } else {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                items(recentFiles.take(10), key = { it.id }) { file ->
-                    val activeTransfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId == file.telegramFileId || it.fileName == file.name }
+                items(recentFiles.take(10), key = { it.selectionKey() }) { file ->
+                    val activeTransfer = findItemTransfer(transfers, file)
                     RecentOpenedFileCard(
                         file = file, activeTransfer = activeTransfer,
                         onClick = { onOpenFile(file) },

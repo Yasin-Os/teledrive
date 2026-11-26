@@ -34,14 +34,14 @@ class AuthRepository @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // ইউজার আগে থেকে লগইন করা থাকলে শুরু থেকেই Authenticated থাকবে, যাতে ভুল করেও LoginScreen না দেখায়
-    private val _authState = MutableStateFlow<AuthState>(
-        if (secureSettings.getBoolean("active_provider_telegram", false)) {
-            AuthState.Authenticated
-        } else {
-            AuthState.Loading
-        }
-    )
+    // H24: the saved "authenticated" flag is not trusted as the
+    // start state. A dead TDLib client could otherwise sit on a wrong
+    // Authenticated forever without TDLib ever confirming it. Start at
+    // Loading; the init block asks TDLib for its real authorization
+    // state and handleAuthorizationState moves from there. The login
+    // screen is not flashed: it only navigates on a non-Loading,
+    // non-Success login state.
+    private val _authState = MutableStateFlow<AuthState>(AuthState.Loading)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
     private val _tdAuthState = MutableStateFlow<TdApi.AuthorizationState?>(null)
@@ -82,11 +82,31 @@ class AuthRepository @Inject constructor(
                 secureSettings.saveBoolean("active_provider_telegram", true)
                 _authState.value = AuthState.Authenticated
             }
+            is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
+                // H24: the user must confirm on another device; TDLib
+                // advances on its own once they do. Surface it instead
+                // of hanging on the spinner.
+                _authState.value = AuthState.Error("Please confirm this login on your other device")
+            }
+            is TdApi.AuthorizationStateWaitRegistration -> {
+                // H24: a new account needs its Telegram registration
+                // completed first; the app cannot do that step.
+                _authState.value = AuthState.Error("Please complete Telegram registration first")
+            }
+            is TdApi.AuthorizationStateLoggingOut -> {
+                secureSettings.saveBoolean("active_provider_telegram", false)
+                _authState.value = AuthState.Unauthenticated
+            }
             is TdApi.AuthorizationStateClosed -> {
                 secureSettings.saveBoolean("active_provider_telegram", false)
                 _authState.value = AuthState.Unauthenticated
             }
-            else -> {}
+            else -> {
+                // H24: never silently swallow an authorization state —
+                // an unhandled one (e.g. WaitEncryptionKey) is logged
+                // so a stuck login can be diagnosed instead of hanging.
+                android.util.Log.w("AuthRepository", "Unhandled authorization state: $state")
+            }
         }
     }
 
