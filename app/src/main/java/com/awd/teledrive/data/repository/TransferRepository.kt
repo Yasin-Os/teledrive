@@ -527,7 +527,10 @@ class TransferRepository @Inject constructor(
             // or the queued block is relaunched below.
             val path = info.localPath
             if (info.fileId != 0 && !path.isNullOrEmpty() && File(path).exists()) {
-                telegramClient.send(TdApi.UploadFile(TdApi.InputFileLocal(path), TdApi.FileTypeDocument(), 32))
+                // NOTE: tdlibx 1.8.56 has no TdApi.UploadFile (verified
+                // against the published AAR) — PreliminaryUploadFile is
+                // its counterpart, paired with CancelPreliminaryUploadFile.
+                telegramClient.send(TdApi.PreliminaryUploadFile(TdApi.InputFileLocal(path), TdApi.FileTypeDocument(), 32))
             }
         }
         // H20: the block never started (paused while queued) — start it
