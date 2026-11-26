@@ -8,6 +8,7 @@ import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -40,6 +41,10 @@ class BackupWorker(
             driveRepository.fetchFiles()
 
             Result.success()
+        } catch (e: CancellationException) {
+            // H27: cancellation is not a failure — let it propagate so
+            // WorkManager stops the work instead of retrying it.
+            throw e
         } catch (e: Exception) {
             retryOrFail()
         }
