@@ -1,9 +1,12 @@
 package com.awd.teledrive
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,6 +45,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -51,6 +56,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -85,6 +92,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -105,20 +113,34 @@ import com.awd.teledrive.data.worker.TeleDriveWorkerManager
 import com.awd.teledrive.ui.navigation.NavGraph
 import com.awd.teledrive.ui.screens.security.SecurityViewModel
 import com.awd.teledrive.ui.theme.TeledriveTheme
+import com.awd.teledrive.ui.theme.ThemeRepository
 import com.awd.teledrive.ui.theme.ThemeViewModel
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import javax.inject.Inject
 
+private sealed interface StorageInitState {
+    data object Checking : StorageInitState
+    data object Ready : StorageInitState
+    data class Unavailable(val detail: String? = null) : StorageInitState
+}
+
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
 
+    // Lazy so a persistent SecureSettings / encrypted-DB passphrase failure
+    // never crashes MainActivity during Hilt injection before the retry UI can
+    // be rendered (F4 / H23).
     @Inject
-    lateinit var workerManager: TeleDriveWorkerManager
+    lateinit var workerManager: dagger.Lazy<TeleDriveWorkerManager>
 
     @Inject
     lateinit var secureSettings: SecureSettings
@@ -129,8 +151,14 @@ class MainActivity : AppCompatActivity() {
     @Inject
     lateinit var updateRepository: UpdateRepository
 
+    @Inject
+    lateinit var themeRepository: ThemeRepository
+
     private val securityViewModel: SecurityViewModel by viewModels()
-    private var lastPauseTime: Long = 0
+    private var lastPauseTimeElapsed: Long = 0L
+
+    private val _storageState = MutableStateFlow<StorageInitState>(StorageInitState.Checking)
+    private val isProbingStorage = AtomicBoolean(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -157,26 +185,103 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * F4 / H23: verifies that SecureSettings and the encrypted-DB passphrase
+     * can be accessed before touching Room/Hilt database consumers. Retries a
+     * few times off the main thread for transient Keystore lock hiccups; if it
+     * stays unavailable, returns a user-facing detail so the UI shows a retry
+     * screen instead of crashing or dead-ending.
+     */
+    private fun probeSecureStorageReady(): String? {
+        if (!secureSettings.isSecureStorageAvailable) {
+            repeat(3) { attempt ->
+                if (secureSettings.retryInitialization()) return@repeat
+                if (attempt < 2) runCatching { Thread.sleep(400L) }
+            }
+        }
+        if (!secureSettings.isSecureStorageAvailable) {
+            return "Encrypted storage could not be unlocked from the device Keystore."
+        }
+        val plainFile = getDatabasePath("teledrive_no_enc.db")
+        if (plainFile.exists() && plainFile.length() > 0L) {
+            return null
+        }
+        var lastError: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                val passphrase = secureSettings.getOrCreateDatabasePassphrase()
+                passphrase.fill(0)
+                return null
+            } catch (e: Exception) {
+                lastError = e
+                if (attempt < 2) runCatching { Thread.sleep(400L) }
+            }
+        }
+        Log.e("MainActivity", "Encrypted DB passphrase remains unavailable", lastError)
+        return lastError?.message ?: "Could not retrieve the encrypted database key."
+    }
+
+    private suspend fun checkSecureStorageAvailability() {
+        if (!isProbingStorage.compareAndSet(false, true)) return
+        try {
+            _storageState.value = StorageInitState.Checking
+            val failureDetail = withContext(Dispatchers.IO) {
+                probeSecureStorageReady()
+            }
+            if (failureDetail == null) {
+                themeRepository.reloadFromStorage()
+                _storageState.value = StorageInitState.Ready
+            } else {
+                _storageState.value = StorageInitState.Unavailable(failureDetail)
+            }
+        } finally {
+            isProbingStorage.set(false)
+        }
+    }
+
+    private fun restartApp() {
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        if (intent != null) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+        }
+        finish()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         checkAndRequestPermissions()
 
+        lifecycleScope.launch {
+            checkSecureStorageAvailability()
+        }
+
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
-                    val now = System.currentTimeMillis()
-                    if (lastPauseTime != 0L && (now - lastPauseTime > 15_000)) {
-                        securityViewModel.setLocked(true)
+                    if (_storageState.value is StorageInitState.Unavailable) {
+                        lifecycleScope.launch { checkSecureStorageAvailability() }
+                    } else if (_storageState.value is StorageInitState.Ready) {
+                        val now = SystemClock.elapsedRealtime()
+                        if (lastPauseTimeElapsed != 0L && (now < lastPauseTimeElapsed || now - lastPauseTimeElapsed > 15_000L)) {
+                            securityViewModel.setLocked(true)
+                        }
+                        lastPauseTimeElapsed = 0L
+                        if (securityViewModel.isSecureModeActive.value) {
+                            securityViewModel.checkVaultAutoLock()
+                        }
                     }
                     updateRepository.onAppResumed()
                     lifecycleScope.launch {
                         updateRepository.checkForUpdates(manual = false)
                     }
                 } else if (event == Lifecycle.Event.ON_PAUSE) {
-                    lastPauseTime = System.currentTimeMillis()
-                    // Vault 2.0: the safe-folder auto-lock timer measures
-                    // from here (persisted, so it survives process death).
-                    securityViewModel.recordVaultBackgroundedAt()
+                    lastPauseTimeElapsed = SystemClock.elapsedRealtime()
+                    if (_storageState.value is StorageInitState.Ready) {
+                        // Vault 2.0: the safe-folder auto-lock timer measures
+                        // from here (persisted, so it survives process death).
+                        securityViewModel.recordVaultBackgroundedAt()
+                    }
                 }
             },
         )
@@ -190,18 +295,22 @@ class MainActivity : AppCompatActivity() {
             val themeColor by themeViewModel.themeColor.collectAsState()
             val updateState by updateRepository.updateState.collectAsState()
             val isBannerHidden by updateRepository.isDownloadMinimized.collectAsState()
+            val storageState by _storageState.collectAsState()
 
             val darkTheme = isDarkModePref ?: isSystemInDarkTheme()
             val configuration = LocalConfiguration.current
 
             var showSplash by remember { mutableStateOf(true) }
 
-            LaunchedEffect(showSplash) {
-                if (!showSplash) {
+            LaunchedEffect(showSplash, storageState) {
+                if (!showSplash && storageState is StorageInitState.Ready) {
                     // P1-9: প্রথম ফ্রেমের পর শুরু করা — onCreate-এর ক্রিটিক্যাল পাথে নয়
                     updateRepository.checkForUpdates(manual = false)
-                    if (settingsRepository.isAutoBackupEnabled.value) {
-                        workerManager.scheduleBackup(true)
+                    runCatching {
+                        workerManager.get().scheduleCoreRefresh()
+                        if (settingsRepository.isAutoBackupEnabled.value) {
+                            workerManager.get().scheduleBackup(true)
+                        }
                     }
                     while (true) {
                         delay(5 * 60 * 1000L)
@@ -223,12 +332,33 @@ class MainActivity : AppCompatActivity() {
                             if (isSplash) {
                                 StartupSplashScreen(onFinished = { showSplash = false })
                             } else {
-                                val navController = rememberNavController()
-                                NavGraph(navController = navController)
+                                when (val currentStorage = storageState) {
+                                    is StorageInitState.Ready -> {
+                                        val navController = rememberNavController()
+                                        NavGraph(
+                                            navController = navController,
+                                            securityViewModel = securityViewModel
+                                        )
+                                    }
+                                    is StorageInitState.Checking -> {
+                                        SecureStorageCheckingScreen()
+                                    }
+                                    is StorageInitState.Unavailable -> {
+                                        SecureStorageUnavailableScreen(
+                                            detail = currentStorage.detail,
+                                            onRetry = {
+                                                lifecycleScope.launch {
+                                                    checkSecureStorageAvailability()
+                                                }
+                                            },
+                                            onRestart = { restartApp() }
+                                        )
+                                    }
+                                }
                             }
                         }
 
-                        if (!showSplash) {
+                        if (!showSplash && storageState is StorageInitState.Ready) {
                             SlimTopUpdateBar(
                                 updateState = updateState,
                                 isHidden = isBannerHidden,
@@ -256,6 +386,115 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SecureStorageCheckingScreen() {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                CircularProgressIndicator()
+                Text(
+                    text = "Unlocking secure storage...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SecureStorageUnavailableScreen(
+    detail: String?,
+    onRetry: () -> Unit,
+    onRestart: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
+                    modifier = Modifier.size(68.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Secure storage unavailable",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "MyCloud could not access your device's encrypted key store to unlock the local database. Your saved data is intact — unlock your device and try again.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                if (!detail.isNullOrBlank()) {
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onRetry,
+                    modifier = Modifier.fillMaxWidth(0.75f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = stringResource(R.string.retry))
+                }
+                OutlinedButton(
+                    onClick = onRestart,
+                    modifier = Modifier.fillMaxWidth(0.75f)
+                ) {
+                    Text(text = stringResource(R.string.restart_app))
                 }
             }
         }

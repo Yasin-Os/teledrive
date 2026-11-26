@@ -110,6 +110,7 @@ import com.awd.teledrive.data.repository.UpdateState
 import com.awd.teledrive.domain.model.CloudBackup
 import com.awd.teledrive.ui.screens.home.HomeViewModel
 import com.awd.teledrive.ui.screens.security.SecurityViewModel
+import com.awd.teledrive.ui.screens.security.activitySecurityViewModel
 import com.awd.teledrive.ui.theme.AccentCyanLight
 import com.awd.teledrive.ui.theme.AccentPink
 import com.awd.teledrive.ui.theme.AmberAccent
@@ -137,7 +138,7 @@ fun SettingsScreen(
     onNavigateToAbout: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
     themeViewModel: ThemeViewModel = hiltViewModel(),
-    securityViewModel: SecurityViewModel = hiltViewModel(),
+    securityViewModel: SecurityViewModel = activitySecurityViewModel(),
     homeViewModel: HomeViewModel = hiltViewModel(),
     backupViewModel: BackupViewModel = hiltViewModel()
 ) {
@@ -200,6 +201,8 @@ fun SettingsScreen(
             customPrefs.edit().putBoolean("delete_after_backup", enabled).apply()
         },
         onLogout = {
+            HomeViewModel.resetInitialSync()
+            securityViewModel.lockSecureMode()
             viewModel.logout()
             // L21: getLaunchIntentForPackage() is nullable — a null
             // intent used to be passed straight to startActivity(),

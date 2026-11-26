@@ -1,7 +1,6 @@
 package com.awd.teledrive.ui.screens.security
 
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -110,8 +109,29 @@ fun SecureStorageScreen(
     onNavigateToPreview: (DriveItem.File) -> Unit,
     onNavigateToTransfers: () -> Unit,
     viewModel: SecureStorageViewModel = hiltViewModel(),
-    securityViewModel: SecurityViewModel = hiltViewModel()
+    securityViewModel: SecurityViewModel = activitySecurityViewModel()
 ) {
+    val isSafePinLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
+    val isSafeFolderPinSet by securityViewModel.isSafeFolderPinSet.collectAsState()
+    val isSecureModeActive by securityViewModel.isSecureModeActive.collectAsState()
+
+    // H21: enforce the PIN/session gate inside SecureStorageScreen on every
+    // entry (and on mid-session inactivity expiry) so hidden files are never
+    // composed or revealed unless the vault is unlocked.
+    val isVaultAccessAllowed = securityViewModel.isSafeFolderAccessAllowed(
+        isPinSet = isSafeFolderPinSet,
+        isLockEnabled = isSafePinLockEnabled,
+        isSessionUnlocked = isSecureModeActive
+    )
+    if (!isVaultAccessAllowed) {
+        SecureStorageLockedGate(
+            isPinSet = isSafeFolderPinSet,
+            securityViewModel = securityViewModel,
+            onBack = onBack
+        )
+        return
+    }
+
     val items by viewModel.secureItems.collectAsState()
     val availableCloudFiles by viewModel.availableCloudFiles.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -119,8 +139,6 @@ fun SecureStorageScreen(
     val filterType by viewModel.filterType.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
 
-    val isSafePinLockEnabled by securityViewModel.isSafeFolderLockEnabled.collectAsState()
-    val isSafeFolderPinSet by securityViewModel.isSafeFolderPinSet.collectAsState()
     val isSafeFolderBiometricEnabled by securityViewModel.isSafeFolderBiometricEnabled.collectAsState()
     val safeFolderAutoLockMinutes by securityViewModel.safeFolderAutoLockMinutes.collectAsState()
     val isEncryptOnHideEnabled by viewModel.isEncryptOnHideEnabled.collectAsState()
@@ -131,7 +149,7 @@ fun SecureStorageScreen(
     // Vault 2.0 auto-lock: if the app was in the background longer than the
     // timeout, lock the vault when this screen (re)appears and go back.
     // Never fires while the vault is in the foreground.
-    val activity = context as? ComponentActivity
+    val activity = remember(context) { context.findComponentActivity() }
     DisposableEffect(activity) {
         if (activity == null) return@DisposableEffect onDispose {}
         val observer = LifecycleEventObserver { _, event ->
@@ -810,4 +828,94 @@ private fun formatFileSize(size: Long): String {
     // L28: sizes >= 1 PB used to index past the end of `units` (crash).
     val digitGroups = (log10(size.toDouble()) / log10(1024.0)).toInt().coerceAtMost(units.lastIndex)
     return String.format(Locale.getDefault(), "%.1f %s", size / 1024.0.pow(digitGroups.toDouble()), units[digitGroups])
+}
+
+/**
+ * H21: opaque locked gate shown whenever [Screen.SecureStorage] is entered or
+ * restored without an active unlocked vault session (e.g. after process death,
+ * direct navigation, or session timeout). Never renders hidden files; prompts
+ * for Safe Folder PIN / biometric unlock or lets the user navigate back.
+ */
+@Composable
+fun SecureStorageLockedGate(
+    isPinSet: Boolean,
+    securityViewModel: SecurityViewModel,
+    onBack: () -> Unit,
+    showPrompt: Boolean = true
+) {
+    var promptRequested by remember(isPinSet) { mutableStateOf(true) }
+
+    BackHandler { onBack() }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = null,
+                    modifier = Modifier.size(56.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = stringResource(R.string.safe_folder),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (isPinSet) {
+                        stringResource(R.string.vault_enter_pin)
+                    } else {
+                        "Set a PIN to protect your Safe folder"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(onClick = { promptRequested = true }) {
+                    Text(if (isPinSet) stringResource(R.string.unlock) else "Set Safe Folder PIN")
+                }
+                TextButton(onClick = onBack) {
+                    Text(stringResource(R.string.back))
+                }
+            }
+        }
+    }
+
+    if (showPrompt && promptRequested) {
+        if (isPinSet) {
+            SafeFolderUnlockDialog(
+                onUnlocked = {
+                    promptRequested = false
+                },
+                onDismiss = {
+                    promptRequested = false
+                    onBack()
+                },
+                securityViewModel = securityViewModel
+            )
+        } else {
+            CreateSafeFolderPinDialog(
+                onPinCreated = {
+                    promptRequested = false
+                },
+                onDismiss = {
+                    promptRequested = false
+                    onBack()
+                },
+                securityViewModel = securityViewModel
+            )
+        }
+    }
 }

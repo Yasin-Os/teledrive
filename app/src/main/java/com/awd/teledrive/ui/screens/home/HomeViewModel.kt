@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.data.model.TransferInfo
+import com.awd.teledrive.data.repository.AuthRepository
+import com.awd.teledrive.data.repository.AuthState
 import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.data.repository.SearchDateFilter
 import com.awd.teledrive.data.repository.SearchScope
@@ -35,6 +37,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 enum class SortOrder {
@@ -51,6 +54,7 @@ enum class CustomCategory {
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    private val authRepository: AuthRepository,
     private val driveRepository: DriveRepository,
     private val shareRepository: ShareRepository,
     private val transferRepository: TransferRepository,
@@ -61,8 +65,15 @@ class HomeViewModel @Inject constructor(
 ) : ViewModel() {
 
     companion object {
-        @Volatile
-        private var hasInitialSynced = false
+        private val hasInitialSynced = AtomicBoolean(false)
+
+        /**
+         * M13: resets the per-session initial sync gate so logging out and
+         * logging back in within the same process triggers a fresh fetchItems().
+         */
+        fun resetInitialSync() {
+            hasInitialSynced.set(false)
+        }
     }
 
     val connectivityStatus = connectivityObserver.status
@@ -350,11 +361,35 @@ class HomeViewModel @Inject constructor(
     .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
-        if (!hasInitialSynced) {
-            hasInitialSynced = true
+        if (authRepository.authState.value !is AuthState.Unauthenticated &&
+            hasInitialSynced.compareAndSet(false, true)
+        ) {
             fetchItems()
         }
+        observeAuthSessionForSync()
         startSavingRecentSearches()
+    }
+
+    // M13: keep initial sync scoped to the active auth session so logout -> login
+    // in the same process always fetches fresh items instead of staying skipped.
+    private fun observeAuthSessionForSync() {
+        viewModelScope.launch {
+            authRepository.authState.collect { state ->
+                when (state) {
+                    is AuthState.Unauthenticated,
+                    is AuthState.WaitingForCode,
+                    is AuthState.WaitingForPassword -> {
+                        hasInitialSynced.set(false)
+                    }
+                    is AuthState.Authenticated -> {
+                        if (hasInitialSynced.compareAndSet(false, true)) {
+                            fetchItems()
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        }
     }
 
     // Batch 7b: save the query only after the user stops typing for
