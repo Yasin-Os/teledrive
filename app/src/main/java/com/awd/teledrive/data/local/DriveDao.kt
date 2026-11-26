@@ -49,10 +49,20 @@ interface DriveDao {
     @Query("DELETE FROM drive_items WHERE isVirtual = 1 AND virtualId NOT IN (:ids)")
     suspend fun deleteVirtualFoldersNotInList(ids: List<String>)
 
+    @Query("DELETE FROM drive_items WHERE isVirtual = 1")
+    suspend fun deleteAllVirtualFolders()
+
     @Transaction
     suspend fun syncVirtualFolders(entities: List<DriveItemEntity>) {
         val virtualIds = entities.mapNotNull { it.virtualId }
-        deleteVirtualFoldersNotInList(virtualIds)
+        // L10: Room turns an empty list into `IN ()`, which SQLite
+        // rejects — and this is the common case (no virtual folders).
+        // An empty list means "keep none", so delete them all.
+        if (virtualIds.isEmpty()) {
+            deleteAllVirtualFolders()
+        } else {
+            deleteVirtualFoldersNotInList(virtualIds)
+        }
         insertItems(entities)
     }
 
@@ -171,10 +181,12 @@ interface DriveDao {
     @Query("DELETE FROM drive_items WHERE id < 0")
     suspend fun deletePendingItems()
 
-    @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
+    // L12: ESCAPE '\' so a literal % or _ in the query (escaped by the
+    // caller with escapeLike) matches literally, not as a wildcard.
+    @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' ESCAPE '\\' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     fun searchGlobal(query: String): Flow<List<DriveItemEntity>>
 
-    @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
+    @Query("SELECT * FROM drive_items WHERE name LIKE '%' || :query || '%' ESCAPE '\\' AND virtualParentId != 'vf_safe_space' AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC LIMIT :limit OFFSET :offset")
     fun searchGlobalPage(query: String, limit: Int, offset: Int): Flow<List<DriveItemEntity>>
 
     // ---- Batch 7b smart search ----
