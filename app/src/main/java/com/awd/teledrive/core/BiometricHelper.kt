@@ -43,9 +43,12 @@ object BiometricHelper {
                     onSuccess()
                 }
 
+                // L28: a transient bad touch is not an error — the system
+                // prompt already gives feedback and lets the user retry.
+                // Failing the whole flow here made one smudged fingerprint
+                // look like biometric was broken.
                 override fun onAuthenticationFailed() {
                     super.onAuthenticationFailed()
-                    onError("Authentication failed")
                 }
             })
 
