@@ -40,13 +40,23 @@ class SecureSettings @Inject constructor(
         sharedPreferences = try {
             createEncryptedPreferences()
         } catch (e: Exception) {
-            Log.e(TAG, "EncryptedSharedPreferences init failed, retrying after deleting possibly corrupt prefs", e)
+            // C7: NEVER delete the stored prefs file here. The previous code
+            // deleted secure_settings_v2 on ANY init failure (Keystore locked
+            // after reboot, direct boot, ...) and then rebuilt it empty — the
+            // DB passphrase, TDLib key, both PINs and the API credentials
+            // were gone for good, and the next launch created a fresh
+            // passphrase for the old encrypted DB ("file is not a database"
+            // on every launch). A transient failure leaves the secrets
+            // intact on disk, so keep the file and retry once without
+            // deleting: a later launch (after the device is unlocked) can
+            // read them again. A genuinely corrupt file stays broken, but
+            // that must never be "fixed" by silently destroying the user's
+            // secrets — it surfaces as secure storage unavailable instead.
+            Log.e(TAG, "EncryptedSharedPreferences init failed, retrying once without deleting stored secrets", e)
             try {
-                // A corrupt prefs file is the most common cause: delete it and retry once.
-                context.deleteSharedPreferences(PREFS_NAME)
                 createEncryptedPreferences()
             } catch (retryError: Exception) {
-                Log.e(TAG, "Secure storage unavailable: secrets will NOT be stored in plaintext", retryError)
+                Log.e(TAG, "Secure storage unavailable: secrets will NOT be stored in plaintext; stored secrets are kept on disk for a later launch", retryError)
                 // Remove any plaintext secrets left behind by older builds that
                 // used the insecure fallback, so they do not linger on disk.
                 try {
@@ -114,6 +124,31 @@ class SecureSettings @Inject constructor(
         return sharedPreferences?.getLong(key, defaultValue) ?: defaultValue
     }
 
+    /**
+     * Fail-closed reads for security-critical state (PIN set, lock enabled,
+     * lockout-until, attempt counts). Unlike the lenient getters above,
+     * these throw IllegalStateException when the encrypted store is
+     * unavailable, so a caller can never mistake "storage down" for "no PIN
+     * set" / "not locked" (H22: the lenient defaults fail OPEN — a null
+     * store reads as "no PIN" and "unlocked"). SecurityViewModel must use
+     * these for every lock decision.
+     */
+    fun getStringStrict(key: String, defaultValue: String? = null): String? {
+        return requirePrefs().getString(key, defaultValue)
+    }
+
+    fun getBooleanStrict(key: String, defaultValue: Boolean = false): Boolean {
+        return requirePrefs().getBoolean(key, defaultValue)
+    }
+
+    fun getIntStrict(key: String, defaultValue: Int = 0): Int {
+        return requirePrefs().getInt(key, defaultValue)
+    }
+
+    fun getLongStrict(key: String, defaultValue: Long = 0L): Long {
+        return requirePrefs().getLong(key, defaultValue)
+    }
+
     fun saveStringList(key: String, list: List<String>) {
         val data = list.joinToString(";")
         saveString(key, data)
@@ -166,7 +201,18 @@ class SecureSettings @Inject constructor(
             }
         }
         val key = ByteArray(KEY_BYTE_LENGTH).also { SecureRandom().nextBytes(it) }
-        prefs.edit().putString(prefsKey, Base64.encodeToString(key, Base64.NO_WRAP)).apply()
+        // M17: commit(), not apply(). apply() writes asynchronously: if the
+        // process dies before the flush (crash, force-stop), the next launch
+        // generates a DIFFERENT key and the database created with this one
+        // can never be opened again. A key is only returned once it is
+        // durably stored; a failed write throws instead of handing out a
+        // key that will not survive the process.
+        val persisted = prefs.edit()
+            .putString(prefsKey, Base64.encodeToString(key, Base64.NO_WRAP))
+            .commit()
+        if (!persisted) {
+            throw IllegalStateException("Failed to persist key $prefsKey: encrypted preferences write did not complete")
+        }
         return key
     }
 
