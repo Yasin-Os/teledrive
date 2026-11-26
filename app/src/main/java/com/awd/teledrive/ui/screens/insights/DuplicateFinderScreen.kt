@@ -260,7 +260,10 @@ fun DuplicateFinderScreen(
                     viewModel.deleteGroupCopies(target) { deleted ->
                         Toast.makeText(
                             context,
-                            "Deleted $deleted duplicate copies",
+                            // L26: 0 means Telegram did not confirm the
+                            // delete — say so instead of claiming success.
+                            if (deleted > 0) context.getString(R.string.dup_deleted_copies, deleted)
+                            else context.getString(R.string.dup_delete_failed),
                             Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -286,7 +289,8 @@ fun DuplicateFinderScreen(
                     viewModel.deleteAllDuplicates { deleted ->
                         Toast.makeText(
                             context,
-                            "Deleted $deleted duplicate copies",
+                            if (deleted > 0) context.getString(R.string.dup_deleted_copies, deleted)
+                            else context.getString(R.string.dup_delete_failed),
                             Toast.LENGTH_SHORT
                         ).show()
                     }
