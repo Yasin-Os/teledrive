@@ -569,4 +569,12 @@
     <string name="video_sleep_timer_off">স্লিপ টাইমার বন্ধ</string>
     <string name="video_sleep_timer_on">স্লিপ টাইমার: %1$d মিনিট</string>
     <string name="video_background_play">ব্যাকগ্রাউন্ডে চালান / অডিও হিসেবে চালান</string>
+    <string name="preview_unavailable">ফাইলটি আর পাওয়া যাচ্ছে না</string>
+    <string name="video_playback_stopped">প্লেব্যাক বন্ধ হয়েছে</string>
+    <string name="video_playback_error">প্লেব্যাক ত্রুটি: %s</string>
+    <string name="video_switch_to_video">ভিডিও মোডে যান</string>
+    <string name="video_playback_speed">গতি (%s)</string>
+    <string name="video_queue_title">প্লেলিস্ট</string>
+    <string name="video_queue_empty">প্লেলিস্টে আর কোনো ট্র্যাক নেই</string>
+    <string name="private_media_title">MyCloud মিডিয়া</string>
 </resources>

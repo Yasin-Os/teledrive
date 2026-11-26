@@ -40,6 +40,7 @@ import com.awd.teledrive.domain.model.SplitFileMaster
 import com.awd.teledrive.domain.model.TeleDriveManifest
 import com.awd.teledrive.domain.model.VirtualFolder
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -123,107 +124,115 @@ class DriveRepository @Inject constructor(
             registerRealTimeFolderWatcher()
 
             telegramClient.updates.collect { update ->
-                when (update) {
-                    is TdApi.UpdateFile -> {
-                        val file = update.file
-                        if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
-                            driveDao.updateFileLocalPaths(file.id, file.remote.uniqueId, file.local.path)
-                        }
-                    }
-                    is TdApi.UpdateMessageSendSucceeded -> {
-                        val msg = update.message
-                        val oldId = update.oldMessageId
-                        val tempId = pendingUploadTempIds.remove(oldId)
-                        val file = extractTdFileFromMessage(msg)
-
-                        // The id TDLib returns in a send callback is a
-                        // temporary local id; the final server id only
-                        // arrives here. Fix up every place that recorded
-                        // the temp id, or later edits/deletes target a
-                        // message that does not exist (MESSAGE_NOT_FOUND).
-                        if (oldId != 0L && oldId != msg.id) {
-                            if (manifestMessageId == oldId) manifestMessageId = msg.id
-                            pendingManifestPartTempIds.remove(oldId)?.let { (generation, partIndex) ->
-                                // The final id can arrive before the chunked
-                                // save's completion block adopts the
-                                // generation: then the temp id is not in
-                                // manifestPartMessageIds yet, so stash it for
-                                // the completion block to pick up.
-                                if (manifestPartMessageIds[partIndex] == oldId) {
-                                    manifestPartMessageIds[partIndex] = msg.id
-                                } else {
-                                    manifestPartFinalIds[oldId] = msg.id
-                                }
-                            }
-                            pendingSplitPartTempIds.remove(oldId)?.let { (groupId, index) ->
-                                splitUploads[groupId]?.let { state ->
-                                    synchronized(state) { state.finalPartIds[index] = msg.id }
-                                    trySendSplitMaster(state)
-                                }
-                            }
-                            // A split-master metadata message also
-                            // carries its temp id until this update.
-                            fixSplitMasterMetadataId(oldId, msg.id)
-                            synchronized(manifestLock) {
-                                val vf = currentManifest.fileMappings[oldId.toString()]
-                                if (vf != null) {
-                                    val updated = currentManifest.fileMappings.toMutableMap()
-                                    updated.remove(oldId.toString())
-                                    updated[msg.id.toString()] = vf
-                                    currentManifest = compactManifest(currentManifest.copy(fileMappings = updated))
-                                    saveCloudManifestDebounced()
-                                }
+                // H19: never let a single bad update or Room exception kill the
+                // singleton updates collector permanently.
+                try {
+                    when (update) {
+                        is TdApi.UpdateFile -> {
+                            val file = update.file
+                            if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
+                                driveDao.updateFileLocalPaths(file.id, file.remote.uniqueId, file.local.path)
                             }
                         }
+                        is TdApi.UpdateMessageSendSucceeded -> {
+                            val msg = update.message
+                            val oldId = update.oldMessageId
+                            val tempId = pendingUploadTempIds.remove(oldId)
+                            val file = extractTdFileFromMessage(msg)
 
-                        if (tempId != null || file != null) {
-                            transferRepository.completeAndCleanupTransfer(
-                                key = tempId ?: (file?.remote?.uniqueId ?: ""),
-                                uniqueId = file?.remote?.uniqueId ?: "",
-                                fileId = file?.id ?: 0,
-                                success = true
-                            )
-                        }
+                            // The id TDLib returns in a send callback is a
+                            // temporary local id; the final server id only
+                            // arrives here. Fix up every place that recorded
+                            // the temp id, or later edits/deletes target a
+                            // message that does not exist (MESSAGE_NOT_FOUND).
+                            if (oldId != 0L && oldId != msg.id) {
+                                if (manifestMessageId == oldId) manifestMessageId = msg.id
+                                pendingManifestPartTempIds.remove(oldId)?.let { (generation, partIndex) ->
+                                    // The final id can arrive before the chunked
+                                    // save's completion block adopts the
+                                    // generation: then the temp id is not in
+                                    // manifestPartMessageIds yet, so stash it for
+                                    // the completion block to pick up.
+                                    if (manifestPartMessageIds[partIndex] == oldId) {
+                                        manifestPartMessageIds[partIndex] = msg.id
+                                    } else {
+                                        manifestPartFinalIds[oldId] = msg.id
+                                    }
+                                }
+                                pendingSplitPartTempIds.remove(oldId)?.let { (groupId, index) ->
+                                    splitUploads[groupId]?.let { state ->
+                                        synchronized(state) { state.finalPartIds[index] = msg.id }
+                                        trySendSplitMaster(state)
+                                    }
+                                }
+                                // A split-master metadata message also
+                                // carries its temp id until this update.
+                                fixSplitMasterMetadataId(oldId, msg.id)
+                                synchronized(manifestLock) {
+                                    val vf = currentManifest.fileMappings[oldId.toString()]
+                                    if (vf != null) {
+                                        val updated = currentManifest.fileMappings.toMutableMap()
+                                        updated.remove(oldId.toString())
+                                        updated[msg.id.toString()] = vf
+                                        currentManifest = compactManifest(currentManifest.copy(fileMappings = updated))
+                                        saveCloudManifestDebounced()
+                                    }
+                                }
+                            }
 
-                        pendingBackupKeys.remove(oldId)?.let { bKey ->
-                            inFlightBackupKeys.remove(bKey)
-                            markFileBackedUp(bKey)
-                        }
-
-                        if (msg.chatId == savedMessagesChatId || msg.chatId == legacySavedMessagesId || savedMessagesChatId == 0L) {
-                            mapMessageToEntity(msg.chatId, msg)?.let { entity ->
-                                val cleanEntity = entity.copy(
-                                    parentChatId = if (savedMessagesChatId != 0L) savedMessagesChatId else msg.chatId,
-                                    localPath = null
+                            if (tempId != null || file != null) {
+                                transferRepository.completeAndCleanupTransfer(
+                                    key = tempId ?: (file?.remote?.uniqueId ?: ""),
+                                    uniqueId = file?.remote?.uniqueId ?: "",
+                                    fileId = file?.id ?: 0,
+                                    success = true
                                 )
-                                driveDao.insertItemsPreservingStarred(listOf(cleanEntity))
                             }
-                        }
 
-                        // Auto-delete only once the upload is confirmed: a
-                        // sent message alone does not prove the file bytes
-                        // arrived. Delete now only if this message's own file
-                        // reports the upload complete; otherwise leave the
-                        // delete to the transfer-completion path, which
-                        // removes the phone file after waitForCompletion
-                        // reports success.
-                        pendingAutoDeleteFiles.remove(oldId)?.let { phoneFile ->
-                            if (file?.remote?.isUploadingCompleted == true) {
-                                deletePhoneFileCompletely(phoneFile)
-                            } else {
-                                Log.w("DriveRepo", "Auto-delete deferred for $oldId: upload not yet confirmed")
+                            pendingBackupKeys.remove(oldId)?.let { bKey ->
+                                inFlightBackupKeys.remove(bKey)
+                                markFileBackedUp(bKey)
+                            }
+
+                            if (msg.chatId == savedMessagesChatId || msg.chatId == legacySavedMessagesId || savedMessagesChatId == 0L) {
+                                mapMessageToEntity(msg.chatId, msg)?.let { entity ->
+                                    val cleanEntity = entity.copy(
+                                        parentChatId = if (savedMessagesChatId != 0L) savedMessagesChatId else msg.chatId,
+                                        localPath = null
+                                    )
+                                    driveDao.insertItemsPreservingStarred(listOf(cleanEntity))
+                                }
+                            }
+
+                            // Auto-delete only once the upload is confirmed: a
+                            // sent message alone does not prove the file bytes
+                            // arrived. Delete now only if this message's own file
+                            // reports the upload complete; otherwise leave the
+                            // delete to the transfer-completion path, which
+                            // removes the phone file after waitForCompletion
+                            // reports success.
+                            pendingAutoDeleteFiles.remove(oldId)?.let { phoneFile ->
+                                if (file?.remote?.isUploadingCompleted == true) {
+                                    deletePhoneFileCompletely(phoneFile)
+                                } else {
+                                    Log.w("DriveRepo", "Auto-delete deferred for $oldId: upload not yet confirmed")
+                                }
+                            }
+                        }
+                        is TdApi.UpdateMessageSendFailed -> {
+                            val oldId = update.oldMessageId
+                            val tempId = pendingUploadTempIds.remove(oldId)
+                            pendingAutoDeleteFiles.remove(oldId)
+                            pendingBackupKeys.remove(oldId)?.let { inFlightBackupKeys.remove(it) }
+                            if (tempId != null) {
+                                transferRepository.completeAndCleanupTransfer(tempId, success = false)
                             }
                         }
                     }
-                    is TdApi.UpdateMessageSendFailed -> {
-                        val oldId = update.oldMessageId
-                        val tempId = pendingUploadTempIds.remove(oldId)
-                        pendingAutoDeleteFiles.remove(oldId)
-                        pendingBackupKeys.remove(oldId)?.let { inFlightBackupKeys.remove(it) }
-                        if (tempId != null) {
-                            transferRepository.completeAndCleanupTransfer(tempId, success = false)
-                        }
-                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("DriveRepo", "Error handling TDLib update ${update::class.simpleName}", e)
                 }
             }
         }
@@ -1465,13 +1474,22 @@ class DriveRepository @Inject constructor(
                             backups += CloudBackup(byIndex[1]!!.first, generation, manifest.virtualFolders.size)
                         }
                     }
-                    onResult(backups.sortedByDescending { it.date })
-                } else onResult(emptyList())
+                    val sorted = backups.sortedByDescending { it.date }
+                    scope.launch(Dispatchers.Main) { onResult(sorted) }
+                } else {
+                    scope.launch(Dispatchers.Main) { onResult(emptyList()) }
+                }
             }
         }
     }
 
     fun restoreManifestFromMessage(messageId: Long, onResult: (Boolean) -> Unit) {
+        // H5: TDLib invokes result callbacks on a background thread without a
+        // Looper; always post the caller callback (which shows Toasts in
+        // SettingsScreen) onto Dispatchers.Main.
+        val deliverOnMain: (Boolean) -> Unit = { ok ->
+            scope.launch(Dispatchers.Main) { onResult(ok) }
+        }
         ensureSavedMessagesChat { chatId ->
             telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
                 if (result is TdApi.Message && result.content is TdApi.MessageText) {
@@ -1483,20 +1501,20 @@ class DriveRepository @Inject constructor(
                         val firstPart = parseManifestPart(text, result.date)
                         if (firstPart == null) {
                             Log.e("DriveRepo", "Chunked backup restore failed: part message $messageId has a malformed header")
-                            onResult(false)
+                            deliverOnMain(false)
                         } else {
-                            restoreChunkedBackup(chatId, firstPart.generation, onResult)
+                            restoreChunkedBackup(chatId, firstPart.generation, deliverOnMain)
                         }
                     } else {
                         val jsonStartIndex = text.indexOf('{')
                         if (jsonStartIndex != -1) {
                             try {
                                 applyRestoredManifest(json.decodeFromString<TeleDriveManifest>(text.substring(jsonStartIndex)))
-                                onResult(true)
-                            } catch (e: Exception) { onResult(false) }
-                        } else onResult(false)
+                                deliverOnMain(true)
+                            } catch (e: Exception) { deliverOnMain(false) }
+                        } else deliverOnMain(false)
                     }
-                } else onResult(false)
+                } else deliverOnMain(false)
             }
         }
     }
@@ -2943,7 +2961,9 @@ class DriveRepository @Inject constructor(
     fun saveToPublicStorage(file: DriveItem.File) {
         val source = verifyOfflinePath(file.localPath)?.let { File(it) }
         if (source == null) {
-            Toast.makeText(context, "আগে ফাইলটি অফলাইনে ডাউনলোড হতে দিন", Toast.LENGTH_SHORT).show()
+            scope.launch(Dispatchers.Main) {
+                Toast.makeText(context, "আগে ফাইলটি অফলাইনে ডাউনলোড হতে দিন", Toast.LENGTH_SHORT).show()
+            }
             return
         }
         if (file.isEncrypted) {

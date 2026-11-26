@@ -9,6 +9,7 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -91,6 +92,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -101,6 +103,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -139,10 +142,14 @@ import com.awd.teledrive.ui.theme.DeleteRed
 import com.awd.teledrive.ui.theme.PreviewBackground
 import com.awd.teledrive.ui.theme.PreviewPanelDark
 import com.awd.teledrive.ui.theme.StarGold
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -157,22 +164,93 @@ fun PreviewScreen(
     onOpenText: (String) -> Unit,
     viewModel: PreviewViewModel = hiltViewModel(),
 ) {
-    val items by viewModel.items.collectAsState()
+    val itemsState by viewModel.itemsState.collectAsState()
     val transfers by viewModel.transfers.collectAsState()
     val decryptedPaths by viewModel.decryptedPaths.collectAsState()
     val isDecrypting by viewModel.isDecrypting.collectAsState()
     val isOpening by viewModel.isOpening.collectAsState()
 
-    if (items.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = Color.White)
+    // M22: guard against an infinite loading spinner if DB never emits or emits empty.
+    var loadTimedOut by remember { mutableStateOf(false) }
+    LaunchedEffect(itemsState) {
+        if (itemsState == null) {
+            delay(5000)
+            loadTimedOut = true
+        } else {
+            loadTimedOut = false
+        }
+    }
+
+    val loadedItems = itemsState
+    if (loadedItems == null && !loadTimedOut) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(8.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back), tint = Color.White)
+            }
+            CircularProgressIndicator(
+                color = Color.White,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+    } else if (loadedItems.isNullOrEmpty()) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(8.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back), tint = Color.White)
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.7f),
+                    modifier = Modifier.size(56.dp)
+                )
+                Text(
+                    text = stringResource(R.string.preview_unavailable),
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center
+                )
+                OutlinedButton(onClick = onBack) {
+                    Text(stringResource(R.string.back), color = Color.White)
+                }
+            }
         }
     } else {
-        val initialPage = remember { viewModel.getInitialIndex().coerceIn(0, (items.size - 1).coerceAtLeast(0)) }
-        val pagerState = rememberPagerState(initialPage = initialPage) { items.size }
+        // M22: key initialPage on the loaded list, and scroll once if the target
+        // file arrives on a later list emission before the user swipes.
+        val initialPage = remember(loadedItems) {
+            viewModel.getInitialIndex(loadedItems).coerceIn(0, (loadedItems.size - 1).coerceAtLeast(0))
+        }
+        val pagerState = rememberPagerState(initialPage = initialPage) { loadedItems.size }
+        var hasPositionedToInitial by remember { mutableStateOf(viewModel.hasInitialFile(loadedItems)) }
+        LaunchedEffect(loadedItems) {
+            if (!hasPositionedToInitial && viewModel.hasInitialFile(loadedItems)) {
+                val targetIndex = viewModel.getInitialIndex(loadedItems).coerceIn(0, (loadedItems.size - 1).coerceAtLeast(0))
+                pagerState.scrollToPage(targetIndex)
+                hasPositionedToInitial = true
+            }
+        }
 
         PreviewPager(
-            items = items,
+            items = loadedItems,
             transfers = transfers,
             decryptedPaths = decryptedPaths,
             isDecrypting = isDecrypting,
@@ -480,6 +558,11 @@ private fun GalleryActionButton(
     }
 }
 
+private data class PhotoEditorSaveResult(
+    val cacheFile: File,
+    val savedToGallery: Boolean
+)
+
 @Composable
 fun PhotoEditorScreen(
     imagePath: String,
@@ -491,16 +574,25 @@ fun PhotoEditorScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // Preview only ever displays the image at screen size, so decode a sampled
-    // bitmap that fits the screen instead of the full-resolution file. The
-    // full-resolution bitmap is decoded only when saving (see the Save button).
+    // H28: decode the sampled preview bitmap and compose edits off the main
+    // thread, synchronizing lifecycle access so bitmaps are recycled safely.
     val displayMetrics = context.resources.displayMetrics
-    val previewSourceBitmap = remember(imagePath) {
-        decodeSampledBitmap(
-            imagePath,
-            maxWidth = displayMetrics.widthPixels,
-            maxHeight = displayMetrics.heightPixels
-        )
+    val bitmapMutex = remember(imagePath) { Mutex() }
+    var previewSourceBitmap by remember(imagePath) { mutableStateOf<Bitmap?>(null) }
+    var previewBitmap by remember(imagePath) { mutableStateOf<Bitmap?>(null) }
+    var previewLoadDone by remember(imagePath) { mutableStateOf(false) }
+
+    LaunchedEffect(imagePath) {
+        val maxW = displayMetrics.widthPixels.coerceAtLeast(1)
+        val maxH = displayMetrics.heightPixels.coerceAtLeast(1)
+        val decoded = withContext(Dispatchers.IO) {
+            decodeSampledBitmap(imagePath, maxWidth = maxW, maxHeight = maxH)
+        }
+        previewSourceBitmap = decoded
+        previewLoadDone = true
+        if (decoded == null) {
+            onCancel()
+        }
     }
 
     var activeTab by remember { mutableIntStateOf(0) }
@@ -529,29 +621,78 @@ fun PhotoEditorScreen(
 
     var selectedFilter by remember { mutableStateOf("Original") }
 
-    var cropLeft by remember { mutableFloatStateOf(0.05f) }
-    var cropTop by remember { mutableFloatStateOf(0.05f) }
-    var cropRight by remember { mutableFloatStateOf(0.95f) }
-    var cropBottom by remember { mutableFloatStateOf(0.95f) }
+    // H28: default crop covers the full image (0..1) and is only applied on
+    // Save when the user actually adjusted the crop region.
+    var cropLeft by remember { mutableFloatStateOf(0f) }
+    var cropTop by remember { mutableFloatStateOf(0f) }
+    var cropRight by remember { mutableFloatStateOf(1f) }
+    var cropBottom by remember { mutableFloatStateOf(1f) }
+    var hasUserCropped by remember { mutableStateOf(false) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
 
-    val previewBitmap = remember(previewSourceBitmap, rotationDegrees, flipHorizontal, debouncedBrightness, debouncedContrast, debouncedSaturation, selectedFilter) {
-        previewSourceBitmap?.let { src ->
-            renderEditedBitmap(
-                source = src,
-                rotation = rotationDegrees,
-                flipH = flipHorizontal,
-                brightness = debouncedBrightness,
-                contrast = debouncedContrast,
-                saturation = debouncedSaturation,
-                filterName = selectedFilter,
-                cropRect = null
-            )
+    LaunchedEffect(
+        previewSourceBitmap,
+        rotationDegrees,
+        flipHorizontal,
+        debouncedBrightness,
+        debouncedContrast,
+        debouncedSaturation,
+        selectedFilter
+    ) {
+        val src = previewSourceBitmap ?: return@LaunchedEffect
+        val rendered = bitmapMutex.withLock {
+            if (src.isRecycled) {
+                null
+            } else {
+                withContext(Dispatchers.Default) {
+                    if (src.isRecycled) {
+                        null
+                    } else {
+                        renderEditedBitmap(
+                            source = src,
+                            rotation = rotationDegrees,
+                            flipH = flipHorizontal,
+                            brightness = debouncedBrightness,
+                            contrast = debouncedContrast,
+                            saturation = debouncedSaturation,
+                            filterName = selectedFilter,
+                            cropRect = null
+                        )
+                    }
+                }
+            }
+        }
+        if (rendered != null) {
+            val previous = previewBitmap
+            previewBitmap = rendered
+            if (previous != null && previous !== rendered && previous !== src && !previous.isRecycled) {
+                // Wait one frame so Compose stops referencing the previous bitmap before recycling.
+                withFrameNanos { }
+                if (!previous.isRecycled) previous.recycle()
+            }
         }
     }
 
-    if (previewSourceBitmap == null) {
-        LaunchedEffect(Unit) { onCancel() }
+    DisposableEffect(imagePath) {
+        onDispose {
+            val srcToRecycle = previewSourceBitmap
+            val prevToRecycle = previewBitmap
+            previewSourceBitmap = null
+            previewBitmap = null
+            CoroutineScope(Dispatchers.IO).launch {
+                bitmapMutex.withLock {
+                    if (prevToRecycle != null && prevToRecycle !== srcToRecycle && !prevToRecycle.isRecycled) {
+                        prevToRecycle.recycle()
+                    }
+                    if (srcToRecycle != null && !srcToRecycle.isRecycled) {
+                        srcToRecycle.recycle()
+                    }
+                }
+            }
+        }
+    }
+
+    if (previewLoadDone && previewSourceBitmap == null) {
         return
     }
 
@@ -579,6 +720,11 @@ fun PhotoEditorScreen(
             )
             Button(
                 onClick = {
+                    val effectiveCropRect = if (hasUserCropped && (cropLeft > 0f || cropTop > 0f || cropRight < 1f || cropBottom < 1f)) {
+                        Rect(cropLeft, cropTop, cropRight, cropBottom)
+                    } else {
+                        null
+                    }
                     scope.launch(Dispatchers.IO) {
                         // Full resolution only when saving: decode the original
                         // file here on IO instead of holding it in memory
@@ -591,8 +737,9 @@ fun PhotoEditorScreen(
                             }
                             return@launch
                         }
+                        var finalBmp: Bitmap? = null
                         try {
-                            val finalBmp = renderEditedBitmap(
+                            finalBmp = renderEditedBitmap(
                                 source = fullBitmap,
                                 rotation = rotationDegrees,
                                 flipH = flipHorizontal,
@@ -600,22 +747,38 @@ fun PhotoEditorScreen(
                                 contrast = contrast,
                                 saturation = saturation,
                                 filterName = selectedFilter,
-                                cropRect = Rect(cropLeft, cropTop, cropRight, cropBottom)
+                                cropRect = effectiveCropRect
                             )
-                            val outFile = saveBitmapToGalleryAndCache(
+                            val saveResult = saveBitmapToGalleryAndCache(
                                 context = context,
                                 bitmap = finalBmp,
                                 fileName = "Edited_$fileName",
                                 saveToGallery = allowPublicGallery
                             )
                             withContext(Dispatchers.Main) {
-                                if (allowPublicGallery && outFile != null) {
-                                    Toast.makeText(context, context.getString(R.string.saved_to_gallery), Toast.LENGTH_SHORT).show()
+                                if (saveResult == null) {
+                                    Toast.makeText(context, context.getString(R.string.save_failed), Toast.LENGTH_SHORT).show()
+                                    onCancel()
+                                } else {
+                                    if (allowPublicGallery) {
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(
+                                                if (saveResult.savedToGallery) R.string.saved_to_gallery else R.string.save_failed
+                                            ),
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                    onSaveEdited(saveResult.cacheFile)
                                 }
-                                if (outFile != null) onSaveEdited(outFile) else onCancel()
                             }
                         } finally {
-                            fullBitmap.recycle()
+                            if (finalBmp != null && finalBmp !== fullBitmap && !finalBmp.isRecycled) {
+                                finalBmp.recycle()
+                            }
+                            if (!fullBitmap.isRecycled) {
+                                fullBitmap.recycle()
+                            }
                         }
                     }
                 }
@@ -634,13 +797,16 @@ fun PhotoEditorScreen(
                 .padding(20.dp)
                 .onSizeChanged { boxSize = it }
         ) {
-            if (previewBitmap != null) {
+            val shownPreview = previewBitmap
+            if (shownPreview != null && !shownPreview.isRecycled) {
                 Image(
-                    bitmap = previewBitmap.asImageBitmap(),
+                    bitmap = shownPreview.asImageBitmap(),
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize()
                 )
+            } else {
+                CircularProgressIndicator(color = Color.White)
             }
 
             if (activeTab == 0) {
@@ -650,6 +816,7 @@ fun PhotoEditorScreen(
                         .pointerInput(Unit) {
                             detectDragGestures { change, dragAmount ->
                                 change.consume()
+                                hasUserCropped = true
                                 val w = size.width.toFloat().coerceAtLeast(1f)
                                 val h = size.height.toFloat().coerceAtLeast(1f)
                                 val nx = change.position.x / w
@@ -734,23 +901,35 @@ fun PhotoEditorScreen(
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
                             FilterChip(
-                                selected = false,
-                                onClick = { cropLeft = 0f; cropTop = 0f; cropRight = 1f; cropBottom = 1f },
+                                selected = !hasUserCropped,
+                                onClick = {
+                                    cropLeft = 0f; cropTop = 0f; cropRight = 1f; cropBottom = 1f
+                                    hasUserCropped = false
+                                },
                                 label = { Text(stringResource(R.string.aspect_full)) }
                             )
                             FilterChip(
                                 selected = false,
-                                onClick = { cropLeft = 0.15f; cropTop = 0.15f; cropRight = 0.85f; cropBottom = 0.85f },
+                                onClick = {
+                                    cropLeft = 0.15f; cropTop = 0.15f; cropRight = 0.85f; cropBottom = 0.85f
+                                    hasUserCropped = true
+                                },
                                 label = { Text("1:1") }
                             )
                             FilterChip(
                                 selected = false,
-                                onClick = { cropLeft = 0.1f; cropTop = 0.2f; cropRight = 0.9f; cropBottom = 0.8f },
+                                onClick = {
+                                    cropLeft = 0.1f; cropTop = 0.2f; cropRight = 0.9f; cropBottom = 0.8f
+                                    hasUserCropped = true
+                                },
                                 label = { Text("4:3") }
                             )
                             FilterChip(
                                 selected = false,
-                                onClick = { cropLeft = 0.05f; cropTop = 0.25f; cropRight = 0.95f; cropBottom = 0.75f },
+                                onClick = {
+                                    cropLeft = 0.05f; cropTop = 0.25f; cropRight = 0.95f; cropBottom = 0.75f
+                                    hasUserCropped = true
+                                },
                                 label = { Text("16:9") }
                             )
                         }
@@ -854,7 +1033,8 @@ fun PhotoEditorScreen(
                             contrast = 1f
                             saturation = 1f
                             selectedFilter = "Original"
-                            cropLeft = 0.05f; cropTop = 0.05f; cropRight = 0.95f; cropBottom = 0.95f
+                            cropLeft = 0f; cropTop = 0f; cropRight = 1f; cropBottom = 1f
+                            hasUserCropped = false
                         }
                     )
                 }
@@ -900,46 +1080,67 @@ private fun renderEditedBitmap(
         if (flipH) postScale(-1f, 1f)
     }
     val transformed = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+    var cropped: Bitmap? = null
+    try {
+        cropped = if (cropRect != null) {
+            // H28: guard coerceIn ranges for images smaller than 10px so we never
+            // pass an empty range (e.g. 0..-5) to coerceIn.
+            val minDim = minOf(10, transformed.width, transformed.height).coerceAtLeast(1)
+            val maxX = (transformed.width - minDim).coerceAtLeast(0)
+            val maxY = (transformed.height - minDim).coerceAtLeast(0)
+            val x = (cropRect.left * transformed.width).toInt().coerceIn(0, maxX)
+            val y = (cropRect.top * transformed.height).toInt().coerceIn(0, maxY)
+            val maxW = (transformed.width - x).coerceAtLeast(1)
+            val maxH = (transformed.height - y).coerceAtLeast(1)
+            val minW = minOf(minDim, maxW)
+            val minH = minOf(minDim, maxH)
+            val w = ((cropRect.right - cropRect.left) * transformed.width).toInt().coerceIn(minW, maxW)
+            val h = ((cropRect.bottom - cropRect.top) * transformed.height).toInt().coerceIn(minH, maxH)
+            Bitmap.createBitmap(transformed, x, y, w, h)
+        } else {
+            transformed
+        }
 
-    val cropped = if (cropRect != null) {
-        val x = (cropRect.left * transformed.width).toInt().coerceIn(0, transformed.width - 10)
-        val y = (cropRect.top * transformed.height).toInt().coerceIn(0, transformed.height - 10)
-        val w = ((cropRect.right - cropRect.left) * transformed.width).toInt().coerceIn(10, transformed.width - x)
-        val h = ((cropRect.bottom - cropRect.top) * transformed.height).toInt().coerceIn(10, transformed.height - y)
-        Bitmap.createBitmap(transformed, x, y, w, h)
-    } else transformed
+        val out = Bitmap.createBitmap(cropped.width.coerceAtLeast(1), cropped.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(out)
+        val cm = ColorMatrix()
 
-    val out = Bitmap.createBitmap(cropped.width, cropped.height, Bitmap.Config.ARGB_8888)
-    val canvas = AndroidCanvas(out)
-    val cm = ColorMatrix()
+        val effSat = when (filterName) {
+            "Vivid" -> saturation * 1.35f
+            "B&W" -> 0f
+            else -> saturation
+        }
+        cm.setSaturation(effSat)
 
-    val effSat = when (filterName) {
-        "Vivid" -> saturation * 1.35f
-        "B&W" -> 0f
-        else -> saturation
-    }
-    cm.setSaturation(effSat)
+        val c = if (filterName == "Vivid") contrast * 1.15f else contrast
+        val rScale = if (filterName == "Warm") c * 1.1f else c
+        val bScale = if (filterName == "Cool") c * 1.12f else c
+        val translate = (-0.5f * c + 0.5f) * 255f + brightness
 
-    val c = if (filterName == "Vivid") contrast * 1.15f else contrast
-    val rScale = if (filterName == "Warm") c * 1.1f else c
-    val bScale = if (filterName == "Cool") c * 1.12f else c
-    val translate = (-0.5f * c + 0.5f) * 255f + brightness
-
-    val contrastMatrix = ColorMatrix(
-        floatArrayOf(
-            rScale, 0f, 0f, 0f, translate,
-            0f, c, 0f, 0f, translate,
-            0f, 0f, bScale, 0f, translate,
-            0f, 0f, 0f, 1f, 0f
+        val contrastMatrix = ColorMatrix(
+            floatArrayOf(
+                rScale, 0f, 0f, 0f, translate,
+                0f, c, 0f, 0f, translate,
+                0f, 0f, bScale, 0f, translate,
+                0f, 0f, 0f, 1f, 0f
+            )
         )
-    )
-    cm.postConcat(contrastMatrix)
+        cm.postConcat(contrastMatrix)
 
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        colorFilter = ColorMatrixColorFilter(cm)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(cm)
+        }
+        canvas.drawBitmap(cropped, 0f, 0f, paint)
+        return out
+    } finally {
+        // H28: always recycle intermediate bitmaps without touching caller's source.
+        if (cropped != null && cropped !== transformed && cropped !== source && !cropped.isRecycled) {
+            cropped.recycle()
+        }
+        if (transformed !== source && !transformed.isRecycled) {
+            transformed.recycle()
+        }
     }
-    canvas.drawBitmap(cropped, 0f, 0f, paint)
-    return out
 }
 
 private fun sanitizeEditorFileName(rawName: String): String {
@@ -956,7 +1157,7 @@ private fun saveBitmapToGalleryAndCache(
     bitmap: Bitmap,
     fileName: String,
     saveToGallery: Boolean = true
-): File? {
+): PhotoEditorSaveResult? {
     return try {
         val safeName = sanitizeEditorFileName(fileName)
         val outDir = File(context.cacheDir, if (saveToGallery) "shared" else "vault_preview_tmp")
@@ -966,23 +1167,57 @@ private fun saveBitmapToGalleryAndCache(
             return null
         }
         FileOutputStream(cacheOut).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)) return null
         }
 
-        if (saveToGallery && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
-                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
-            }
-            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            if (uri != null) {
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+        var savedToGallery = false
+        if (saveToGallery) {
+            savedToGallery = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                        put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MyCloud")
+                    }
+                    val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        val wrote = context.contentResolver.openOutputStream(uri)?.use { out ->
+                            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                        } == true
+                        if (!wrote) {
+                            context.contentResolver.delete(uri, null, null)
+                        }
+                        wrote
+                    } else {
+                        false
+                    }
+                } else {
+                    // H28: pre-Android 10 (API 24-28) public Pictures save path + MediaScanner.
+                    @Suppress("DEPRECATION")
+                    val picturesDir = File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                        "MyCloud"
+                    )
+                    if (!picturesDir.exists()) picturesDir.mkdirs()
+                    val galleryFile = File(picturesDir, "edited_${System.currentTimeMillis()}_$safeName")
+                    val wrote = FileOutputStream(galleryFile).use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                    }
+                    if (wrote) {
+                        MediaScannerConnection.scanFile(
+                            context,
+                            arrayOf(galleryFile.absolutePath),
+                            arrayOf("image/jpeg"),
+                            null
+                        )
+                    }
+                    wrote
                 }
+            } catch (_: Exception) {
+                false
             }
         }
-        cacheOut
+        PhotoEditorSaveResult(cacheFile = cacheOut, savedToGallery = savedToGallery)
     } catch (e: Exception) {
         null
     }

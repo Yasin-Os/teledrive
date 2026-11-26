@@ -1,5 +1,7 @@
 package com.awd.teledrive.data.service
 
+import android.app.ForegroundServiceStartNotAllowedException
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -9,16 +11,21 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.awd.teledrive.MainActivity
 import com.awd.teledrive.R
+import com.awd.teledrive.data.model.TransferInfo
 import com.awd.teledrive.data.repository.TransferRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -33,6 +40,7 @@ class TransferService : Service() {
     private val CHANNEL_ID = "transfer_channel"
 
     companion object {
+        private const val TAG = "TransferService"
         const val ACTION_CANCEL_TRANSFER = "com.awd.teledrive.ACTION_CANCEL_TRANSFER"
         const val ACTION_CANCEL_ALL = "com.awd.teledrive.ACTION_CANCEL_ALL"
         const val ACTION_UPDATE_DOWNLOAD_FINISHED = "com.awd.teledrive.ACTION_UPDATE_DOWNLOAD_FINISHED"
@@ -47,13 +55,64 @@ class TransferService : Service() {
     // True while an in-app update APK download is in progress. Only set from
     // the start intent (EXTRA_KEEP_ALIVE_FOR_UPDATE) and cleared by the
     // ACTION_UPDATE_DOWNLOAD_FINISHED intent sent by UpdateRepository.
-    @Volatile
-    private var updateDownloadActive = false
+    // H16: exposed as StateFlow so collectLatest reacts immediately without
+    // blocking inside a while-loop.
+    private val updateDownloadActive = MutableStateFlow(false)
+    private var isInForeground = false
+
+    private fun startForegroundSafely(notification: Notification): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            isInForeground = true
+            true
+        } catch (e: Exception) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                Log.w(TAG, "Foreground service start not allowed", e)
+            } else {
+                Log.w(TAG, "startForeground failed", e)
+            }
+            isInForeground = false
+            false
+        }
+    }
+
+    private fun stopForegroundCompat() {
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (e: Exception) {
+            Log.w(TAG, "stopForeground failed", e)
+        } finally {
+            isInForeground = false
+        }
+    }
+
+    private fun activeTransfersFrom(transfers: Map<String, TransferInfo>): List<TransferInfo> {
+        return transfers.values.filter {
+            it.status != TransferRepository.Status.COMPLETED &&
+                it.status != TransferRepository.Status.CANCELLED &&
+                !it.status.startsWith(TransferRepository.Status.FAILED)
+        }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // H16: ensure foreground contract is satisfied on every start command
+        // (e.g. if started via startForegroundService) and never restart sticky
+        // with a null intent after process kill.
+        if (!isInForeground) {
+            val initialNotification = createNotification(getString(R.string.refreshing), 0f, true)
+            if (!startForegroundSafely(initialNotification)) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
+
         when (intent?.action) {
             ACTION_UPDATE_DOWNLOAD_FINISHED -> {
-                updateDownloadActive = false
+                updateDownloadActive.value = false
             }
             ACTION_CANCEL_TRANSFER -> {
                 val uniqueId = intent.getStringExtra(EXTRA_UNIQUE_ID)
@@ -63,7 +122,11 @@ class TransferService : Service() {
             }
             ACTION_CANCEL_ALL -> {
                 transferRepository.transfers.value.values
-                    .filter { it.status == TransferRepository.Status.DOWNLOADING || it.status == TransferRepository.Status.UPLOADING || it.status == TransferRepository.Status.QUEUED }
+                    .filter {
+                        it.status == TransferRepository.Status.DOWNLOADING ||
+                            it.status == TransferRepository.Status.UPLOADING ||
+                            it.status == TransferRepository.Status.QUEUED
+                    }
                     .forEach { transferRepository.cancelTransfer(it.remoteUniqueId) }
             }
         }
@@ -71,71 +134,44 @@ class TransferService : Service() {
         // normal transfer start from DriveRepository) must not clear an
         // update download that is still in progress.
         if (intent?.getBooleanExtra(EXTRA_KEEP_ALIVE_FOR_UPDATE, false) == true) {
-            updateDownloadActive = true
+            updateDownloadActive.value = true
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        
-        val notification = createNotification(getString(R.string.refreshing), 0f, true)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+
+        val initialNotification = createNotification(getString(R.string.refreshing), 0f, true)
+        if (!startForegroundSafely(initialNotification)) {
+            stopSelf()
+            return
         }
-        
+
         serviceScope.launch {
-            delay(800)
-            transferRepository.transfers.collectLatest { transfers ->
-                val transferring = transfers.values.filter { 
-                    it.status != TransferRepository.Status.COMPLETED && 
-                    it.status != TransferRepository.Status.CANCELLED && 
-                    !it.status.startsWith(TransferRepository.Status.FAILED)
-                }
-                
+            combine(transferRepository.transfers, updateDownloadActive) { transfers, updateActive ->
+                transfers to updateActive
+            }.collectLatest { (transfers, updateActive) ->
+                val transferring = activeTransfersFrom(transfers)
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                
+
                 if (transferring.isEmpty()) {
-                    // No transfers are running. Normally the service stops
-                    // here, but an in-app update download is NOT a
-                    // TransferRepository transfer, so the list stays empty
-                    // for the whole download — stopping here is what used to
-                    // kill the download after ~4s (P1-16). Wait out the
-                    // update download instead; UpdateRepository clears the
-                    // flag when the download finishes or is cancelled, and
-                    // the service then stops as before. The loop (rather
-                    // than a single check) also covers the race where an
-                    // update download starts while the 3s grace delay below
-                    // is already running.
-                    var doneWaiting = false
-                    while (!doneWaiting) {
-                        while (updateDownloadActive) {
-                            delay(3000)
-                        }
-                        delay(3000)
-                        val stillEmpty = transferRepository.transfers.value.values.none {
-                            it.status != TransferRepository.Status.COMPLETED &&
-                            it.status != TransferRepository.Status.CANCELLED &&
-                            !it.status.startsWith(TransferRepository.Status.FAILED)
-                        }
-                        if (stillEmpty && !updateDownloadActive) {
-                            stopForeground(STOP_FOREGROUND_REMOVE)
-                            stopSelf()
-                            doneWaiting = true
-                        } else if (!stillEmpty) {
-                            // A transfer appeared; collectLatest re-emits and
-                            // re-runs this block, so stop waiting here.
-                            doneWaiting = true
-                        }
-                        // Otherwise an update download started while we
-                        // waited: loop and wait it out instead of stopping.
+                    // P1-16 + H16: while an in-app update download is active,
+                    // simply wait for the next flow emission instead of looping
+                    // inside collectLatest. When idle, wait a short grace delay
+                    // (automatically cancelled by collectLatest if a new
+                    // transfer or update starts) before stopping the service.
+                    if (updateActive) return@collectLatest
+                    delay(3000)
+                    val stillEmpty = activeTransfersFrom(transferRepository.transfers.value).isEmpty()
+                    if (stillEmpty && !updateDownloadActive.value) {
+                        stopForegroundCompat()
+                        stopSelf()
                     }
                 } else {
-                    val activeItem = transferring.firstOrNull { 
-                        it.status == TransferRepository.Status.UPLOADING || it.status == TransferRepository.Status.DOWNLOADING 
+                    val activeItem = transferring.firstOrNull {
+                        it.status == TransferRepository.Status.UPLOADING || it.status == TransferRepository.Status.DOWNLOADING
                     } ?: transferring.first()
 
                     val queuedCount = transferring.size - 1
@@ -154,14 +190,33 @@ class TransferService : Service() {
                         activeItem.remoteUniqueId,
                         queuedCount > 0
                     )
-                    
+
                     notificationManager.notify(NOTIFICATION_ID, notification)
                 }
             }
         }
     }
 
-    private fun createNotification(content: String, progress: Float, ongoing: Boolean, uniqueId: String? = null, isMulti: Boolean = false): android.app.Notification {
+    // H16: required for targetSdk 35 dataSync foreground services (6-hour cap)
+    // to stop cleanly instead of crashing with RemoteServiceException.
+    override fun onTimeout(startId: Int) {
+        Log.w(TAG, "Foreground service timeout reached (startId=$startId); stopping")
+        stopForegroundCompat()
+        stopSelf(startId)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "Foreground service timeout reached (startId=$startId, fgsType=$fgsType); stopping")
+        stopForegroundCompat()
+        stopSelf(startId)
+    }
+
+    override fun onDestroy() {
+        serviceScope.cancel()
+        super.onDestroy()
+    }
+
+    private fun createNotification(content: String, progress: Float, ongoing: Boolean, uniqueId: String? = null, isMulti: Boolean = false): Notification {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(content)

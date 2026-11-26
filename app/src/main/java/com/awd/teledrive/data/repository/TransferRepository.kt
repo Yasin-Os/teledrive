@@ -183,57 +183,71 @@ class TransferRepository @Inject constructor(
             restorePersistedTransfers()
 
             telegramClient.fileUpdates.collect { update ->
-                val file = update.file
-                val fileId = file.id
-                val uniqueId = file.remote.uniqueId
-                val localPath = file.local.path
+                // H19: never let a single bad update or Room exception kill the
+                // singleton fileUpdates collector permanently.
+                try {
+                    val file = update.file
+                    val fileId = file.id
+                    val uniqueId = file.remote.uniqueId
+                    val localPath = file.local.path
 
-                val key = (if (uniqueId.isNotEmpty() && activeMap.containsKey(uniqueId)) uniqueId else null)
-                    ?: fileIdToKey[fileId]
-                    ?: (if (localPath.isNotEmpty()) pathToKey[localPath] else null)
-                    ?: (if (uniqueId.isNotEmpty()) idMigrationMap.entries.find { it.value == uniqueId }?.key else null)
+                    val key = (if (uniqueId.isNotEmpty() && activeMap.containsKey(uniqueId)) uniqueId else null)
+                        ?: fileIdToKey[fileId]
+                        ?: (if (localPath.isNotEmpty()) pathToKey[localPath] else null)
+                        ?: (if (uniqueId.isNotEmpty()) idMigrationMap.entries.find { it.value == uniqueId }?.key else null)
 
-                if (key == null) {
-                    if (file.local.isDownloadingCompleted && localPath.isNotEmpty()) {
-                        driveDao.updateFileLocalPaths(fileId, uniqueId, localPath)
+                    if (key == null) {
+                        if (file.local.isDownloadingCompleted && localPath.isNotEmpty()) {
+                            driveDao.updateFileLocalPaths(fileId, uniqueId, localPath)
+                        }
+                        return@collect
                     }
-                    return@collect
-                }
 
-                if (pausedIds.contains(key) || pausedIds.contains(uniqueId)) return@collect
+                    if (pausedIds.contains(key) || pausedIds.contains(uniqueId)) return@collect
 
-                val currentInfo = activeMap[key] ?: return@collect
-                val isDownload = currentInfo.isDownload
-                val done = if (isDownload) file.local.isDownloadingCompleted else file.remote.isUploadingCompleted
-                val totalSize = if (file.expectedSize > 0L) file.expectedSize else (if (file.size > 0L) file.size else currentInfo.totalSize)
-                val currentSize = if (isDownload) file.local.downloadedSize else file.remote.uploadedSize
-                val progress = if (done) 1.0f else (if (totalSize > 0L) (currentSize.toFloat() / totalSize.toFloat()).coerceIn(0.01f, 0.99f) else 0.01f)
-                val isEffectivelyCompleted = done || (totalSize > 0L && currentSize >= totalSize && (!isDownload || localPath.isNotEmpty()))
+                    val currentInfo = activeMap[key] ?: return@collect
+                    val isDownload = currentInfo.isDownload
+                    val done = if (isDownload) file.local.isDownloadingCompleted else file.remote.isUploadingCompleted
+                    val totalSize = if (file.expectedSize > 0L) file.expectedSize else (if (file.size > 0L) file.size else currentInfo.totalSize)
+                    val currentSize = if (isDownload) file.local.downloadedSize else file.remote.uploadedSize
+                    val progress = if (done) 1.0f else (if (totalSize > 0L) (currentSize.toFloat() / totalSize.toFloat()).coerceIn(0.01f, 0.99f) else 0.01f)
+                    val isEffectivelyCompleted = done || (totalSize > 0L && currentSize >= totalSize && (!isDownload || localPath.isNotEmpty()))
 
-                if (isEffectivelyCompleted) {
-                    if (isDownload && localPath.isNotEmpty()) {
-                        driveDao.updateFileLocalPaths(fileId, uniqueId, localPath)
+                    if (isEffectivelyCompleted) {
+                        if (isDownload && localPath.isNotEmpty()) {
+                            try {
+                                driveDao.updateFileLocalPaths(fileId, uniqueId, localPath)
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.e("TransferRepo", "Failed to update offline path for fileId=$fileId", e)
+                            }
+                        }
+                        completeAndCleanupTransfer(key, uniqueId, fileId, success = true)
+                        return@collect
                     }
-                    completeAndCleanupTransfer(key, uniqueId, fileId, success = true)
-                    return@collect
-                }
 
-                val now = System.currentTimeMillis()
-                val last = lastEmitTime[key] ?: 0L
-                if (now - last >= 80L) {
-                    lastEmitTime[key] = now
-                    val activeStatus = if (isDownload) Status.DOWNLOADING else Status.UPLOADING
-                    val updatedInfo = currentInfo.copy(
-                        fileId = if (fileId != 0) fileId else currentInfo.fileId,
-                        progress = progress,
-                        status = activeStatus,
-                        totalSize = totalSize,
-                        downloadedSize = currentSize,
-                        localPath = localPath.ifEmpty { currentInfo.localPath }
-                    )
-                    activeMap[key] = updatedInfo
-                    publishState()
-                    persistProgress(updatedInfo)
+                    val now = System.currentTimeMillis()
+                    val last = lastEmitTime[key] ?: 0L
+                    if (now - last >= 80L) {
+                        lastEmitTime[key] = now
+                        val activeStatus = if (isDownload) Status.DOWNLOADING else Status.UPLOADING
+                        val updatedInfo = currentInfo.copy(
+                            fileId = if (fileId != 0) fileId else currentInfo.fileId,
+                            progress = progress,
+                            status = activeStatus,
+                            totalSize = totalSize,
+                            downloadedSize = currentSize,
+                            localPath = localPath.ifEmpty { currentInfo.localPath }
+                        )
+                        activeMap[key] = updatedInfo
+                        publishState()
+                        persistProgress(updatedInfo)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("TransferRepo", "Error handling TDLib file update", e)
                 }
             }
         }
