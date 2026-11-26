@@ -1,6 +1,7 @@
 package com.awd.teledrive.ui.screens.security
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.core.BiometricHelper
@@ -37,6 +38,14 @@ class SecurityViewModel @Inject constructor(
         private const val KEY_SAFE_FOLDER_BIOMETRIC = "safe_folder_biometric_enabled"
         private const val KEY_SAFE_FOLDER_AUTO_LOCK_MINUTES = "safe_folder_auto_lock_minutes"
         private const val KEY_VAULT_BACKGROUNDED_AT = "safe_folder_backgrounded_at_ms"
+
+        // L6: lockout deadlines and the backgrounded timestamp used to run
+        // on System.currentTimeMillis() (wall clock) — moving the device
+        // clock back extended or broke a lockout. They now run on
+        // SystemClock.elapsedRealtime() (monotonic). A stored value above
+        // this threshold is a legacy wall-clock epoch-millis value and is
+        // migrated to the monotonic clock on first read (see below).
+        private const val LEGACY_WALL_CLOCK_THRESHOLD_MS = 1_000_000_000_000L
 
         /** Auto-lock choice meaning "never lock on background". */
         const val AUTO_LOCK_NEVER = -1
@@ -112,12 +121,32 @@ class SecurityViewModel @Inject constructor(
         }
     }
 
+    /**
+     * L6: reads a stored lockout deadline on the monotonic clock. A value
+     * stored before this change is wall-clock epoch millis; convert the
+     * remaining time to elapsedRealtime() once and store the migrated
+     * deadline, so an in-progress lockout survives the app update instead
+     * of looking like a ~50-year lockout (epoch millis >> ms since boot).
+     */
+    private fun readLockoutDeadline(keys: PinLockoutKeys): Long {
+        val stored = secureSettings.getLong(keys.lockoutUntil, 0L)
+        if (stored == 0L || stored < LEGACY_WALL_CLOCK_THRESHOLD_MS) return stored
+        val remainingMs = stored - System.currentTimeMillis()
+        if (remainingMs <= 0L) {
+            secureSettings.saveLong(keys.lockoutUntil, 0L)
+            return 0L
+        }
+        val migrated = SystemClock.elapsedRealtime() + remainingMs
+        secureSettings.saveLong(keys.lockoutUntil, migrated)
+        return migrated
+    }
+
     private fun isPinLocked(keys: PinLockoutKeys): Boolean {
-        return secureSettings.getLong(keys.lockoutUntil, 0L) > System.currentTimeMillis()
+        return readLockoutDeadline(keys) > SystemClock.elapsedRealtime()
     }
 
     private fun pinLockoutRemainingSeconds(keys: PinLockoutKeys): Long {
-        return ((secureSettings.getLong(keys.lockoutUntil, 0L) - System.currentTimeMillis()) / 1000)
+        return ((readLockoutDeadline(keys) - SystemClock.elapsedRealtime()) / 1000)
             .coerceAtLeast(0L)
     }
 
@@ -130,7 +159,7 @@ class SecurityViewModel @Inject constructor(
         if (attempts >= MAX_PIN_ATTEMPTS) {
             val count = secureSettings.getInt(keys.lockoutCount, 0)
             val duration = minOf(BASE_LOCKOUT_MS * (1L shl minOf(count, 4)), MAX_LOCKOUT_MS)
-            secureSettings.saveLong(keys.lockoutUntil, System.currentTimeMillis() + duration)
+            secureSettings.saveLong(keys.lockoutUntil, SystemClock.elapsedRealtime() + duration)
             secureSettings.saveInt(keys.lockoutCount, count + 1)
             secureSettings.saveInt(keys.attempts, 0)
             startTicker()
@@ -365,7 +394,22 @@ class SecurityViewModel @Inject constructor(
 
     /** Called by MainActivity when the app goes to the background. */
     fun recordVaultBackgroundedAt() {
-        secureSettings.saveLong(KEY_VAULT_BACKGROUNDED_AT, System.currentTimeMillis())
+        secureSettings.saveLong(KEY_VAULT_BACKGROUNDED_AT, SystemClock.elapsedRealtime())
+    }
+
+    /**
+     * L6: reads the stored backgrounded moment on the monotonic clock,
+     * migrating a legacy wall-clock value the same way as the lockout
+     * deadline (a clock moved backwards before the migration counts as
+     * "just backgrounded", never as "backgrounded long ago").
+     */
+    private fun readBackgroundedElapsed(): Long {
+        val stored = secureSettings.getLong(KEY_VAULT_BACKGROUNDED_AT, 0L)
+        if (stored == 0L || stored < LEGACY_WALL_CLOCK_THRESHOLD_MS) return stored
+        val elapsed = SystemClock.elapsedRealtime() - (System.currentTimeMillis() - stored)
+        val migrated = elapsed.coerceAtLeast(SystemClock.elapsedRealtime())
+        secureSettings.saveLong(KEY_VAULT_BACKGROUNDED_AT, migrated)
+        return migrated
     }
 
     private fun clearVaultBackgroundedAt() {
@@ -382,13 +426,13 @@ class SecurityViewModel @Inject constructor(
      * timestamp. No-op when the safe-folder lock is off or set to Never.
      */
     fun checkVaultAutoLock(): Boolean {
-        val backgroundedAt = secureSettings.getLong(KEY_VAULT_BACKGROUNDED_AT, 0L)
+        val backgroundedAt = readBackgroundedElapsed()
         if (backgroundedAt == 0L) return false
         clearVaultBackgroundedAt()
         if (!_isSafeFolderLockEnabled.value) return false
         val minutes = _safeFolderAutoLockMinutes.value
         if (minutes == AUTO_LOCK_NEVER) return false
-        if (System.currentTimeMillis() - backgroundedAt > minutes * 60_000L) {
+        if (SystemClock.elapsedRealtime() - backgroundedAt > minutes * 60_000L) {
             lockSecureMode()
             return true
         }
