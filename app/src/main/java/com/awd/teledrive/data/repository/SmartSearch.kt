@@ -87,7 +87,32 @@ fun sanitizeFtsQuery(raw: String): String {
         .joinToString(" AND ") { "$it*" }
 }
 
-/** Start of the day `daysAgo` days ago, in the device timezone. */
+    /**
+     * L11: start of the current calendar week (respects the device locale's
+     * first day of the week), in the device timezone.
+     */
+    private fun startOfCalendarWeekMillis(): Long {
+        val cal = Calendar.getInstance(TimeZone.getDefault())
+        cal.set(Calendar.DAY_OF_WEEK, cal.firstDayOfWeek)
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
+    }
+
+    /** L11: start of the current calendar month, in the device timezone. */
+    private fun startOfCalendarMonthMillis(): Long {
+        val cal = Calendar.getInstance(TimeZone.getDefault())
+        cal.set(Calendar.DAY_OF_MONTH, 1)
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
+    }
+
+    /** Start of the day `daysAgo` days ago, in the device timezone. */
 private fun startOfDayMillis(daysAgo: Int): Long {
     val cal = Calendar.getInstance(TimeZone.getDefault())
     cal.add(Calendar.DAY_OF_YEAR, -daysAgo)
@@ -115,6 +140,14 @@ private fun startOfDayMillis(daysAgo: Int): Long {
  * split parts and the safe space, like searchGlobal. Folders first,
  * then newest first, capped at 200 rows.
  */
+/**
+ * L12: escapes the LIKE wildcards % and _ (and the escape char itself)
+ * so a search term is matched literally.
+ */
+fun escapeLike(value: String): String {
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+}
+
 fun buildSmartSearchQuery(query: String, filters: SmartSearchFilters): SupportSQLiteQuery {
     val fts = sanitizeFtsQuery(query)
 
@@ -135,14 +168,16 @@ fun buildSmartSearchQuery(query: String, filters: SmartSearchFilters): SupportSQ
         textWhere =
             "(d.rowid IN (SELECT docid FROM drive_items_fts " +
                 "WHERE drive_items_fts MATCH ?) " +
-                "OR d.remoteUniqueId IN (SELECT remoteUniqueId FROM file_content_fts " +
-                "WHERE file_content_fts MATCH ?))"
+                "OR d.remoteUniqueId IN (SELECT remoteUniqueId FROM file_content_fts c2 " +
+                "WHERE c2.contentText MATCH ?))"
         textArgs += fts
         textArgs += fts
     } else if (query.isNotBlank()) {
         matchedExpr = "0"
-        textWhere = "d.name LIKE '%' || ? || '%'"
-        textArgs += query.trim()
+        // L12: escape LIKE wildcards so a literal % or _ in the query
+        // does not match every file.
+        textWhere = "d.name LIKE '%' || ? || '%' ESCAPE '\\'"
+        textArgs += escapeLike(query.trim())
     } else {
         matchedExpr = "0"
         textWhere = null
@@ -193,11 +228,11 @@ fun buildSmartSearchQuery(query: String, filters: SmartSearchFilters): SupportSQ
         }
         SearchDateFilter.THIS_WEEK -> {
             where += "d.createdAt >= ?"
-            filterArgs += startOfDayMillis(6)
+            filterArgs += startOfCalendarWeekMillis()
         }
         SearchDateFilter.THIS_MONTH -> {
             where += "d.createdAt >= ?"
-            filterArgs += startOfDayMillis(29)
+            filterArgs += startOfCalendarMonthMillis()
         }
         SearchDateFilter.ANY -> Unit
     }
