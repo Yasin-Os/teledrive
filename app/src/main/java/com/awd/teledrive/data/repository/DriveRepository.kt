@@ -1825,7 +1825,18 @@ class DriveRepository @Inject constructor(
             }
 
             if (sourceFile.length() > FileUtils.MAX_FILE_SIZE) {
-                if (!FileUtils.hasEnoughSpace(context, sourceFile.length())) return@ensureSavedMessagesChat
+                // M25: like the missing-file branch above, a failed space
+                // check must release the backup key and record the
+                // failure — otherwise the file can never be retried until
+                // the app restarts, and the user sees nothing.
+                if (!FileUtils.hasEnoughSpace(context, sourceFile.length())) {
+                    if (backupTrackingKey != null) {
+                        inFlightBackupKeys.remove(backupTrackingKey)
+                        recordBackupFailed(backupTrackingKey)
+                    }
+                    Log.w("DriveRepo", "Not enough space to split-upload $cleanName (${sourceFile.length()} bytes)")
+                    return@ensureSavedMessagesChat
+                }
                 startTransferService()
                 scope.launch {
                     val placeholderId = "prep_${System.currentTimeMillis()}"
