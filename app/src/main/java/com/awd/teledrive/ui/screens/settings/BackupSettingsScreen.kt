@@ -243,11 +243,11 @@ fun BackupSettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Full Phone Storage Access",
+                                text = stringResource(R.string.backup_full_access_title),
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "Required for automatic folder backup and auto-delete",
+                                text = stringResource(R.string.backup_full_access_desc),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -265,7 +265,7 @@ fun BackupSettingsScreen(
                                 }
                             }
                         ) {
-                            Text("Allow")
+                            Text(stringResource(R.string.backup_allow))
                         }
                     }
                 }
@@ -309,7 +309,7 @@ fun BackupSettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Select Phone Storage Folders",
+                    text = stringResource(R.string.backup_select_folders),
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                     modifier = Modifier.weight(1f)
                 )
