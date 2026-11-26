@@ -143,16 +143,40 @@ class AuthRepository @Inject constructor(
         secureSettings.getStoredTdlibEncryptionKey()?.let { return it }
 
         val dbDir = File("${context.filesDir.absolutePath}/tdlib")
-        val hasExistingDb = dbDir.exists() && dbDir.listFiles()?.isNotEmpty() == true
+        // M18: "any file in tdlib/" is not an existing database. A stray log
+        // or partial download used to count as one, so a fresh install never
+        // got an encrypted TDLib database. Only TDLib's own database files
+        // count: td.binlog and db.sqlite (plus their journal/wal siblings).
+        val hasExistingDb = dbDir.exists() &&
+            (dbDir.listFiles()?.any { file ->
+                file.name == "td.binlog" || file.name == "db.sqlite" ||
+                    file.name.startsWith("td.binlog.") || file.name.startsWith("db.sqlite.")
+            } == true)
         if (hasExistingDb) {
             return ByteArray(0)
         }
-        return try {
-            secureSettings.getOrCreateTdlibEncryptionKey()
-        } catch (e: Exception) {
-            android.util.Log.e("AuthRepository", "Could not store TDLib encryption key, continuing unencrypted", e)
-            ByteArray(0)
+        // A fresh install: create the key, retrying briefly — the Keystore
+        // can be momentarily unavailable. If it still cannot be stored, the
+        // install stays unencrypted (login must not break), but say so
+        // loudly: this is permanent for this install, because once TDLib
+        // creates the database unencrypted, a key can never be added later.
+        var lastError: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                return secureSettings.getOrCreateTdlibEncryptionKey()
+            } catch (e: Exception) {
+                lastError = e
+                if (attempt < 2) {
+                    runCatching { Thread.sleep(300L) }
+                }
+            }
         }
+        android.util.Log.e(
+            "AuthRepository",
+            "Could not store TDLib encryption key: this fresh install will stay unencrypted permanently",
+            lastError
+        )
+        return ByteArray(0)
     }
 
     fun saveApiCredentials(apiId: Int, apiHash: String) {
