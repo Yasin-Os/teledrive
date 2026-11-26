@@ -59,14 +59,13 @@ class MediaViewModel @Inject constructor(
         }
     }
 
-    fun moveItems(fileIds: List<Long>, targetChatId: Long) {
-        val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
+    // M29: same fix as PreviewViewModel.moveItem — move into a virtual
+    // folder, not a Telegram chat.
+    fun moveItems(fileIds: List<Long>, targetVirtualFolderId: String) {
         viewModelScope.launch {
             val files = mediaItems.value.filter { it.id in fileIds }
             files.groupBy { it.parentChatId }.forEach { (fromChatId, items) ->
-                if (fromChatId != destination) {
-                    driveRepository.moveItems(fromChatId, destination, items.map { it.id })
-                }
+                driveRepository.moveItemsToVirtualFolder(items.map { it.id }, fromChatId, targetVirtualFolderId)
             }
         }
     }
