@@ -105,9 +105,12 @@ class AuthRepository @Inject constructor(
                 "AuthRepository",
                 "Telegram API credentials are not configured; waiting for the user to enter their own API ID and API hash"
             )
-            _authState.value = AuthState.Error(
-                "Enter your API ID and API hash to continue."
-            )
+            // No credentials yet: this is the normal first-run state, not
+            // an error. Emit Unauthenticated so the login screen shows
+            // the API ID / API hash setup form. Emitting Error here left
+            // new users stuck on an infinite spinner: LoginViewModel
+            // never leaves LoginUiState.Loading on Error.
+            _authState.value = AuthState.Unauthenticated
             return
         }
 
