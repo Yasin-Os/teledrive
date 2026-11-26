@@ -41,7 +41,10 @@ class PreviewViewModel @Inject constructor(
 
     val items: StateFlow<List<DriveItem.File>> = (if (isMediaOnly) {
         driveRepository.getAllFiles().map { list ->
-            list.filter { it.mimeType.startsWith("image/") || it.mimeType.startsWith("video/") }
+            // L27: the tapped file must stay in the list even when it is
+            // not media — otherwise getInitialIndex() fell back to 0 and
+            // the preview opened the first photo/video instead.
+            list.filter { it.mimeType.startsWith("image/") || it.mimeType.startsWith("video/") || it.id == initialFileId }
         }
     } else {
         driveRepository.getItems(if (chatId != 0L) chatId else null, virtualParentId)
