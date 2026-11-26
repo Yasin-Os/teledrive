@@ -18,6 +18,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.combine
 
 @Singleton
 class TeleDriveWorkerManager @Inject constructor(
@@ -140,5 +141,15 @@ class TeleDriveWorkerManager @Inject constructor(
     // last-backup time when the run finishes.
     fun getManualBackupWorkInfo(): kotlinx.coroutines.flow.Flow<List<WorkInfo>> {
         return WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow("manual_backup_worker")
+    }
+
+    // M33: "Backup Now" enqueues a one-time "manual_backup_worker", but the
+    // progress UI only watched "media_backup_worker", so a manual backup
+    // never showed progress. This combines both workers' info. The
+    // periodic-only getBackupWorkInfo() above stays as-is for nextBackupTime.
+    fun getAllBackupWorkInfo(): kotlinx.coroutines.flow.Flow<List<WorkInfo>> {
+        return combine(getBackupWorkInfo(), getManualBackupWorkInfo()) { periodic, manual ->
+            periodic + manual
+        }
     }
 }

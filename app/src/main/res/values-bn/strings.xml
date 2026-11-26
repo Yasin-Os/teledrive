@@ -66,6 +66,7 @@
     <string name="folder">ফোল্ডার</string>
     <string name="create_new">নতুন তৈরি করুন</string>
     <string name="select_all">সব নির্বাচন করুন</string>
+    <string name="deselect_all">সব অনির্বাচন করুন</string>
     <string name="clear_selection">নির্বাচন মুছুন</string>
     <string name="delete_items">আইটেম মুছবেন?</string>
     <string name="theme_color">থিমের রং</string>
@@ -286,6 +287,8 @@
     <string name="preparing_file">ফাইল প্রস্তুত হচ্ছে</string>
     <string name="copying_to_temp">ফাইল অস্থায়ী মেমোরিতে কপি করা হচ্ছে...</string>
     <string name="save_success">Downloads-এ সংরক্ষিত হয়েছে</string>
+    <string name="save_failed">ফাইল সেভ করা যায়নি</string>
+    <string name="save_vault_locked">সেফ ফোল্ডার লক করা আছে — আনলক করে আবার চেষ্টা করুন</string>
     <string name="decrypt">ডিক্রিপ্ট</string>
     <string name="decrypting">ডিক্রিপ্ট হচ্ছে...</string>
     <string name="encrypted_file">এনক্রিপ্ট করা ফাইল</string>

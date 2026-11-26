@@ -48,7 +48,9 @@ class BackupViewModel @Inject constructor(
     val isBackupWifiOnly = settingsRepository.isBackupWifiOnlyEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), settingsRepository.isBackupWifiOnlyEnabled.value)
 
-    val backupWorkInfo = workerManager.getBackupWorkInfo()
+    // M33: watch the manual worker too, so "Backup Now" shows progress
+    // (it used to watch only the periodic worker and never showed any).
+    val backupWorkInfo = workerManager.getAllBackupWorkInfo()
 
     init {
         if (_backupFolders.value.isNotEmpty()) {

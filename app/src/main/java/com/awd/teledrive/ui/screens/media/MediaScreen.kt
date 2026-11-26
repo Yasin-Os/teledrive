@@ -42,6 +42,8 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -114,9 +116,15 @@ fun MediaContent(
     onToggleStar: (DriveItem.File) -> Unit
 ) {
     val context = LocalContext.current
-    var selectedAlbum by remember { mutableStateOf<MediaAlbum?>(null) }
+    // M37: selectedAlbum used to hold a frozen snapshot of the album's
+    // items, so delete/star inside an open album did not refresh until
+    // back. Only the album id is kept now; the album itself is derived
+    // from the live topAlbums/moreAlbums below.
+    var selectedAlbumId by remember { mutableStateOf<String?>(null) }
     var selectedItems by remember { mutableStateOf(setOf<Long>()) }
-    val isSelectionMode = selectedItems.isNotEmpty()
+    var selectionMode by remember { mutableStateOf(false) }
+    val isSelectionMode = selectionMode || selectedItems.isNotEmpty()
+    var showMoreMenu by remember { mutableStateOf(false) }
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showCreateAlbumDialog by remember { mutableStateOf(false) }
@@ -187,11 +195,18 @@ fun MediaContent(
         list
     }
 
+    // M37: derived from the live album lists, so the open album refreshes
+    // when mediaItems change (delete/star inside the album shows at once).
+    val selectedAlbum = remember(selectedAlbumId, topAlbums, moreAlbums) {
+        (topAlbums + moreAlbums).find { it.id == selectedAlbumId }
+    }
+
     BackHandler(enabled = isSelectionMode || selectedAlbum != null) {
         if (isSelectionMode) {
             selectedItems = emptySet()
+            selectionMode = false
         } else if (selectedAlbum != null) {
-            selectedAlbum = null
+            selectedAlbumId = null
         }
     }
 
@@ -234,6 +249,7 @@ fun MediaContent(
                     onDelete(itemsToDelete)
                     showDeleteConfirm = false
                     selectedItems = emptySet()
+                    selectionMode = false
                 }) { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
@@ -249,7 +265,7 @@ fun MediaContent(
                     title = { Text(stringResource(R.string.selected_count, selectedItems.size)) },
                     modifier = Modifier.statusBarsPadding(),
                     navigationIcon = {
-                        IconButton(onClick = { selectedItems = emptySet() }) {
+                        IconButton(onClick = { selectedItems = emptySet(); selectionMode = false }) {
                             Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cancel))
                         }
                     },
@@ -257,6 +273,7 @@ fun MediaContent(
                         IconButton(onClick = {
                             selectedItems.forEach { id -> mediaItems.find { it.id == id }?.let { onToggleStar(it) } }
                             selectedItems = emptySet()
+                            selectionMode = false
                         }) {
                             Icon(Icons.Default.Star, contentDescription = stringResource(R.string.add_star))
                         }
@@ -264,6 +281,7 @@ fun MediaContent(
                             val count = selectedItems.size
                             selectedItems.forEach { id -> mediaItems.find { it.id == id }?.let { onDownload(it) } }
                             selectedItems = emptySet()
+                            selectionMode = false
                             Toast.makeText(context, context.getString(R.string.starting_downloads, count), Toast.LENGTH_SHORT).show()
                         }) {
                             Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
@@ -283,7 +301,7 @@ fun MediaContent(
                     },
                     modifier = Modifier.statusBarsPadding(),
                     navigationIcon = {
-                        IconButton(onClick = { selectedAlbum = null }) {
+                        IconButton(onClick = { selectedAlbumId = null }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
                         }
                     }
@@ -303,13 +321,39 @@ fun MediaContent(
                         IconButton(onClick = { showCreateAlbumDialog = true }) {
                             Icon(Icons.Default.Add, contentDescription = "Create Album")
                         }
+                        // M37: "Select" used to open the first album instead
+                        // of entering selection mode; MoreVert did nothing.
                         IconButton(onClick = {
-                            selectedAlbum = topAlbums.firstOrNull()
+                            selectedAlbumId = topAlbums.firstOrNull()?.id
+                            selectionMode = true
                         }) {
                             Icon(Icons.Default.CheckBox, contentDescription = "Select")
                         }
-                        IconButton(onClick = {}) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                        Box {
+                            IconButton(onClick = { showMoreMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(
+                                expanded = showMoreMenu,
+                                onDismissRequest = { showMoreMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.select_all)) },
+                                    onClick = {
+                                        selectedItems = mediaItems.map { it.id }.toSet()
+                                        selectionMode = true
+                                        showMoreMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.deselect_all)) },
+                                    onClick = {
+                                        selectedItems = emptySet()
+                                        selectionMode = false
+                                        showMoreMenu = false
+                                    }
+                                )
+                            }
                         }
                     }
                     Text(
@@ -341,7 +385,7 @@ fun MediaContent(
                 items(topAlbums, key = { it.id }) { album ->
                     AlbumGridCard(
                         album = album,
-                        onClick = { selectedAlbum = album }
+                        onClick = { selectedAlbumId = album.id }
                     )
                 }
 
@@ -357,7 +401,7 @@ fun MediaContent(
                 items(moreAlbums, key = { it.id }) { album ->
                     AlbumGridCard(
                         album = album,
-                        onClick = { selectedAlbum = album }
+                        onClick = { selectedAlbumId = album.id }
                     )
                 }
             }

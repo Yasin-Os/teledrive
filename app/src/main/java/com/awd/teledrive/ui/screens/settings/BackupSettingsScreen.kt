@@ -8,6 +8,8 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Toast
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -76,7 +78,6 @@ fun BackupSettingsScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val selectedFolders by viewModel.backupFolders.collectAsState()
-    val isAutoBackupEnabled by viewModel.isAutoBackupEnabled.collectAsState()
     val availableFolders = remember { mutableStateListOf<String>() }
 
     var hasAllFilesAccess by remember {
@@ -115,7 +116,17 @@ fun BackupSettingsScreen(
             val rawPath = it.path ?: ""
             val resolvedPath = when {
                 rawPath.contains("primary:") -> "/storage/emulated/0/${rawPath.substringAfter("primary:")}"
-                rawPath.contains(":") -> "/storage/emulated/0/${rawPath.substringAfterLast(":")}"
+                // M33: a non-primary volume (SD card) used to be rewritten to
+                // /storage/emulated/0/<rel> — the wrong volume entirely, so
+                // the backup never found the files. It now maps to
+                // /storage/<volume-id>/<rel>, mirroring
+                // DriveRepository.normalizeFolderPath.
+                rawPath.contains(":") -> {
+                    val treePart = rawPath.substringAfter("/tree/").substringBefore("/document/")
+                    val volumeId = treePart.substringBefore(":")
+                    val rel = treePart.substringAfter(":")
+                    "/storage/$volumeId/$rel"
+                }
                 else -> null
             }
 
@@ -124,9 +135,9 @@ fun BackupSettingsScreen(
                 if (!availableFolders.contains(resolvedPath)) {
                     availableFolders.add(0, resolvedPath)
                 }
-                if (!isAutoBackupEnabled) {
-                    viewModel.setAutoBackupEnabled(true)
-                }
+                // M33: picking a folder used to force Auto Backup on even
+                // when the user keeps it off. The folder is recorded either
+                // way; the toggle stays the user's choice.
             } else {
                 Toast.makeText(context, context.getString(R.string.err_folder_path), Toast.LENGTH_LONG).show()
             }
@@ -135,6 +146,10 @@ fun BackupSettingsScreen(
 
     LaunchedEffect(hasAllFilesAccess, selectedFolders) {
         val folders = linkedSetOf<String>()
+        // M31: the folder scan + MediaStore queries used to run on the main
+        // thread and froze this screen on open. They now run on IO; only
+        // the final state mutation below stays on Main.
+        withContext(Dispatchers.IO) {
         val rootStorage = Environment.getExternalStorageDirectory()
 
         // ফোনের প্রধান স্টোরেজ ফোল্ডারগুলো
@@ -185,6 +200,7 @@ fun BackupSettingsScreen(
                     }
                 }
             } catch (e: Exception) { Log.w("BackupSettings", "backup folder query failed", e) }
+        }
         }
 
         folders.addAll(selectedFolders)
@@ -327,18 +343,16 @@ fun BackupSettingsScreen(
                             Checkbox(
                                 checked = isSelected,
                                 onCheckedChange = {
+                                    // M33: selecting a folder used to force
+                                    // Auto Backup on. The toggle stays the
+                                    // user's choice.
                                     viewModel.toggleBackupFolder(folderPath)
-                                    if (!isSelected && !isAutoBackupEnabled) {
-                                        viewModel.setAutoBackupEnabled(true)
-                                    }
                                 }
                             )
                         },
                         modifier = Modifier.clickable {
+                            // M33: see the checkbox above — no forced toggle.
                             viewModel.toggleBackupFolder(folderPath)
-                            if (!isSelected && !isAutoBackupEnabled) {
-                                viewModel.setAutoBackupEnabled(true)
-                            }
                         }
                     )
                     HorizontalDivider()
@@ -348,9 +362,10 @@ fun BackupSettingsScreen(
             if (selectedFolders.isNotEmpty()) {
                 Button(
                     onClick = {
-                        if (!isAutoBackupEnabled) {
-                            viewModel.setAutoBackupEnabled(true)
-                        }
+                        // M33: "Backup Now" is a manual run — it used to
+                        // force Auto Backup on. Manual backup explicitly
+                        // ignores the toggle, so it stays off unless the
+                        // user turns it on.
                         viewModel.triggerManualBackup()
                         Toast.makeText(context, backupStartedMsg, Toast.LENGTH_SHORT).show()
                     },

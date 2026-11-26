@@ -102,8 +102,14 @@ fun BackupHealthScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     SummaryRow(
                         label = stringResource(R.string.last_successful_backup),
-                        value = snap.lastSuccessfulBackupTime?.let { formatDateTime(it) }
-                            ?: stringResource(R.string.never_backed_up)
+                        // M38: lastSuccessfulBackupTime is a non-nullable Long
+                        // that is 0 when nothing was ever backed up — the old
+                        // `?.let` always ran and showed "01 Jan 1970".
+                        value = if (snap.lastSuccessfulBackupTime > 0L) {
+                            formatDateTime(snap.lastSuccessfulBackupTime)
+                        } else {
+                            stringResource(R.string.never_backed_up)
+                        }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     SummaryRow(

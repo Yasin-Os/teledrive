@@ -5,10 +5,14 @@ import android.util.Log
 import com.awd.teledrive.data.remote.TelegramClient
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,6 +29,16 @@ class SettingsRepository @Inject constructor(
         val mediaAndFiles: Long = 0,
         val database: Long = 0
     )
+
+    // H13/M31: disk-touching cache work runs here, never on the main thread.
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        // H13: the old applyCacheSettings() was only called when the user
+        // re-saved a limit — never at startup. Apply the stored limits once
+        // now, off the main thread (they touch disk and TDLib).
+        ioScope.launch { applyCacheSettings() }
+    }
 
     private val _cacheSizeLimit = MutableStateFlow(secureSettings.getLong(KEY_CACHE_SIZE_LIMIT, DEFAULT_CACHE_SIZE))
     val cacheSizeLimit = _cacheSizeLimit.asStateFlow()
@@ -87,22 +101,35 @@ class SettingsRepository @Inject constructor(
         return currentUsage > totalLimit
     }
 
+    /**
+     * H13: the old code sent two TDLib options that do not exist
+     * ("storage_max_files_size" and "storage_max_time_from_last_access") —
+     * TDLib silently ignored them, so the user's cache size/age limits did
+     * nothing. The real mechanism is the storage optimizer: enable it, then
+     * run OptimizeStorage with the user's limits. Never pass size 0 (that
+     * means "clear everything"); an unlimited size uses a huge-but-int53-safe
+     * value (2^53 - 1). Only runs when a limit is actually set.
+     */
     fun applyCacheSettings() {
         val totalLimit = _cacheSizeLimit.value
         val ageLimit = _cacheAgeLimit.value
+        if (totalLimit <= 0L && ageLimit <= 0) return
 
-        if (totalLimit == 0L) {
-            telegramClient.send(TdApi.SetOption("storage_max_files_size", TdApi.OptionValueInteger(0)))
-        } else {
-            var otherUsage = 0L
-            otherUsage += calculateDirectorySize(context.cacheDir)
-            context.externalCacheDir?.let { otherUsage += calculateDirectorySize(it) }
+        telegramClient.send(TdApi.SetOption("use_storage_optimizer", TdApi.OptionValueBoolean(true)))
 
-            val tdlibLimit = (totalLimit - otherUsage).coerceAtLeast(50 * 1024 * 1024L)
-            telegramClient.send(TdApi.SetOption("storage_max_files_size", TdApi.OptionValueInteger(tdlibLimit)))
-        }
-        
-        telegramClient.send(TdApi.SetOption("storage_max_time_from_last_access", TdApi.OptionValueInteger(ageLimit.toLong())))
+        val size = if (totalLimit > 0L) totalLimit else (1L shl 53) - 1
+        val ttl = if (ageLimit > 0) ageLimit else 0
+        telegramClient.send(TdApi.OptimizeStorage(
+            size,
+            ttl,
+            0, // count 0: no count limit
+            0, // immunityDelay 0
+            null, // all file types
+            null, // all chats
+            null, // no excluded chats
+            false, // no need for the deleted-file statistics here
+            0
+        ))
     }
 
     fun triggerCacheCheck() {
@@ -197,14 +224,24 @@ class SettingsRepository @Inject constructor(
             null
         }
         
-        // If thumbnails or "all" (null) are selected, manually clear Android cache dirs too
+        // If thumbnails or "all" (null) are selected, manually clear Android cache dirs too.
+        // M31: this used to run on the calling (main) thread and deleted
+        // everything — including "updates" (the downloaded update APK, so
+        // clearing cache broke the next update) and "image_cache" (Coil's
+        // active disk cache). It now runs on IO and skips both.
         if (fileType == null || fileType is TdApi.FileTypeThumbnail || (fileType is TdApi.FileTypeNone && !isMediaAndFiles)) {
-            try {
-                context.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
-                context.externalCacheDir?.listFiles()?.forEach { it.deleteRecursively() }
-                Log.d("SettingsRepo", "Android cache contents cleared manually")
-            } catch (e: Exception) {
-                Log.e("SettingsRepo", "Failed to clear Android cache contents", e)
+            ioScope.launch {
+                try {
+                    context.cacheDir.listFiles()?.forEach {
+                        if (it.name != "updates" && it.name != "image_cache") it.deleteRecursively()
+                    }
+                    context.externalCacheDir?.listFiles()?.forEach {
+                        if (it.name != "updates" && it.name != "image_cache") it.deleteRecursively()
+                    }
+                    Log.d("SettingsRepo", "Android cache contents cleared manually")
+                } catch (e: Exception) {
+                    Log.e("SettingsRepo", "Failed to clear Android cache contents", e)
+                }
             }
         }
 

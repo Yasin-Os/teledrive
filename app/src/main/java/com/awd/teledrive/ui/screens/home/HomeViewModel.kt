@@ -332,12 +332,14 @@ class HomeViewModel @Inject constructor(
 
         val sortedFiles = when (order) {
             SortOrder.NAME -> filteredFiles.sortedBy { it.name.lowercase() }
-            // P1-6: DATE was a no-op (returned files unsorted). DriveItem.File
-            // carries no date field — the Room createdAt is dropped when
-            // mapping to DriveItem — but Telegram message ids grow
-            // monotonically with send time within a chat, so newest-first
-            // by id is newest-first by date.
-            SortOrder.DATE -> filteredFiles.sortedByDescending { it.id }
+            // M10: DATE used to sort by message id, which is only a rough
+            // proxy for time (ids are per-chat, so files from different
+            // chats interleaved wrongly). DriveItem.File now carries
+            // createdAt (the true Telegram send time); id stays as the
+            // tie-breaker for files sent in the same second.
+            SortOrder.DATE -> filteredFiles.sortedWith(
+                compareByDescending<DriveItem.File> { it.createdAt }.thenByDescending { it.id }
+            )
             SortOrder.SIZE -> filteredFiles.sortedByDescending { it.size }
         }
 

@@ -185,10 +185,13 @@ class PreviewViewModel @Inject constructor(
         }
     }
 
-    fun moveItem(file: DriveItem.File, targetChatId: Long) {
+    // M29: the old move forwarded the file to another Telegram chat —
+    // but every user folder is a virtual folder (a synthetic local id),
+    // not a Telegram chat id, so the move went to the wrong place (and
+    // nothing in the UI ever called it). It now moves into a virtual folder.
+    fun moveItem(file: DriveItem.File, targetVirtualFolderId: String) {
         viewModelScope.launch {
-            val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
-            driveRepository.moveItems(file.parentChatId, destination, listOf(file.id))
+            driveRepository.moveItemsToVirtualFolder(listOf(file.id), file.parentChatId, targetVirtualFolderId)
         }
     }
 }

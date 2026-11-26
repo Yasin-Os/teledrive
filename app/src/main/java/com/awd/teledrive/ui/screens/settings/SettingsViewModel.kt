@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.drinkless.tdlib.TdApi
@@ -99,8 +100,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    // M31: checkCacheLimit() recursively walks filesDir/cacheDir/
+    // externalCacheDir — it used to run synchronously in init (main thread)
+    // and froze Settings on open. It now runs on IO.
     fun checkCacheLimit() {
-        _showCacheWarning.value = settingsRepository.checkCacheLimit()
+        viewModelScope.launch(Dispatchers.IO) {
+            _showCacheWarning.value = settingsRepository.checkCacheLimit()
+        }
     }
 
     fun dismissCacheWarning() {

@@ -47,7 +47,10 @@ class BackupHealthViewModel @Inject constructor(
                 null
             } else {
                 val next = info.nextScheduleTimeMillis
-                if (next > 0L) next else null
+                // M38: WorkManager returns Long.MAX_VALUE when nothing is
+                // scheduled — the old `> 0L` check let it through as a
+                // far-future date. Treat it as "not scheduled".
+                if (next > 0L && next < Long.MAX_VALUE) next else null
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
