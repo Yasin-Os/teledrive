@@ -69,6 +69,19 @@ class ContentSearchIndexer(private val driveDao: DriveDao) {
         }
     }
 
+    /**
+     * M9: backfill — index files that were never previewed. Content indexing
+     * used to run only from PreviewViewModel, so most text files were never
+     * searchable by content. The caller supplies DriveItem.File values (it
+     * maps them from entities); indexFile already filters by extension/mime,
+     * skips encrypted files, runs on IO and never throws.
+     */
+    suspend fun backfill(candidates: List<DriveItem.File>) {
+        for (file in candidates) {
+            indexFile(file)
+        }
+    }
+
     private fun isIndexable(file: DriveItem.File): Boolean {
         if (file.mimeType.startsWith("text/")) return true
         val ext = file.name.substringAfterLast('.', "").lowercase()
