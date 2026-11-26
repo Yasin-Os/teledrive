@@ -796,8 +796,6 @@ fun LoginContent(
     var numberFieldFocused by remember { mutableStateOf(false) }
     var passwordFocused by remember { mutableStateOf(false) }
 
-    var abortRetryCount by remember { mutableIntStateOf(0) }
-
     val canGoBackToPhone = uiState is LoginUiState.EnteringCode || uiState is LoginUiState.EnteringPassword
 
     BackHandler(enabled = canGoBackToPhone) {
@@ -808,7 +806,6 @@ fun LoginContent(
 
     LaunchedEffect(uiState, resendKey) {
         if (uiState is LoginUiState.EnteringCode) {
-            abortRetryCount = 0
             resendTimer = 60
             while (resendTimer > 0) {
                 delay(1000)
@@ -842,37 +839,15 @@ fun LoginContent(
         onLoginSubmit(apiId.trim(), apiHash.trim(), fullPhone)
     }
 
-    val isAbortedError = authError?.contains("Request aborted", ignoreCase = true) == true ||
-        authError?.contains("aborted", ignoreCase = true) == true
-
-    LaunchedEffect(authError, isProcessing) {
-        if (isAbortedError && !isProcessing && abortRetryCount < 3) {
-            abortRetryCount++
-            delay(450)
-            when (uiState) {
-                is LoginUiState.InitialSetup -> {
-                    if (countryCode.isNotBlank() && localPhone.length >= 6) {
-                        submitFormattedPhone()
-                    }
-                }
-                is LoginUiState.EnteringCode -> {
-                    if (code.length in 5..6) onCodeSubmit(code)
-                }
-                is LoginUiState.EnteringPassword -> {
-                    if (password.isNotBlank()) onPasswordSubmit(password)
-                }
-                else -> Unit
-            }
-        }
-    }
-
-    val displayError = if (isAbortedError && abortRetryCount < 3) null else authError
-
     // A missing-credentials error highlights only the API boxes, so the
     // phone box stays calm when the phone number itself is not the problem.
-    val apiCredentialsError = displayError?.contains("API", ignoreCase = true) == true
+    val apiCredentialsError = authError?.contains("API", ignoreCase = true) == true
 
-    val canSubmitPhone = !isProcessing && countryCode.isNotBlank() && localPhone.length >= 6 &&
+    // The dial-code field is editable, so a made-up code (e.g. 9999) must
+    // not be submittable: it has to match a real country in the app's
+    // own country list.
+    val isCountryCodeValid = findCountryByCode(countryCode.filter { it.isDigit() }) != null
+    val canSubmitPhone = !isProcessing && isCountryCodeValid && localPhone.length >= 6 &&
         apiId.trim().isNotBlank() && apiHash.trim().isNotBlank()
     val canVerify = code.length in 5..6 && !isProcessing
     val canUnlock = password.isNotBlank() && !isProcessing
@@ -887,7 +862,6 @@ fun LoginContent(
         uiState is LoginUiState.EnteringCode ||
         uiState is LoginUiState.EnteringPassword
     val onFabClick: () -> Unit = {
-        abortRetryCount = 0
         when (uiState) {
             is LoginUiState.InitialSetup -> submitFormattedPhone()
             is LoginUiState.EnteringCode -> onCodeSubmit(code)
@@ -1057,7 +1031,7 @@ fun LoginContent(
                                         NotchedGlassBox(
                                             label = LoginText.PHONE_LABEL,
                                             focused = codeFieldFocused || numberFieldFocused,
-                                            isError = displayError != null && !apiCredentialsError
+                                            isError = authError != null && !apiCredentialsError
                                         ) {
                                             Text(
                                                 text = "+",
@@ -1121,8 +1095,7 @@ fun LoginContent(
                                                 ),
                                                 keyboardActions = KeyboardActions(
                                                     onDone = {
-                                                        if (countryCode.isNotBlank() && localPhone.length >= 6 && !isProcessing) {
-                                                            abortRetryCount = 0
+                                                        if (canSubmitPhone) {
                                                             submitFormattedPhone()
                                                         }
                                                     }
@@ -1195,7 +1168,6 @@ fun LoginContent(
                                                     keyboardActions = KeyboardActions(
                                                         onDone = {
                                                             if (canSubmitPhone) {
-                                                                abortRetryCount = 0
                                                                 submitFormattedPhone()
                                                             }
                                                         }
@@ -1313,7 +1285,6 @@ fun LoginContent(
                                                 // submitted with Done / the Verify button, so typing
                                                 // a 6-digit code is not cut off at the 5th digit.
                                                 if (filtered.length == 6 && !isProcessing) {
-                                                    abortRetryCount = 0
                                                     onCodeSubmit(filtered)
                                                 }
                                             },
@@ -1324,7 +1295,6 @@ fun LoginContent(
                                             keyboardActions = KeyboardActions(
                                                 onDone = {
                                                     if (code.length in 5..6 && !isProcessing) {
-                                                        abortRetryCount = 0
                                                         onCodeSubmit(code)
                                                     }
                                                 }
@@ -1340,7 +1310,7 @@ fun LoginContent(
                                                         val char = code.getOrNull(index)?.toString() ?: ""
                                                         val isFocused = code.length == index
                                                         val boxColor = when {
-                                                            displayError != null -> GlassAlert
+                                                            authError != null -> GlassAlert
                                                             isFocused -> GlassAccent
                                                             char.isNotEmpty() -> GlassAccent.copy(alpha = 0.5f)
                                                             else -> Color.White.copy(alpha = 0.16f)
@@ -1353,7 +1323,7 @@ fun LoginContent(
                                                                 .clip(cellShape)
                                                                 .background(Color(0xFF0B1322).copy(alpha = 0.65f))
                                                                 .border(
-                                                                    width = if (isFocused || displayError != null) 1.8.dp else 1.dp,
+                                                                    width = if (isFocused || authError != null) 1.8.dp else 1.dp,
                                                                     color = boxColor,
                                                                     shape = cellShape
                                                                 ),
@@ -1416,7 +1386,7 @@ fun LoginContent(
                                         NotchedGlassBox(
                                             label = LoginText.PASSWORD_LABEL,
                                             focused = passwordFocused,
-                                            isError = displayError != null
+                                            isError = authError != null
                                         ) {
                                             BasicTextField(
                                                 value = password,
@@ -1440,7 +1410,6 @@ fun LoginContent(
                                                 keyboardActions = KeyboardActions(
                                                     onDone = {
                                                         if (password.isNotBlank() && !isProcessing) {
-                                                            abortRetryCount = 0
                                                             onPasswordSubmit(password)
                                                         }
                                                     }
@@ -1474,7 +1443,7 @@ fun LoginContent(
                         }
 
                         AnimatedVisibility(
-                            visible = displayError != null,
+                            visible = authError != null,
                             enter = fadeIn() + expandVertically(),
                             exit = fadeOut() + shrinkVertically()
                         ) {
@@ -1490,7 +1459,7 @@ fun LoginContent(
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    text = displayError ?: "",
+                                    text = authError ?: "",
                                     color = GlassAlert,
                                     fontSize = 12.5.sp,
                                     fontFamily = ModernFont,
@@ -1530,7 +1499,7 @@ fun LoginContent(
 
                             TgFab(
                                 enabled = fabEnabled,
-                                isProcessing = isProcessing || (isAbortedError && abortRetryCount < 3),
+                                isProcessing = isProcessing,
                                 onClick = onFabClick
                             )
                         }
