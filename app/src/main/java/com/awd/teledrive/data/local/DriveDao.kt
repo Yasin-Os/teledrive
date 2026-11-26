@@ -212,6 +212,17 @@ interface DriveDao {
     @Query("DELETE FROM file_content_fts WHERE remoteUniqueId = :uniqueId")
     suspend fun deleteFileContent(uniqueId: String)
 
+    // M9: files that have a local copy and a Telegram id but were never
+    // content-indexed (indexing used to run only on preview). The DAO can
+    // not filter by extension/mime here — the indexer does that per file.
+    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND isEncrypted = 0 AND localPath IS NOT NULL AND localPath != '' AND remoteUniqueId IS NOT NULL AND remoteUniqueId != '' AND remoteUniqueId NOT IN (SELECT remoteUniqueId FROM file_content_fts WHERE remoteUniqueId IS NOT NULL) LIMIT :limit")
+    suspend fun getUnindexedTextFiles(limit: Int): List<DriveItemEntity>
+
+    // M9: drop content-index rows whose file no longer exists in drive_items
+    // (delete paths used to leave them behind, so deleted files stayed searchable).
+    @Query("DELETE FROM file_content_fts WHERE remoteUniqueId NOT IN (SELECT remoteUniqueId FROM drive_items WHERE remoteUniqueId IS NOT NULL AND remoteUniqueId != '')")
+    suspend fun deleteOrphanFileContent()
+
     /**
      * file_content_fts has no UNIQUE constraint on remoteUniqueId (FTS
      * tables have none), so REPLACE would not dedupe — delete first, then
