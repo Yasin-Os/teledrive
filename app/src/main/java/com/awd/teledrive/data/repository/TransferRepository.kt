@@ -10,6 +10,7 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
+import com.awd.teledrive.R
 import com.awd.teledrive.data.local.DriveDao
 import com.awd.teledrive.data.local.TransferDao
 import com.awd.teledrive.data.local.TransferEntity
@@ -598,8 +599,21 @@ class TransferRepository @Inject constructor(
         return result
     }
 
-    fun saveToPublicDownloads(internalPath: String, fileName: String) {
+    /**
+     * M1: this used to toast success even when nothing was saved — a null
+     * MediaStore insert or a null output stream skipped the copy but still
+     * showed "Saved to Phone". It now toasts success only when bytes were
+     * actually written, and shows a failure toast otherwise. The optional
+     * [onComplete] reports the outcome to callers that need to clean up
+     * (e.g. a temp file) after the save.
+     */
+    fun saveToPublicDownloads(
+        internalPath: String,
+        fileName: String,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
         scope.launch(Dispatchers.IO) {
+            var saved = false
             try {
                 val sourceFile = File(internalPath)
                 if (!sourceFile.exists()) {
@@ -611,17 +625,10 @@ class TransferRepository @Inject constructor(
 
                 val userDownloadUri = secureSettings.getDownloadUri()
                 if (!userDownloadUri.isNullOrEmpty()) {
-                    saveToUserSelectedFolder(sourceFile, fileName, userDownloadUri)
-                    launch(Dispatchers.Main) {
-                        Toast.makeText(context, "ফোন স্টোরেজে সেভ হয়েছে: $fileName", Toast.LENGTH_SHORT).show()
-                    }
-                    return@launch
-                }
-
-                val extension = fileName.substringAfterLast('.', "").lowercase()
-                val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    saved = saveToUserSelectedFolder(sourceFile, fileName, userDownloadUri)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val extension = fileName.substringAfterLast('.', "").lowercase()
+                    val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
                     val contentValues = ContentValues().apply {
                         put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                         put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
@@ -630,10 +637,16 @@ class TransferRepository @Inject constructor(
                     val resolver = context.contentResolver
                     val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                     if (uri != null) {
-                        resolver.openOutputStream(uri)?.use { output ->
+                        // A null output stream means nothing was written.
+                        val wrote = resolver.openOutputStream(uri)?.use { output ->
                             FileInputStream(sourceFile).use { input ->
                                 input.copyTo(output, bufferSize = 512 * 1024)
                             }
+                        } != null
+                        saved = wrote
+                        if (!wrote) {
+                            // Leave no empty entry behind.
+                            resolver.delete(uri, null, null)
                         }
                     }
                 } else {
@@ -646,34 +659,56 @@ class TransferRepository @Inject constructor(
                         }
                     }
                     MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
+                    saved = destFile.exists() && destFile.length() == sourceFile.length()
+                }
+
+                val message = if (saved) {
+                    if (!userDownloadUri.isNullOrEmpty()) "ফোন স্টোরেজে সেভ হয়েছে: $fileName"
+                    else "Saved to Phone (Downloads/MyCloud): $fileName"
+                } else {
+                    context.getString(R.string.save_failed)
                 }
                 launch(Dispatchers.Main) {
-                    Toast.makeText(context, "Saved to Phone (Downloads/MyCloud): $fileName", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 Log.e("TransferRepo", "Error saving file: ${e.message}")
+                launch(Dispatchers.Main) {
+                    Toast.makeText(context, context.getString(R.string.save_failed), Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                onComplete?.invoke(saved)
             }
         }
     }
 
-    private fun saveToUserSelectedFolder(sourceFile: File, fileName: String, uriString: String) {
+    /**
+     * M1: returns true only when bytes were actually written. The old
+     * version returned nothing, so the caller toasted success even when
+     * the folder was gone, the file could not be created, or the stream
+     * was null.
+     */
+    private fun saveToUserSelectedFolder(sourceFile: File, fileName: String, uriString: String): Boolean {
         try {
             val treeUri = android.net.Uri.parse(uriString)
             val docUri = DocumentFile.fromTreeUri(context, treeUri)
             if (docUri == null || !docUri.canWrite()) {
-                secureSettings.saveDownloadUri("") 
-                return
+                secureSettings.saveDownloadUri("")
+                return false
             }
             val extension = fileName.substringAfterLast('.', "").lowercase()
             val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "*/*"
-            val newFile = docUri.createFile(mimeType, fileName)
-            if (newFile != null) {
-                context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
-                    FileInputStream(sourceFile).use { input ->
-                        input.copyTo(output, bufferSize = 512 * 1024)
-                    }
+            val newFile = docUri.createFile(mimeType, fileName) ?: return false
+            // A null output stream means nothing was written.
+            val wrote = context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                FileInputStream(sourceFile).use { input ->
+                    input.copyTo(output, bufferSize = 512 * 1024)
                 }
-            }
-        } catch (e: Exception) { Log.w("TransferRepo", "saveToUserSelectedFolder failed", e) }
+            } != null
+            return wrote
+        } catch (e: Exception) {
+            Log.w("TransferRepo", "saveToUserSelectedFolder failed", e)
+            return false
+        }
     }
 }
