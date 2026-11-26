@@ -20,7 +20,8 @@ sealed class DriveItem {
         val splitGroupId: String? = null,
         val totalParts: Int = 1,
         val virtualParentId: String? = "0",
-        val isEncrypted: Boolean = false
+        val isEncrypted: Boolean = false,
+        val createdAt: Long = 0L
     ) : DriveItem() {
         val isSplit: Boolean get() = totalParts > 1
     }
