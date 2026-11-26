@@ -277,8 +277,14 @@ private fun PdfPageItem(renderer: PdfRenderer?, index: Int, pageCache: PdfPageCa
                         val screenWidth = displayMetrics.widthPixels
                         val scaleFactor = screenWidth.toFloat() / page.width.toFloat()
 
-                        val width = (page.width * scaleFactor).toInt().coerceAtMost(2000)
-                        val height = (page.height * scaleFactor).toInt().coerceAtMost(3000)
+                        // L19: capping width and height independently
+                        // stretched/squashed pages that hit both caps.
+                        // One uniform scale keeps the aspect ratio.
+                        val fitWidth = (page.width * scaleFactor).toInt().coerceAtLeast(1)
+                        val fitHeight = (page.height * scaleFactor).toInt().coerceAtLeast(1)
+                        val extraScale = minOf(2000f / fitWidth, 3000f / fitHeight, 1f)
+                        val width = (fitWidth * extraScale).toInt().coerceAtLeast(1)
+                        val height = (fitHeight * extraScale).toInt().coerceAtLeast(1)
 
                         val newBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                         newBitmap.eraseColor(android.graphics.Color.WHITE)
