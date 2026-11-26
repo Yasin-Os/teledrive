@@ -434,6 +434,10 @@ fun HomeContent(
     var folderToDownload by remember { mutableStateOf<DriveItem.Folder?>(null) }
     var largeFileToUpload by remember { mutableStateOf<Pair<File, String>?>(null) }
     var isPreparingFile by remember { mutableStateOf(false) }
+    // C3: phone originals waiting for their upload to be confirmed in
+    // the cloud list before they may be deleted. In-memory only: if
+    // the process dies, the original simply stays on the phone.
+    var pendingOriginalDeletes by remember { mutableStateOf<List<PendingOriginalDelete>>(emptyList()) }
     var newFolderName by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
 
@@ -466,9 +470,26 @@ fun HomeContent(
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(tempFile).use { output -> input.copyTo(output, bufferSize = 256 * 1024) }
                     }
-                    if (shouldDeleteOriginal) deleteOriginalUriFromPhone(context, uri)
+                    // C3: never delete the phone original here — the
+                    // upload has not even started yet. Cancelling the
+                    // >2 GB dialog, a failed copy, no network, or the
+                    // app dying would lose the original forever. Record
+                    // it instead; PendingOriginalDeleteWatcher below
+                    // deletes it only once a matching file shows up in
+                    // the cloud list. An empty copy (openInputStream
+                    // returned null) is never queued: it proves nothing
+                    // was actually read from the original.
+                    val pendingDelete = if (shouldDeleteOriginal && tempFile.exists() && tempFile.length() > 0) {
+                        val alreadyThere = allCloudFilesFlow.value.count { it.name == fileName && it.size == tempFile.length() }
+                        PendingOriginalDelete(uri, fileName, tempFile.length(), alreadyThere)
+                    } else {
+                        null
+                    }
 
                     withContext(Dispatchers.Main) {
+                        if (pendingDelete != null) {
+                            pendingOriginalDeletes = pendingOriginalDeletes + pendingDelete
+                        }
                         if (tempFile.length() > 2000 * 1024 * 1024L) {
                             largeFileToUpload = tempFile to fileName
                         } else {
@@ -480,6 +501,18 @@ fun HomeContent(
             isPreparingFile = false
         }
     }
+
+    // C3: delete a phone original only after its upload is confirmed —
+    // a matching file appeared in the cloud list. Until then the
+    // original stays, whatever happens to the upload.
+    PendingOriginalDeleteWatcher(
+        pendingDeletes = pendingOriginalDeletes,
+        allCloudFilesFlow = allCloudFilesFlow,
+        onConfirmed = { confirmed ->
+            deleteOriginalUriFromPhone(context, confirmed.uri)
+            pendingOriginalDeletes = pendingOriginalDeletes - confirmed
+        }
+    )
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
@@ -2378,6 +2411,42 @@ fun ShareDialog(
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.close)) }
         }
     )
+}
+
+/**
+ * C3: a phone original queued for auto-delete after its manual upload.
+ * [preExistingCount] is how many cloud files with the same name and size
+ * already existed when the upload started, so an older copy never
+ * triggers the delete — only a newly arrived one does. If the file never
+ * shows up (cancelled / failed / split upload whose cloud rows differ),
+ * the original is simply kept: deleting late is safe, deleting early
+ * loses the file.
+ */
+private data class PendingOriginalDelete(
+    val uri: Uri,
+    val fileName: String,
+    val fileSize: Long,
+    val preExistingCount: Int
+)
+
+@Composable
+private fun PendingOriginalDeleteWatcher(
+    pendingDeletes: List<PendingOriginalDelete>,
+    allCloudFilesFlow: StateFlow<List<DriveItem.File>>,
+    onConfirmed: (PendingOriginalDelete) -> Unit
+) {
+    // Collected only here, so cloud-list changes do not recompose the
+    // whole Home screen (see the P1-12 note on HomeScreen).
+    val cloudFiles by allCloudFilesFlow.collectAsState()
+    LaunchedEffect(cloudFiles, pendingDeletes) {
+        if (pendingDeletes.isEmpty()) return@LaunchedEffect
+        pendingDeletes.forEach { pending ->
+            val matching = cloudFiles.count { it.name == pending.fileName && it.size == pending.fileSize }
+            if (matching > pending.preExistingCount) {
+                onConfirmed(pending)
+            }
+        }
+    }
 }
 
 private fun deleteOriginalUriFromPhone(context: Context, uri: Uri) {

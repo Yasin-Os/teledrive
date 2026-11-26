@@ -9,7 +9,9 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.drinkless.tdlib.TdApi
 import javax.inject.Inject
 
@@ -81,6 +83,12 @@ class LoginViewModel @Inject constructor(
                     is AuthState.Error -> {
                         _authError.value = state.message
                         _isProcessing.value = false
+                        // Never trap the user on the loading spinner: any
+                        // error arriving while the form has not been shown
+                        // yet falls back to the setup form.
+                        if (_uiState.value is LoginUiState.Loading) {
+                            _uiState.value = LoginUiState.InitialSetup
+                        }
                     }
                 }
             }
@@ -104,8 +112,19 @@ class LoginViewModel @Inject constructor(
             _authError.value = "Please enter your Telegram API hash (from my.telegram.org)"
             return
         }
-        if (phoneNumber.isBlank()) {
-            _authError.value = "Please enter a valid phone number"
+        // Telegram API hashes are always 32 hex characters.
+        val isValidApiHash = apiHash.length == 32 &&
+            apiHash.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        if (!isValidApiHash) {
+            _authError.value = "Please enter a valid 32-character Telegram API hash (from my.telegram.org)"
+            return
+        }
+        // Full international number: "+" + 7..15 digits (E.164). The
+        // country code itself is validated on the login screen against
+        // the app's country list; this guards the combined value.
+        val phoneDigits = phoneNumber.removePrefix("+")
+        if (!phoneNumber.startsWith("+") || phoneDigits.length !in 7..15 || !phoneDigits.all { it.isDigit() }) {
+            _authError.value = "Please enter a valid phone number with country code"
             return
         }
 
@@ -117,6 +136,16 @@ class LoginViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
+                // TDLib applies the parameters asynchronously:
+                // SetTdlibParameters must be processed (state ->
+                // WaitPhoneNumber) before SetAuthenticationPhoneNumber
+                // is accepted. Sending the phone number immediately
+                // failed with "Unexpected setAuthenticationPhoneNumber"
+                // on first login. If the state never arrives, fall
+                // back to submitting anyway so TDLib's error is shown.
+                withTimeoutOrNull(15_000) {
+                    authRepository.tdAuthState.first { it is TdApi.AuthorizationStateWaitPhoneNumber }
+                }
                 authRepository.submitPhoneNumber(phoneNumber) { result ->
                     if (result is TdApi.Error) {
                         _isProcessing.value = false
@@ -131,7 +160,7 @@ class LoginViewModel @Inject constructor(
     }
 
     fun onCodeSubmit(code: String) {
-        if (code.length !in 5..6) {
+        if (code.length !in 5..6 || !code.all { it.isDigit() }) {
             _authError.value = "Enter a valid 5 or 6-digit code"
             return
         }
