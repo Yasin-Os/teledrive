@@ -296,7 +296,9 @@ fun PreviewPager(
             beyondViewportPageCount = 1
         ) { pageIndex ->
             val file = items[pageIndex]
-            val transfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId == file.telegramFileId }
+            // (a): the fallback used to match on fileId alone — 0 or a
+            // fileId shared across chats could match the wrong transfer.
+            val transfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId != 0L && it.fileId == file.telegramFileId && it.fileName == file.name }
             val pageLocal = if (file.id == currentFile.id && editedOverridePath != null) editedOverridePath else file.localPath?.takeIf { File(it).exists() }
             val displayPath = if (file.isEncrypted) (if (file.id == currentFile.id && editedOverridePath != null) editedOverridePath else decryptedPaths[file.id]) else pageLocal
 
@@ -346,7 +348,7 @@ fun PreviewPager(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back), tint = Color.White)
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -555,10 +557,10 @@ fun PhotoEditorScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onCancel) {
-                Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color.White)
+                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cancel), tint = Color.White)
             }
             Text(
-                text = "Photo Studio",
+                text = stringResource(R.string.preview_photo_studio),
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
@@ -571,7 +573,7 @@ fun PhotoEditorScreen(
                         val fullBitmap = BitmapFactory.decodeFile(imagePath)
                         if (fullBitmap == null) {
                             withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Could not load image", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.preview_image_load_failed), Toast.LENGTH_SHORT).show()
                                 onCancel()
                             }
                             return@launch
