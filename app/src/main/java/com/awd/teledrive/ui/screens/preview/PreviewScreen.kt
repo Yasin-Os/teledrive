@@ -298,7 +298,7 @@ fun PreviewPager(
             val file = items[pageIndex]
             // (a): the fallback used to match on fileId alone — 0 or a
             // fileId shared across chats could match the wrong transfer.
-            val transfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId != 0L && it.fileId == file.telegramFileId && it.fileName == file.name }
+            val transfer = transfers[file.remoteUniqueId] ?: transfers.values.find { it.fileId != 0 && it.fileId == file.telegramFileId && it.fileName == file.name }
             val pageLocal = if (file.id == currentFile.id && editedOverridePath != null) editedOverridePath else file.localPath?.takeIf { File(it).exists() }
             val displayPath = if (file.isEncrypted) (if (file.id == currentFile.id && editedOverridePath != null) editedOverridePath else decryptedPaths[file.id]) else pageLocal
 
