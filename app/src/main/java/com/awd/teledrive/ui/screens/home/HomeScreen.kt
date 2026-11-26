@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Folder
@@ -116,6 +117,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -270,6 +272,7 @@ fun HomeScreen(
         onCancelTransfer = viewModel::cancelTransfer,
         onClearCompletedTransfers = viewModel::clearCompletedTransfers,
         onSaveAsPhone = viewModel::saveAsPhone,
+        onMoveItemsToVirtualFolder = viewModel::moveItemsToVirtualFolder,
         onGetInviteLink = viewModel::getFolderInviteLink,
         onGetMembers = viewModel::getFolderMembers,
         onShareFile = viewModel::shareFileToPhone
@@ -332,6 +335,7 @@ fun HomeContent(
     onNavigateBack: () -> Unit,
     onRefresh: () -> Unit,
     onRenameItem: (DriveItem, String) -> Unit,
+    onMoveItemsToVirtualFolder: (Set<Long>, String) -> Unit = { _, _ -> },
     onPauseTransfer: (String) -> Unit = {},
     onResumeTransfer: (String) -> Unit = {},
     onCancelTransfer: (String) -> Unit = {},
@@ -389,6 +393,9 @@ fun HomeContent(
     val isSelectionMode = selectedItems.isNotEmpty()
     var showFolderDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf<List<DriveItem>?>(null) }
+    // M29: files waiting for a Move destination (one file from the menu,
+    // or the selected files from the selection bar).
+    var moveItems by remember { mutableStateOf<List<DriveItem.File>>(emptyList()) }
     var itemToRename by remember { mutableStateOf<DriveItem?>(null) }
     var renameValue by remember { mutableStateOf("") }
 
@@ -571,6 +578,20 @@ fun HomeContent(
         )
     }
 
+    // M29: Move destination picker (single file from the menu, or the
+    // selected files from the selection bar).
+    if (moveItems.isNotEmpty()) {
+        MoveToFolderDialog(
+            virtualFolders = virtualFolders,
+            onDismiss = { moveItems = emptyList() },
+            onConfirm = { folderId ->
+                onMoveItemsToVirtualFolder(moveItems.map { it.id }.toSet(), folderId)
+                moveItems = emptyList()
+                selectedItems = emptySet()
+            }
+        )
+    }
+
     if (shareItem != null) {
         ShareDialog(
             item = shareItem!!, onDismiss = { shareItem = null },
@@ -701,6 +722,16 @@ fun HomeContent(
                                     if (selectedItems.size >= files.size && files.isNotEmpty()) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                                     contentDescription = stringResource(R.string.select_all)
                                 )
+                            }
+                            // M29: bulk move of the selected files (only
+                            // shown when at least one selected item is a file).
+                            // Selection uses F8's composite selectionKey().
+                            if (items.any { it.selectionKey() in selectedItems && it is DriveItem.File }) {
+                                IconButton(onClick = {
+                                    moveItems = items.filter { it.selectionKey() in selectedItems }.filterIsInstance<DriveItem.File>()
+                                }) {
+                                    Icon(Icons.Default.DriveFileMove, contentDescription = stringResource(R.string.move))
+                                }
                             }
                             IconButton(onClick = {
                                 val selectedFiles = items.filter { it.selectionKey() in selectedItems }.filterIsInstance<DriveItem.File>()
@@ -878,7 +909,13 @@ fun HomeContent(
                     }
                 }
 
-                val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && !isCategoryActive
+                // M28: the dashboard used to show whenever the search box was
+                // empty — even with a search filter chip active (type/size/
+                // date/scope), hiding the filtered results. It now shows
+                // only when no filter is active either.
+                val showDashboard = currentVirtualFolderId == "0" && searchQuery.isEmpty() && !isCategoryActive &&
+                    searchTypeFilter == SearchTypeFilter.ALL && searchSizeFilter == SearchSizeFilter.ANY &&
+                    searchDateFilter == SearchDateFilter.ANY && searchScope == SearchScope.EVERYWHERE
 
                 // Batch 7b: recent searches while the search field is
                 // focused and empty (tap re-runs, X / long-press deletes).
@@ -951,6 +988,7 @@ fun HomeContent(
                         onDownloadFolderContents = { folderToDownload = it },
                         onSaveAsPhone = onSaveAsPhone,
                         onRenameClick = { itemToRename = it; renameValue = it.name },
+                        onMoveClick = { if (it is DriveItem.File) moveItems = listOf(it) },
                         onDeleteClick = { showDeleteConfirm = listOf(it) }
                     )
                 }
@@ -1160,6 +1198,7 @@ private fun HomeDriveItemsList(
     onDownloadFolderContents: (DriveItem.Folder) -> Unit,
     onSaveAsPhone: (String, String) -> Unit,
     onRenameClick: (DriveItem) -> Unit,
+    onMoveClick: (DriveItem) -> Unit = {},
     onDeleteClick: (DriveItem) -> Unit
 ) {
     // P1-12: transfers এখানেই collect হয় — টিক শুধু এই লিস্টটুকু recompose করে
@@ -1192,7 +1231,7 @@ private fun HomeDriveItemsList(
                     onSaveAsPhoneClick = {
                         if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
                     },
-                    onMoveClick = null,
+                    onMoveClick = { if (item is DriveItem.File) onMoveClick(item) },
                     onRenameClick = { onRenameClick(item) },
                     onDeleteClick = { onDeleteClick(item) }
                 )
@@ -1223,7 +1262,7 @@ private fun HomeDriveItemsList(
                     onSaveAsPhoneClick = {
                         if (item is DriveItem.File && !item.localPath.isNullOrEmpty()) onSaveAsPhone(item.localPath, item.name)
                     },
-                    onMoveClick = null,
+                    onMoveClick = { if (item is DriveItem.File) onMoveClick(item) },
                     onRenameClick = { onRenameClick(item) },
                     onDeleteClick = { onDeleteClick(item) }
                 )
@@ -2139,6 +2178,7 @@ fun DriveListItem(
                     onStarClick = onStarClick,
                     onInfoClick = { showInfoDialog = true },
                     onRenameClick = onRenameClick,
+                    onMoveClick = onMoveClick,
                     onSaveAsPhoneClick = onSaveAsPhoneClick,
                     onDownloadClick = onDownloadClick,
                     onDeleteClick = onDeleteClick
@@ -2241,6 +2281,7 @@ fun DriveGridItem(
                             onStarClick = onStarClick,
                             onInfoClick = { showInfoDialog = true },
                             onRenameClick = onRenameClick,
+                            onMoveClick = onMoveClick,
                             onSaveAsPhoneClick = onSaveAsPhoneClick,
                             onDownloadClick = onDownloadClick,
                             onDeleteClick = onDeleteClick
@@ -2289,6 +2330,53 @@ fun InfoDialog(item: DriveItem, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
+        }
+    )
+}
+
+/**
+ * M29: the destination picker for Move. Lists the root ("Home") plus every
+ * virtual folder; secure folders are not in virtualFolders, so a file can
+ * never be moved into the Safe Folder by accident.
+ */
+@Composable
+private fun MoveToFolderDialog(
+    virtualFolders: List<DriveItem.Folder>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var selectedFolderId by remember { mutableStateOf("0") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.move_to_folder)) },
+        text = {
+            LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { selectedFolderId = "0" }.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selectedFolderId == "0", onClick = { selectedFolderId = "0" })
+                        Text(stringResource(R.string.home), style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                items(virtualFolders) { folder ->
+                    val folderId = folder.virtualId ?: return@items
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { selectedFolderId = folderId }.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selectedFolderId == folderId, onClick = { selectedFolderId = folderId })
+                        Text(folder.name, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(selectedFolderId) }) { Text(stringResource(R.string.move)) }
+        },
+        dismissButton = {
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
         }
     )
