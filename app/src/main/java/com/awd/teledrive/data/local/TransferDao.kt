@@ -43,4 +43,7 @@ interface TransferDao {
 
     @Query("UPDATE transfers SET localPath = :path WHERE remoteUniqueId = :uniqueId")
     suspend fun updateLocalPath(uniqueId: String, path: String)
+
+    @Query("DELETE FROM transfers")
+    suspend fun deleteAllTransfers()
 }

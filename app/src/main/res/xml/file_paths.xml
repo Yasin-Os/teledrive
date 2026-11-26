@@ -1,11 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- App updates (APK) are downloaded into the cache directories. -->
-    <cache-path name="my_cache" path="." />
-    <external-cache-path name="my_external_cache" path="." />
-    <!-- Files downloaded by TDLib live under filesDir/tdlib. No root-path,
-         external-path or files-path "." : previously the provider exposed the
-         whole filesystem (including the TDLib database and the Room database)
-         to any app that received a URI. -->
-    <files-path name="my_tdlib_files" path="tdlib/" />
+    <!-- H11: expose only explicit safe subdirectories — never cacheDir "."
+         (which holds vault_preview_tmp/prev_dec_* decrypted previews and
+         decrypt_* temps) and never filesDir/tdlib/ root (which holds
+         td.binlog and db.sqlite). -->
+    <cache-path name="my_updates" path="updates/" />
+    <external-cache-path name="my_external_updates" path="updates/" />
+    <cache-path name="my_split_downloads" path="split_downloads/" />
+    <cache-path name="my_shared_cache" path="shared/" />
+    <!-- TDLib downloaded media subdirectories only -->
+    <files-path name="tdlib_documents" path="tdlib/documents/" />
+    <files-path name="tdlib_photos" path="tdlib/photos/" />
+    <files-path name="tdlib_videos" path="tdlib/videos/" />
+    <files-path name="tdlib_music" path="tdlib/music/" />
+    <files-path name="tdlib_voice" path="tdlib/voice/" />
+    <files-path name="tdlib_animations" path="tdlib/animations/" />
+    <files-path name="tdlib_video_notes" path="tdlib/video_notes/" />
+    <files-path name="tdlib_stickers" path="tdlib/stickers/" />
+    <files-path name="tdlib_thumbnails" path="tdlib/thumbnails/" />
 </paths>

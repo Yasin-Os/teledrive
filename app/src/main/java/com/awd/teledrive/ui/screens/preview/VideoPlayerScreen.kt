@@ -1115,7 +1115,7 @@ fun VideoPlayerScreen(
             },
             onShare = {
                 val path = viewModel.cachedTdFile?.local?.path ?: activeMediaUrl.takeIf { !isStreamUrl }
-                if (!path.isNullOrEmpty()) {
+                if (!path.isNullOrEmpty() && !FileSharingHelper.isPrivateVaultTempPath(context, path)) {
                     FileSharingHelper.shareFile(context, path, "audio/*")
                 }
             },

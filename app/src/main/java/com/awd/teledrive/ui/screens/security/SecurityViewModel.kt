@@ -283,7 +283,8 @@ class SecurityViewModel @Inject constructor(
     private fun pinLockoutRemainingSeconds(keys: PinLockoutKeys): Long {
         val deadline = readLockoutDeadline(keys)
         if (deadline == Long.MAX_VALUE) return MAX_LOCKOUT_MS / 1000L
-        return ((deadline - SystemClock.elapsedRealtime()) / 1000L).coerceAtLeast(0L)
+        val remainingMs = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        return if (remainingMs == 0L) 0L else (remainingMs + 999L) / 1000L
     }
 
     private fun lockoutMessage(keys: PinLockoutKeys): String {
@@ -547,6 +548,15 @@ class SecurityViewModel @Inject constructor(
     }
 
     fun prepareAppLockBiometricUnlockCipher(): BiometricCipherResult {
+        // H3: never allow biometric to bypass an active PIN lockout.
+        if (isPinLocked(APP_PIN_LOCKOUT_KEYS)) {
+            val msg = lockoutMessage(APP_PIN_LOCKOUT_KEYS)
+            _error.value = msg
+            if (appPinTicker?.isActive != true) {
+                appPinTicker = startLockoutTicker(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining)
+            }
+            return BiometricCipherResult.Unavailable(msg)
+        }
         if (!BiometricHelper.isBiometricAvailable(appContext)) {
             return BiometricCipherResult.Unavailable("Biometric unlock is not available on this device.")
         }
@@ -570,11 +580,19 @@ class SecurityViewModel @Inject constructor(
     }
 
     /**
-     * Unlocks the app ONLY if [authenticatedCipher] (returned by BiometricPrompt's
-     * CryptoObject) successfully decrypts the Keystore-wrapped token and its
-     * SHA-256 digest matches in constant time.
+     * Unlocks the app ONLY if PIN lockout is NOT active AND [authenticatedCipher]
+     * (returned by BiometricPrompt's CryptoObject) successfully decrypts the
+     * Keystore-wrapped token and its SHA-256 digest matches in constant time.
      */
     fun unlockAppWithBiometric(authenticatedCipher: Cipher): Boolean {
+        // H3: enforce PIN lockout even if a biometric prompt was already open.
+        if (isPinLocked(APP_PIN_LOCKOUT_KEYS)) {
+            _error.value = lockoutMessage(APP_PIN_LOCKOUT_KEYS)
+            if (appPinTicker?.isActive != true) {
+                appPinTicker = startLockoutTicker(APP_PIN_LOCKOUT_KEYS, _appPinLockoutRemaining)
+            }
+            return false
+        }
         val wrapped: String
         val expectedDigest: String
         try {
@@ -903,7 +921,8 @@ class SecurityViewModel @Inject constructor(
     // --- Vault Biometric Unlock (Android Keystore CryptoObject) ---
 
     fun canUnlockSafeFolderWithBiometric(): Boolean {
-        return _isSafeFolderBiometricEnabled.value &&
+        return !isPinLocked(SAFE_PIN_LOCKOUT_KEYS) &&
+            _isSafeFolderBiometricEnabled.value &&
             _isSafeFolderPinSet.value &&
             BiometricHelper.isBiometricAvailable(appContext)
     }
@@ -964,6 +983,15 @@ class SecurityViewModel @Inject constructor(
      * the invalidated biometric enrollment cleanly.
      */
     fun prepareSafeFolderBiometricUnlockCipher(): BiometricCipherResult {
+        // H3: never allow biometric to bypass an active Safe Folder PIN lockout.
+        if (isPinLocked(SAFE_PIN_LOCKOUT_KEYS)) {
+            val msg = lockoutMessage(SAFE_PIN_LOCKOUT_KEYS)
+            _safePinError.value = msg
+            if (safePinTicker?.isActive != true) {
+                safePinTicker = startLockoutTicker(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining)
+            }
+            return BiometricCipherResult.Unavailable(msg)
+        }
         if (!BiometricHelper.isBiometricAvailable(appContext)) {
             return BiometricCipherResult.Unavailable("Biometric unlock is not available on this device.")
         }
@@ -989,12 +1017,20 @@ class SecurityViewModel @Inject constructor(
     }
 
     /**
-     * Unlocks the Safe Folder ONLY when [authenticatedCipher] (from
-     * BiometricPrompt's CryptoObject) cryptographically unwraps the stored
-     * 256-bit DEK. Without a hardware-authenticated Cipher, the DEK cannot be
-     * recovered.
+     * Unlocks the Safe Folder ONLY when PIN lockout is NOT active AND
+     * [authenticatedCipher] (from BiometricPrompt's CryptoObject)
+     * cryptographically unwraps the stored 256-bit DEK. Without a
+     * hardware-authenticated Cipher, the DEK cannot be recovered.
      */
     fun unlockSafeFolderWithBiometric(authenticatedCipher: Cipher): Boolean {
+        // H3: enforce PIN lockout even if a biometric prompt was already open.
+        if (isPinLocked(SAFE_PIN_LOCKOUT_KEYS)) {
+            _safePinError.value = lockoutMessage(SAFE_PIN_LOCKOUT_KEYS)
+            if (safePinTicker?.isActive != true) {
+                safePinTicker = startLockoutTicker(SAFE_PIN_LOCKOUT_KEYS, _safePinLockoutRemaining)
+            }
+            return false
+        }
         val wrapped = try {
             if (!secureSettings.getBooleanStrict(KEY_SAFE_FOLDER_BIOMETRIC, false)) return false
             secureSettings.getStringStrict(KEY_VAULT_WRAPPED_DEK_BIOMETRIC) ?: return false

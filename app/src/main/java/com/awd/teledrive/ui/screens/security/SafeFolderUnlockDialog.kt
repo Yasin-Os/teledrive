@@ -28,6 +28,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.fragment.app.FragmentActivity
 import com.awd.teledrive.R
 import com.awd.teledrive.core.BiometricCipherResult
@@ -39,7 +41,9 @@ import kotlinx.coroutines.launch
  * - PIN unlock derives the KEK and unwraps the per-vault DEK off the main thread.
  * - Biometric unlock uses a Keystore CryptoObject so the DEK can only be
  *   unwrapped after hardware-verified BIOMETRIC_STRONG authentication.
- * - Live-ticking PIN lockout countdown disables input while locked out.
+ * - Live-ticking PIN lockout countdown disables both PIN and biometric input
+ *   while locked out (H3).
+ * - Dialog window enforces FLAG_SECURE via SecureFlagPolicy.SecureOn (M36).
  */
 @Composable
 fun SafeFolderUnlockDialog(
@@ -69,6 +73,7 @@ fun SafeFolderUnlockDialog(
 
     AlertDialog(
         onDismissRequest = { if (!isVerifying) onDismiss() },
+        properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         title = { Text(stringResource(R.string.vault_unlock_title)) },
         text = {
             Column {
@@ -90,8 +95,12 @@ fun SafeFolderUnlockDialog(
                 if (showBiometric) {
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedButton(
-                        enabled = !isVerifying,
+                        enabled = !isLockedOut && !isVerifying,
                         onClick = {
+                            if (isLockedOut) {
+                                error = lockoutMessage
+                                return@OutlinedButton
+                            }
                             val activity = context as? FragmentActivity ?: return@OutlinedButton
                             when (val prep = securityViewModel.prepareSafeFolderBiometricUnlockCipher()) {
                                 is BiometricCipherResult.Ready -> {
@@ -174,6 +183,7 @@ fun CreateSafeFolderPinDialog(
 
     AlertDialog(
         onDismissRequest = { if (!isSettingUp) onDismiss() },
+        properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         title = { Text("Set Safe Folder PIN") },
         text = {
             Column {

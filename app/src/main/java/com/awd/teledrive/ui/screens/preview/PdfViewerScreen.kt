@@ -184,19 +184,21 @@ fun PdfViewerContent(
                     }
                 },
                 actions = {
-                    var showMenu by remember { mutableStateOf(false) }
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Default.MoreVert, null)
-                    }
-                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.open_with_other)) },
-                            onClick = {
-                                FileSharingHelper.openFileExternally(context, filePath, "application/pdf")
-                                showMenu = false
-                            },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, null) }
-                        )
+                    if (!FileSharingHelper.isPrivateVaultTempPath(context, filePath)) {
+                        var showMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, null)
+                        }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.open_with_other)) },
+                                onClick = {
+                                    FileSharingHelper.openFileExternally(context, filePath, "application/pdf")
+                                    showMenu = false
+                                },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, null) }
+                            )
+                        }
                     }
                 }
             )

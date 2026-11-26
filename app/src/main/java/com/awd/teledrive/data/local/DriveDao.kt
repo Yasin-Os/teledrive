@@ -163,7 +163,7 @@ interface DriveDao {
     @Query("UPDATE drive_items SET localPath = NULL")
     suspend fun clearAllLocalPaths()
 
-    @Query("UPDATE drive_items SET virtualParentId = '0' WHERE isVirtual = 0")
+    @Query("UPDATE drive_items SET virtualParentId = '0' WHERE isVirtual = 0 AND (virtualParentId IS NULL OR virtualParentId != 'vf_safe_space') AND isEncrypted = 0 AND isSecure = 0")
     suspend fun resetAllFileVirtualParents()
 
     @Query("UPDATE drive_items SET thumbnailPath = NULL")
@@ -227,7 +227,7 @@ interface DriveDao {
     // M9: files that have a local copy and a Telegram id but were never
     // content-indexed (indexing used to run only on preview). The DAO can
     // not filter by extension/mime here — the indexer does that per file.
-    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND isEncrypted = 0 AND localPath IS NOT NULL AND localPath != '' AND remoteUniqueId IS NOT NULL AND remoteUniqueId != '' AND remoteUniqueId NOT IN (SELECT remoteUniqueId FROM file_content_fts WHERE remoteUniqueId IS NOT NULL) LIMIT :limit")
+    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (virtualParentId IS NULL OR virtualParentId != 'vf_safe_space') AND isEncrypted = 0 AND isSecure = 0 AND localPath IS NOT NULL AND localPath != '' AND remoteUniqueId IS NOT NULL AND remoteUniqueId != '' AND remoteUniqueId NOT IN (SELECT remoteUniqueId FROM file_content_fts WHERE remoteUniqueId IS NOT NULL) LIMIT :limit")
     suspend fun getUnindexedTextFiles(limit: Int): List<DriveItemEntity>
 
     // M9: drop content-index rows whose file no longer exists in drive_items
@@ -337,8 +337,10 @@ interface DriveDao {
     fun getCloudFileTypeStats(): Flow<List<FileTypeStat>>
 
     // ---- Storage analyzer / duplicate finder ----
+    // H1: never include Safe Folder, encrypted, or secure items in public
+    // analyzer / duplicate lists or hash scans.
 
-    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY size DESC LIMIT :limit")
+    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (virtualParentId IS NULL OR virtualParentId != 'vf_safe_space') AND isEncrypted = 0 AND isSecure = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY size DESC LIMIT :limit")
     fun getLargestFiles(limit: Int): Flow<List<DriveItemEntity>>
 
     data class DuplicateGroup(
@@ -351,15 +353,15 @@ interface DriveDao {
     @Query("""
         SELECT contentHash, size, COUNT(*) as count, (COUNT(*) - 1) * size as wastedBytes
         FROM drive_items
-        WHERE contentHash IS NOT NULL AND isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0)
+        WHERE contentHash IS NOT NULL AND isFolder = 0 AND (virtualParentId IS NULL OR virtualParentId != 'vf_safe_space') AND isEncrypted = 0 AND isSecure = 0 AND (splitGroupId IS NULL OR partIndex = 0)
         GROUP BY contentHash, size HAVING COUNT(*) > 1 ORDER BY wastedBytes DESC
     """)
     fun getDuplicateGroups(): Flow<List<DuplicateGroup>>
 
-    @Query("SELECT * FROM drive_items WHERE contentHash = :hash AND size = :size AND isFolder = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
+    @Query("SELECT * FROM drive_items WHERE contentHash = :hash AND size = :size AND isFolder = 0 AND (virtualParentId IS NULL OR virtualParentId != 'vf_safe_space') AND isEncrypted = 0 AND isSecure = 0 AND (splitGroupId IS NULL OR partIndex = 0) ORDER BY createdAt DESC")
     suspend fun getDuplicateGroupItems(hash: String, size: Long): List<DriveItemEntity>
 
-    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND contentHash IS NULL AND localPath IS NOT NULL AND (splitGroupId IS NULL OR partIndex = 0)")
+    @Query("SELECT * FROM drive_items WHERE isFolder = 0 AND (virtualParentId IS NULL OR virtualParentId != 'vf_safe_space') AND isEncrypted = 0 AND isSecure = 0 AND contentHash IS NULL AND localPath IS NOT NULL AND (splitGroupId IS NULL OR partIndex = 0)")
     suspend fun getUnhashedDownloadedFiles(): List<DriveItemEntity>
 
     @Query("UPDATE drive_items SET contentHash = :hash WHERE remoteUniqueId = :uniqueId")
@@ -383,5 +385,27 @@ interface DriveDao {
             getFileHashes(chunk).forEach { result[it.remoteUniqueId] = it.contentHash }
         }
         return result
+    }
+
+    // ---- H4: full user data wipe on logout ----
+
+    @Query("DELETE FROM drive_items")
+    suspend fun deleteAllDriveItems()
+
+    @Query("DELETE FROM file_hashes")
+    suspend fun deleteAllFileHashes()
+
+    @Query("DELETE FROM file_content_fts")
+    suspend fun deleteAllFileContent()
+
+    @Query("DELETE FROM recent_searches")
+    suspend fun deleteAllRecentSearches()
+
+    @Transaction
+    suspend fun clearAllUserData() {
+        deleteAllDriveItems()
+        deleteAllFileHashes()
+        deleteAllFileContent()
+        deleteAllRecentSearches()
     }
 }

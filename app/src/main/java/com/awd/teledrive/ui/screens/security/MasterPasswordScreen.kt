@@ -60,7 +60,8 @@ fun MasterPasswordScreen(
 
     val triggerBiometric = {
         val activity = context as? FragmentActivity
-        if (activity != null && isPasswordSet && isBiometricEnabled) {
+        // H3: never prompt for biometrics while PIN lockout is active.
+        if (activity != null && isPasswordSet && isBiometricEnabled && lockoutRemaining == 0L) {
             when (val prep = viewModel.prepareAppLockBiometricUnlockCipher()) {
                 is BiometricCipherResult.Ready -> {
                     BiometricHelper.showCryptoPrompt(
@@ -86,7 +87,7 @@ fun MasterPasswordScreen(
     }
 
     LaunchedEffect(isPasswordSet, isBiometricEnabled) {
-        if (isPasswordSet && isBiometricEnabled) {
+        if (isPasswordSet && isBiometricEnabled && lockoutRemaining == 0L) {
             triggerBiometric()
         }
     }
@@ -286,17 +287,19 @@ fun PinLockScreenContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (isPasswordSet && isBiometricEnabled) {
+                        val bioEnabled = lockoutRemainingSeconds <= 0L
                         Surface(
                             onClick = onBiometricClick,
+                            enabled = bioEnabled,
                             shape = CircleShape,
-                            color = Color(0xFF0077CC).copy(alpha = 0.25f),
+                            color = Color(0xFF0077CC).copy(alpha = if (bioEnabled) 0.25f else 0.08f),
                             modifier = Modifier.size(74.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Fingerprint,
                                     contentDescription = "Biometric",
-                                    tint = Color(0xFF38BDF8),
+                                    tint = Color(0xFF38BDF8).copy(alpha = if (bioEnabled) 1f else 0.35f),
                                     modifier = Modifier.size(34.dp)
                                 )
                             }

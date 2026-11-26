@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -248,8 +249,22 @@ class MainActivity : AppCompatActivity() {
         finish()
     }
 
+    private fun setWindowSecure(secure: Boolean) {
+        if (secure) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // M36: apply FLAG_SECURE before the first frame if App Lock is enabled
+        // (or fail-closed if secure storage is not yet ready), WITHOUT touching
+        // securityViewModel eagerly so F4/H23 lazy DB startup probing stays intact.
+        if (!secureSettings.isSecureStorageAvailable || secureSettings.isSecurityEnabled()) {
+            setWindowSecure(true)
+        }
         checkAndRequestPermissions()
 
         lifecycleScope.launch {
@@ -337,7 +352,10 @@ class MainActivity : AppCompatActivity() {
                                         val navController = rememberNavController()
                                         NavGraph(
                                             navController = navController,
-                                            securityViewModel = securityViewModel
+                                            securityViewModel = securityViewModel,
+                                            onSensitiveScreenChanged = { secure ->
+                                                setWindowSecure(secure)
+                                            }
                                         )
                                     }
                                     is StorageInitState.Checking -> {

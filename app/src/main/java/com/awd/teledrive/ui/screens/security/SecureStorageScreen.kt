@@ -86,6 +86,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -319,6 +321,7 @@ fun SecureStorageScreen(
 
         AlertDialog(
             onDismissRequest = { if (!isUpdatingPin) showChangeSafePinDialog = false },
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
             title = { Text("Change Safe Folder PIN") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

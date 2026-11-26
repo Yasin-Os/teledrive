@@ -96,6 +96,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
@@ -161,6 +163,7 @@ fun SettingsScreen(
     val isThumbnailAutoDownloadEnabled by viewModel.isThumbnailAutoDownloadEnabled.collectAsState()
     val currentLanguage by viewModel.currentLanguage.collectAsState()
     val cloudBackups by viewModel.cloudBackups.collectAsState()
+    val isLoggingOut by viewModel.isLoggingOut.collectAsState()
 
     val context = LocalContext.current
     val customPrefs = remember { context.getSharedPreferences("mycloud_custom_prefs", Context.MODE_PRIVATE) }
@@ -196,6 +199,7 @@ fun SettingsScreen(
         isThumbnailAutoDownloadEnabled = isThumbnailAutoDownloadEnabled,
         isBackupWifiOnly = isBackupWifiOnly,
         deleteAfterBackup = deleteAfterBackup,
+        isLoggingOut = isLoggingOut,
         onSetDeleteAfterBackup = { enabled ->
             deleteAfterBackup = enabled
             customPrefs.edit().putBoolean("delete_after_backup", enabled).apply()
@@ -203,16 +207,19 @@ fun SettingsScreen(
         onLogout = {
             HomeViewModel.resetInitialSync()
             securityViewModel.lockSecureMode()
-            viewModel.logout()
-            // L21: getLaunchIntentForPackage() is nullable — a null
-            // intent used to be passed straight to startActivity(),
-            // which throws. Only restart when there is an intent.
-            val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
+            // H4: wait for TdApi.LogOut(), full local wipe, and TDLib client
+            // recreation to finish BEFORE restarting MainActivity.
+            viewModel.logout {
+                // L21: getLaunchIntentForPackage() is nullable — a null
+                // intent used to be passed straight to startActivity(),
+                // which throws. Only restart when there is an intent.
+                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                if (intent != null) {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                }
+                (context as? android.app.Activity)?.finish()
             }
-            (context as? android.app.Activity)?.finish()
         },
         onNavigateToBackupFolders = onNavigateToBackupFolders,
         onNavigateToLogs = onNavigateToLogs,
@@ -300,6 +307,7 @@ fun SettingsContent(
     isThumbnailAutoDownloadEnabled: Boolean,
     isBackupWifiOnly: Boolean,
     deleteAfterBackup: Boolean,
+    isLoggingOut: Boolean = false,
     onSetDeleteAfterBackup: (Boolean) -> Unit,
     onLogout: () -> Unit,
     onNavigateToBackupFolders: () -> Unit,
@@ -436,6 +444,7 @@ fun SettingsContent(
 
         AlertDialog(
             onDismissRequest = { showCreateAppPinDialog = false },
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
             title = { Text(stringResource(R.string.set_app_pin)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -494,6 +503,7 @@ fun SettingsContent(
 
         AlertDialog(
             onDismissRequest = { if (!isUpdating) showChangeAppPinDialog = false },
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
             title = { Text(stringResource(R.string.change_app_pin)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -551,18 +561,32 @@ fun SettingsContent(
         )
     }
 
-    if (showLogoutConfirm) {
+    if (showLogoutConfirm || isLoggingOut) {
         AlertDialog(
-            onDismissRequest = { showLogoutConfirm = false },
+            onDismissRequest = { if (!isLoggingOut) showLogoutConfirm = false },
             title = { Text(stringResource(R.string.logout_confirm_title)) },
-            text = { Text(stringResource(R.string.logout_confirm_message)) },
+            text = {
+                Text(
+                    if (isLoggingOut) "Signing out and clearing local data..."
+                    else stringResource(R.string.logout_confirm_message)
+                )
+            },
             confirmButton = {
-                TextButton(onClick = { showLogoutConfirm = false; onLogout() }) {
-                    Text(stringResource(R.string.logout), color = MaterialTheme.colorScheme.error)
+                TextButton(
+                    enabled = !isLoggingOut,
+                    onClick = { showLogoutConfirm = false; onLogout() }
+                ) {
+                    Text(
+                        text = if (isLoggingOut) "Signing out..." else stringResource(R.string.logout),
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showLogoutConfirm = false }) { Text(stringResource(R.string.cancel)) }
+                TextButton(
+                    enabled = !isLoggingOut,
+                    onClick = { showLogoutConfirm = false }
+                ) { Text(stringResource(R.string.cancel)) }
             }
         )
     }

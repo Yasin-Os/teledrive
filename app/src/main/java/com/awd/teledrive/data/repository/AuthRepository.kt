@@ -2,17 +2,25 @@ package com.awd.teledrive.data.repository
 
 import android.content.Context
 import com.awd.teledrive.data.remote.TelegramClient
+import com.awd.teledrive.data.secure.SecureSessionManager
 import com.awd.teledrive.data.secure.SecureSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import org.drinkless.tdlib.TdApi
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -30,9 +38,13 @@ class AuthRepository @Inject constructor(
     private val telegramClient: TelegramClient,
     private val secureSettings: SecureSettings,
     private val settingsRepository: SettingsRepository,
+    private val secureSessionManager: SecureSessionManager,
+    private val driveRepository: dagger.Lazy<DriveRepository>,
     @param:ApplicationContext private val context: Context
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val isLoggingOut = AtomicBoolean(false)
+    private val logoutMutex = Mutex()
 
     // H24: the saved "authenticated" flag is not trusted as the
     // start state. A dead TDLib client could otherwise sit on a wrong
@@ -69,8 +81,10 @@ class AuthRepository @Inject constructor(
                 sendTdlibParameters()
             }
             is TdApi.AuthorizationStateWaitPhoneNumber -> {
-                secureSettings.saveBoolean("active_provider_telegram", false)
-                _authState.value = AuthState.Unauthenticated
+                runCatching { secureSettings.saveBoolean("active_provider_telegram", false) }
+                if (!isLoggingOut.get()) {
+                    _authState.value = AuthState.Unauthenticated
+                }
             }
             is TdApi.AuthorizationStateWaitCode -> {
                 _authState.value = AuthState.WaitingForCode
@@ -79,7 +93,7 @@ class AuthRepository @Inject constructor(
                 _authState.value = AuthState.WaitingForPassword
             }
             is TdApi.AuthorizationStateReady -> {
-                secureSettings.saveBoolean("active_provider_telegram", true)
+                runCatching { secureSettings.saveBoolean("active_provider_telegram", true) }
                 _authState.value = AuthState.Authenticated
             }
             is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
@@ -94,12 +108,36 @@ class AuthRepository @Inject constructor(
                 _authState.value = AuthState.Error("Please complete Telegram registration first")
             }
             is TdApi.AuthorizationStateLoggingOut -> {
-                secureSettings.saveBoolean("active_provider_telegram", false)
-                _authState.value = AuthState.Unauthenticated
+                runCatching { secureSettings.saveBoolean("active_provider_telegram", false) }
+                // H4: while logoutAndWait() is running, stay in Loading so
+                // NavGraph does not prematurely tear down SettingsScreen before
+                // LogOut + local wipe + client recreation finish.
+                if (!isLoggingOut.get()) {
+                    _authState.value = AuthState.Unauthenticated
+                }
+            }
+            is TdApi.AuthorizationStateClosing -> {
+                // Intermediate state before AuthorizationStateClosed.
             }
             is TdApi.AuthorizationStateClosed -> {
-                secureSettings.saveBoolean("active_provider_telegram", false)
-                _authState.value = AuthState.Unauthenticated
+                runCatching { secureSettings.saveBoolean("active_provider_telegram", false) }
+                if (!isLoggingOut.get()) {
+                    // H4: if TDLib closed outside logoutAndWait() (e.g. session
+                    // revoked from another device), clear session state and
+                    // recreate the TDLib client so re-login works without
+                    // force-stopping the app.
+                    secureSessionManager.clearSession()
+                    _authState.value = AuthState.Unauthenticated
+                    scope.launch {
+                        if (telegramClient.recreateClient()) {
+                            telegramClient.send(TdApi.GetAuthorizationState()) { result ->
+                                if (result is TdApi.AuthorizationState) {
+                                    handleAuthorizationState(result)
+                                }
+                            }
+                        }
+                    }
+                }
             }
             else -> {
                 // H24: never silently swallow an authorization state —
@@ -130,8 +168,15 @@ class AuthRepository @Inject constructor(
             // the API ID / API hash setup form. Emitting Error here left
             // new users stuck on an infinite spinner: LoginViewModel
             // never leaves LoginUiState.Loading on Error.
-            _authState.value = AuthState.Unauthenticated
+            if (!isLoggingOut.get()) {
+                _authState.value = AuthState.Unauthenticated
+            }
             return
+        }
+
+        // H4: if the TDLib client was closed, recreate it before sending parameters.
+        if (!telegramClient.isClientAlive() || _tdAuthState.value is TdApi.AuthorizationStateClosed) {
+            telegramClient.recreateClient()
         }
 
         val params = TdApi.SetTdlibParameters().apply {
@@ -221,12 +266,78 @@ class AuthRepository @Inject constructor(
         telegramClient.send(TdApi.ResendAuthenticationCode(), onResult)
     }
 
+    /**
+     * H4: full logout sequence executed on the singleton repository scope so
+     * UI navigation cannot cancel it mid-way:
+     * 1. Wipe vault session DEK and auth flags immediately.
+     * 2. Send TdApi.LogOut() and wait for TDLib to reach AuthorizationStateClosed
+     *    (falling back to TdApi.Close() if LogOut returns an error, with a
+     *    bounded timeout so offline logout never hangs forever).
+     * 3. Clear all Room tables (drive_items, transfers, file_hashes,
+     *    file_content_fts, recent_searches), DriveRepository storage chat ID /
+     *    PREF_STORAGE_CHAT_ID, backup tracking prefs (backed_up_paths_v3), and
+     *    decrypted preview temp files.
+     * 4. Recreate the TDLib Client so immediate re-login in the same process
+     *    succeeds without force-stopping the app.
+     */
+    suspend fun logoutAndWait() {
+        scope.async {
+            logoutMutex.withLock {
+                isLoggingOut.set(true)
+                try {
+                    secureSessionManager.clearSession()
+                    runCatching { secureSettings.saveBoolean("active_provider_google", false) }
+                    runCatching { secureSettings.saveBoolean("active_provider_telegram", false) }
+                    _authState.value = AuthState.Loading
+
+                    if (telegramClient.isClientAlive() && _tdAuthState.value !is TdApi.AuthorizationStateClosed) {
+                        val logoutResult = CompletableDeferred<TdApi.Object>()
+                        telegramClient.send(TdApi.LogOut()) { result ->
+                            logoutResult.complete(result)
+                        }
+                        val response = withTimeoutOrNull(5_000L) { logoutResult.await() }
+                        if (response is TdApi.Error && _tdAuthState.value !is TdApi.AuthorizationStateClosed) {
+                            telegramClient.send(TdApi.Close()) { _ -> }
+                        }
+                        withTimeoutOrNull(10_000L) {
+                            _tdAuthState.first { it is TdApi.AuthorizationStateClosed }
+                        }
+                    }
+
+                    driveRepository.get().clearAllLocalUserDataOnLogout()
+
+                    if (_tdAuthState.value is TdApi.AuthorizationStateClosed) {
+                        runCatching {
+                            File("${context.filesDir.absolutePath}/tdlib").deleteRecursively()
+                        }
+                    }
+
+                    _tdAuthState.value = null
+                    if (telegramClient.recreateClient()) {
+                        telegramClient.send(TdApi.GetAuthorizationState()) { result ->
+                            if (result is TdApi.AuthorizationState) {
+                                handleAuthorizationState(result)
+                            }
+                        }
+                        // Give the fresh TDLib client a brief window to receive
+                        // WaitTdlibParameters -> WaitPhoneNumber before UI restarts.
+                        withTimeoutOrNull(3_000L) {
+                            _tdAuthState.first {
+                                it is TdApi.AuthorizationStateWaitPhoneNumber ||
+                                    it is TdApi.AuthorizationStateWaitTdlibParameters
+                            }
+                        }
+                    }
+                } finally {
+                    isLoggingOut.set(false)
+                    _authState.value = AuthState.Unauthenticated
+                }
+            }
+        }.await()
+    }
+
     fun logout() {
-        secureSettings.saveBoolean("active_provider_google", false)
-        secureSettings.saveBoolean("active_provider_telegram", false)
-        telegramClient.send(TdApi.LogOut()) { _ ->
-            _authState.value = AuthState.Unauthenticated
-        }
+        scope.launch { logoutAndWait() }
     }
 
     fun logoutAll() {

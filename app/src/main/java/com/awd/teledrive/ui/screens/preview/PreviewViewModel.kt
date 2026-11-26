@@ -64,6 +64,8 @@ class PreviewViewModel @Inject constructor(
     // Tracks download progress of the files in the list
     val transfers = transferRepository.transfers
 
+    private val _activeFileId = MutableStateFlow(initialFileId)
+
     private val _decryptedPaths = MutableStateFlow<Map<Long, String>>(emptyMap())
     val decryptedPaths = _decryptedPaths.asStateFlow()
 
@@ -74,22 +76,39 @@ class PreviewViewModel @Inject constructor(
     val isOpening = _isOpening.asStateFlow()
 
     init {
-        // Observe both items and vault session unlock state. Immediately purge
-        // decrypted plaintext previews if the vault locks or times out.
+        // H11: decrypt lazily — only the single currently viewed item is ever
+        // decrypted, never every encrypted item in the folder/list. Immediately
+        // purge all plaintext previews if the vault locks or times out, and
+        // delete previously viewed plaintext files when moving to another page.
         viewModelScope.launch {
-            kotlinx.coroutines.flow.combine(items, secureSessionManager.isSessionUnlocked) { itemList, unlocked ->
-                itemList to unlocked
-            }.collect { (itemList, unlocked) ->
+            kotlinx.coroutines.flow.combine(
+                items,
+                _activeFileId,
+                secureSessionManager.isSessionUnlocked
+            ) { itemList, activeId, unlocked ->
+                Triple(itemList, activeId, unlocked)
+            }.collect { (itemList, activeId, unlocked) ->
                 if (!unlocked) {
-                    cleanupDecryptedPreviews()
+                    cleanupDecryptedPreviews(deleteDirectoryContents = true)
                     return@collect
                 }
-                itemList.forEach { file ->
-                    if (file.isEncrypted && file.localPath != null && !_decryptedPaths.value.containsKey(file.id)) {
-                        decryptForPreview(file)
-                    }
+                val currentFile = itemList.firstOrNull { it.id == activeId } ?: itemList.firstOrNull()
+                val keepId = currentFile?.id
+                pruneDecryptedPreviewsExcept(keepId)
+                if (currentFile != null &&
+                    currentFile.isEncrypted &&
+                    currentFile.localPath != null &&
+                    !_decryptedPaths.value.containsKey(currentFile.id)
+                ) {
+                    decryptForPreview(currentFile)
                 }
             }
+        }
+    }
+
+    fun setActiveFile(file: DriveItem.File) {
+        if (_activeFileId.value != file.id) {
+            _activeFileId.value = file.id
         }
     }
 
@@ -119,9 +138,12 @@ class PreviewViewModel @Inject constructor(
         val localFile = file.localPath?.let { File(it) }
         if (file.localPath == null || localFile?.exists() != true) {
             driveRepository.downloadForPreview(file.id, file.parentChatId, file.name)
-        } else if (file.isEncrypted && !_decryptedPaths.value.containsKey(file.id)) {
-            decryptForPreview(file)
-        } else if (!file.isEncrypted) {
+        } else if (file.isEncrypted) {
+            // H11: never pre-decrypt off-screen pages; only decrypt the active page.
+            if (file.id == _activeFileId.value && !_decryptedPaths.value.containsKey(file.id)) {
+                decryptForPreview(file)
+            }
+        } else {
             // Batch 7b content search: a local copy is now available for
             // preview — index its text (best-effort, never throws).
             // Encrypted files are skipped inside the indexer: their local
@@ -149,7 +171,16 @@ class PreviewViewModel @Inject constructor(
                 withContext(Dispatchers.IO) {
                     val encryptedFile = File(localPath)
                     val tempDir = File(context.cacheDir, PREVIEW_TEMP_DIR).apply { if (!exists()) mkdirs() }
-                    val decryptedFile = File(tempDir, "prev_dec_${file.id}_${sanitizeTempName(file.name)}")
+                    val safeName = sanitizeTempName(file.name)
+                    val decryptedFile = File(tempDir, "prev_dec_${file.id}_$safeName")
+                    // H11: belt-and-suspenders canonical path containment guard so a
+                    // crafted file.name can never escape PREVIEW_TEMP_DIR.
+                    val canonicalDir = tempDir.canonicalPath
+                    val canonicalTarget = decryptedFile.canonicalPath
+                    if (!canonicalTarget.startsWith(canonicalDir + File.separator)) {
+                        Log.e(TAG, "Refusing to decrypt preview outside temp directory for file ${file.id}")
+                        return@withContext
+                    }
                     try {
                         // Ensure decryption is tracked in the Transfer menu
                         transferRepository.addTransfer(
@@ -170,8 +201,9 @@ class PreviewViewModel @Inject constructor(
                             )
                         }
 
-                        // If the vault locked while decrypting, discard the plaintext immediately.
-                        if (!secureSessionManager.isUnlocked()) {
+                        // If the vault locked or user swiped away while decrypting,
+                        // discard the plaintext immediately.
+                        if (!secureSessionManager.isUnlocked() || _activeFileId.value != file.id) {
                             decryptedFile.delete()
                             return@withContext
                         }
@@ -215,13 +247,28 @@ class PreviewViewModel @Inject constructor(
 
     private fun sanitizeTempName(rawName: String): String {
         val base = rawName.substringAfterLast('/').substringAfterLast('\\')
+            .replace("..", "_")
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .trimStart('.')
             .take(80)
         return base.ifEmpty { "file" }
     }
 
-    private fun cleanupDecryptedPreviews() {
+    private fun pruneDecryptedPreviewsExcept(keepFileId: Long?) {
+        val current = _decryptedPaths.value
+        val toRemove = current.filterKeys { it != keepFileId }
+        if (toRemove.isEmpty()) return
+        _decryptedPaths.value = current.filterKeys { it == keepFileId }
+        toRemove.values.forEach { path ->
+            try {
+                File(path).delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "pruneDecryptedPreviewsExcept: temp file delete failed", e)
+            }
+        }
+    }
+
+    private fun cleanupDecryptedPreviews(deleteDirectoryContents: Boolean = false) {
         val paths = _decryptedPaths.value.values.toList()
         _decryptedPaths.value = emptyMap()
         paths.forEach { path ->
@@ -231,11 +278,18 @@ class PreviewViewModel @Inject constructor(
                 Log.w(TAG, "cleanupDecryptedPreviews: temp file delete failed", e)
             }
         }
+        if (deleteDirectoryContents) {
+            try {
+                File(context.cacheDir, PREVIEW_TEMP_DIR).deleteRecursively()
+            } catch (e: Exception) {
+                Log.w(TAG, "cleanupDecryptedPreviews: temp dir cleanup failed", e)
+            }
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
-        cleanupDecryptedPreviews()
+        cleanupDecryptedPreviews(deleteDirectoryContents = true)
     }
 
     fun deleteItem(file: DriveItem.File) {
