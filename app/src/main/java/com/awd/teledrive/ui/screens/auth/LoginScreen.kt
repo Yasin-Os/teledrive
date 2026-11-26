@@ -97,6 +97,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -115,6 +116,7 @@ import kotlinx.coroutines.delay
 import java.text.Collator
 import java.text.Normalizer
 import java.util.Locale
+import com.awd.teledrive.R
 
 // ──────────────────────────────────────────────────────────────
 //  Glassmorphic Dark Theme Tokens
@@ -129,35 +131,6 @@ private val GlassTextSub = Color(0xFF94A3B8)
 private val GlassAlert = Color(0xFFFBBF24)
 private val ModernFont = FontFamily.SansSerif
 
-private object LoginText {
-    const val PHONE_TITLE = "Your phone number"
-    const val PHONE_SUBTITLE = "Enter your Telegram number"
-    const val PHONE_LABEL = "Phone number"
-    const val API_ID_LABEL = "API ID"
-    const val API_HASH_LABEL = "API hash"
-    const val API_GUIDE_LINK = "Don't have API credentials? Get them in 2 minutes"
-    const val API_CREATE = "Create API ID"
-    const val API_GUIDE_TITLE = "Get your Telegram API credentials"
-    const val API_GUIDE_NOTE = "Your credentials stay on your device and are never shared with anyone."
-    const val API_GUIDE_OPEN = "Open my.telegram.org"
-    const val API_GUIDE_CLOSE = "Close"
-    const val COUNTRY_HINT = "Select Country"
-    const val COUNTRY_WRONG = "Invalid country code"
-
-    const val CODE_TITLE_FALLBACK = "Verification code"
-    const val CODE_SUBTITLE = "Enter the 5 or 6-digit code sent to your Telegram app"
-    const val RESEND = "Resend code"
-    const val RESEND_IN = "Resend in"
-
-    const val PASSWORD_TITLE = "Cloud Password"
-    const val PASSWORD_SUBTITLE = "Enter your Two-Step Verification password"
-    const val PASSWORD_LABEL = "Enter password"
-
-    const val PICKER_TITLE = "Select Country"
-    const val SEARCH = "Search country or code..."
-
-    const val SECURITY = "End-to-End Encrypted • MyCloud"
-}
 
 data class CountryOption(
     val name: String,
@@ -533,7 +506,7 @@ private fun CountryPickerDialog(
                     if (searching) {
                         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                             if (query.isEmpty()) {
-                                Text(LoginText.SEARCH, color = GlassTextSub, fontSize = 16.sp, fontFamily = ModernFont)
+                                Text(stringResource(R.string.login_search_country), color = GlassTextSub, fontSize = 16.sp, fontFamily = ModernFont)
                             }
                             BasicTextField(
                                 value = query,
@@ -554,7 +527,7 @@ private fun CountryPickerDialog(
                         }
                     } else {
                         Text(
-                            text = LoginText.PICKER_TITLE,
+                            text = stringResource(R.string.login_select_country),
                             color = Color.White,
                             fontSize = 19.sp,
                             fontFamily = ModernFont,
@@ -626,15 +599,15 @@ private fun CountryPickerDialog(
 private fun ApiGuideDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val steps = listOf(
-        "Open my.telegram.org in your browser and log in with your Telegram phone number.",
-        "Tap \"API development tools\".",
-        "Create a new app — any name and platform will do.",
-        "Copy the api_id (numbers) and api_hash (letters and digits) back into the fields above."
+        stringResource(R.string.login_api_step1),
+        stringResource(R.string.login_api_step2),
+        stringResource(R.string.login_api_step3),
+        stringResource(R.string.login_api_step4)
     )
     Dialog(onDismissRequest = onDismiss) {
         GlassCard {
             Text(
-                text = LoginText.API_GUIDE_TITLE,
+                text = stringResource(R.string.login_api_guide_title),
                 color = Color.White,
                 fontSize = 18.sp,
                 fontFamily = ModernFont,
@@ -669,7 +642,7 @@ private fun ApiGuideDialog(onDismiss: () -> Unit) {
             }
             Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = LoginText.API_GUIDE_NOTE,
+                text = stringResource(R.string.login_api_guide_note),
                 color = GlassTextSub,
                 fontSize = 12.5.sp,
                 fontFamily = ModernFont,
@@ -691,7 +664,7 @@ private fun ApiGuideDialog(onDismiss: () -> Unit) {
                 }
             ) {
                 Text(
-                    text = LoginText.API_GUIDE_OPEN,
+                    text = stringResource(R.string.login_api_guide_open),
                     color = GlassAccent,
                     fontSize = 14.5.sp,
                     fontFamily = ModernFont,
@@ -700,7 +673,7 @@ private fun ApiGuideDialog(onDismiss: () -> Unit) {
             }
             TextButton(onClick = onDismiss) {
                 Text(
-                    text = LoginText.API_GUIDE_CLOSE,
+                    text = stringResource(R.string.close),
                     color = GlassTextSub,
                     fontSize = 14.sp,
                     fontFamily = ModernFont
@@ -930,7 +903,7 @@ fun LoginContent(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Your personal cloud, on Telegram",
+                    text = stringResource(R.string.login_tagline),
                     color = GlassTextSub,
                     fontSize = 13.5.sp,
                     fontFamily = ModernFont
@@ -964,7 +937,7 @@ fun LoginContent(
                             ) {
                                 when (targetState) {
                                     is LoginUiState.InitialSetup -> {
-                                        StepHeader(LoginText.PHONE_TITLE, LoginText.PHONE_SUBTITLE)
+                                        StepHeader(stringResource(R.string.login_phone_title), stringResource(R.string.login_phone_subtitle))
 
                                         Spacer(modifier = Modifier.height(20.dp))
 
@@ -999,14 +972,14 @@ fun LoginContent(
                                                     )
                                                 }
                                                 codeHasPrefix -> Text(
-                                                    text = LoginText.COUNTRY_HINT,
+                                                    text = stringResource(R.string.login_select_country),
                                                     color = GlassTextSub,
                                                     fontSize = 15.5.sp,
                                                     fontFamily = ModernFont,
                                                     modifier = Modifier.weight(1f)
                                                 )
                                                 else -> Text(
-                                                    text = LoginText.COUNTRY_WRONG,
+                                                    text = stringResource(R.string.login_country_wrong),
                                                     color = GlassAlert,
                                                     fontSize = 15.5.sp,
                                                     fontFamily = ModernFont,
@@ -1029,7 +1002,7 @@ fun LoginContent(
                                         }
 
                                         NotchedGlassBox(
-                                            label = LoginText.PHONE_LABEL,
+                                            label = stringResource(R.string.login_phone_label),
                                             focused = codeFieldFocused || numberFieldFocused,
                                             isError = authError != null && !apiCredentialsError
                                         ) {
@@ -1114,7 +1087,7 @@ fun LoginContent(
                                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
                                             NotchedGlassBox(
-                                                label = LoginText.API_ID_LABEL,
+                                                label = stringResource(R.string.login_api_id_label),
                                                 focused = apiIdFocused,
                                                 isError = apiCredentialsError,
                                                 modifier = Modifier.weight(1f)
@@ -1143,7 +1116,7 @@ fun LoginContent(
                                             }
 
                                             NotchedGlassBox(
-                                                label = LoginText.API_HASH_LABEL,
+                                                label = stringResource(R.string.login_api_hash_label),
                                                 focused = apiHashFocused,
                                                 isError = apiCredentialsError,
                                                 modifier = Modifier.weight(1f)
@@ -1208,7 +1181,7 @@ fun LoginContent(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = LoginText.API_CREATE,
+                                                text = stringResource(R.string.login_api_create),
                                                 fontSize = 14.5.sp,
                                                 fontFamily = ModernFont,
                                                 fontWeight = FontWeight.SemiBold
@@ -1218,7 +1191,7 @@ fun LoginContent(
                                         Spacer(modifier = Modifier.height(10.dp))
 
                                         Text(
-                                            text = LoginText.API_GUIDE_LINK,
+                                            text = stringResource(R.string.login_api_guide_link),
                                             color = GlassAccent,
                                             fontSize = 12.5.sp,
                                             fontFamily = ModernFont,
@@ -1241,7 +1214,7 @@ fun LoginContent(
                                                 .padding(horizontal = 8.dp, vertical = 2.dp)
                                         ) {
                                             Text(
-                                                text = submittedPhone.ifEmpty { LoginText.CODE_TITLE_FALLBACK },
+                                                text = submittedPhone.ifEmpty { stringResource(R.string.login_code_title) },
                                                 color = Color.White,
                                                 fontSize = 20.sp,
                                                 fontFamily = ModernFont,
@@ -1252,7 +1225,7 @@ fun LoginContent(
                                                 Spacer(modifier = Modifier.width(8.dp))
                                                 Icon(
                                                     imageVector = Icons.Default.Edit,
-                                                    contentDescription = "Change number",
+                                                    contentDescription = stringResource(R.string.login_change_number),
                                                     tint = GlassAccent,
                                                     modifier = Modifier.size(17.dp)
                                                 )
@@ -1260,7 +1233,7 @@ fun LoginContent(
                                         }
                                         Spacer(modifier = Modifier.height(6.dp))
                                         Text(
-                                            text = LoginText.CODE_SUBTITLE,
+                                            text = stringResource(R.string.login_code_subtitle),
                                             color = GlassTextSub,
                                             fontSize = 13.5.sp,
                                             fontFamily = ModernFont,
@@ -1348,7 +1321,7 @@ fun LoginContent(
                                             val mm = resendTimer / 60
                                             val ss = (resendTimer % 60).toString().padStart(2, '0')
                                             Text(
-                                                text = "${LoginText.RESEND_IN} $mm:$ss",
+                                                text = stringResource(R.string.login_resend_in, "$mm:$ss"),
                                                 color = GlassTextSub,
                                                 fontSize = 13.sp,
                                                 fontFamily = ModernFont
@@ -1362,7 +1335,7 @@ fun LoginContent(
                                                 enabled = !isProcessing
                                             ) {
                                                 Text(
-                                                    text = LoginText.RESEND,
+                                                    text = stringResource(R.string.login_resend),
                                                     color = GlassAccent,
                                                     fontSize = 14.sp,
                                                     fontFamily = ModernFont,
@@ -1373,7 +1346,7 @@ fun LoginContent(
                                     }
 
                                     is LoginUiState.EnteringPassword -> {
-                                        StepHeader(LoginText.PASSWORD_TITLE, LoginText.PASSWORD_SUBTITLE)
+                                        StepHeader(stringResource(R.string.login_password_title), stringResource(R.string.login_password_subtitle))
 
                                         Spacer(modifier = Modifier.height(22.dp))
 
@@ -1384,7 +1357,7 @@ fun LoginContent(
                                         }
 
                                         NotchedGlassBox(
-                                            label = LoginText.PASSWORD_LABEL,
+                                            label = stringResource(R.string.login_password_label),
                                             focused = passwordFocused,
                                             isError = authError != null
                                         ) {
@@ -1490,7 +1463,7 @@ fun LoginContent(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = LoginText.SECURITY,
+                                    text = stringResource(R.string.login_security),
                                     color = GlassTextSub,
                                     fontSize = 11.5.sp,
                                     fontFamily = ModernFont

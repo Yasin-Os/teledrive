@@ -76,6 +76,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -97,6 +98,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.awd.teledrive.R
+import com.awd.teledrive.core.BiometricHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.awd.teledrive.core.utils.FileUtils
 import com.awd.teledrive.data.model.GitHubRelease
 import com.awd.teledrive.data.repository.SettingsRepository
@@ -115,6 +120,8 @@ import com.awd.teledrive.ui.theme.VioletAccent
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+private const val MAX_METADATA_IMPORT_CHARS = 10 * 1024 * 1024
 
 @Composable
 fun SettingsScreen(
@@ -193,9 +200,14 @@ fun SettingsScreen(
         },
         onLogout = {
             viewModel.logout()
+            // L21: getLaunchIntentForPackage() is nullable — a null
+            // intent used to be passed straight to startActivity(),
+            // which throws. Only restart when there is an intent.
             val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            intent?.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            }
             (context as? android.app.Activity)?.finish()
         },
         onNavigateToBackupFolders = onNavigateToBackupFolders,
@@ -322,36 +334,62 @@ fun SettingsContent(
     }
 
     // P1-11: export the local manifest (folders + file mappings) as a JSON file.
+    // L22: the JSON encode + file write used to run synchronously on the
+    // main thread in this callback (jank on a big manifest).
+    val metadataScope = rememberCoroutineScope()
     val exportMetadataLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         uri?.let {
-            try {
-                context.contentResolver.openOutputStream(it)?.use { out ->
-                    out.write(onExportMetadata().toByteArray(Charsets.UTF_8))
+            metadataScope.launch {
+                var messageRes = R.string.settings_export_failed
+                try {
+                    val bytes = withContext(Dispatchers.IO) { onExportMetadata().toByteArray(Charsets.UTF_8) }
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(it)?.use { out -> out.write(bytes) }
+                            ?: throw IllegalStateException("null output stream")
+                    }
+                    messageRes = R.string.settings_metadata_exported
+                } catch (e: Exception) {
+                    messageRes = R.string.settings_export_failed
                 }
-                Toast.makeText(context, "Metadata exported", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(context, "Export failed", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(messageRes), Toast.LENGTH_SHORT).show()
             }
         }
     }
 
     // P1-11: import a previously exported manifest JSON file.
+    // L22: the whole file used to be read with readText() and no size cap
+    // (a huge/malicious JSON could OOM). Reads are capped and run on IO.
     val importMetadataLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
         uri?.let {
-            try {
-                val text = context.contentResolver.openInputStream(it)?.bufferedReader()?.use { reader -> reader.readText() } ?: ""
-                val ok = onImportMetadata(text)
-                Toast.makeText(
-                    context,
-                    if (ok) "Metadata imported" else "Import failed: invalid file",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } catch (e: Exception) {
-                Toast.makeText(context, "Import failed", Toast.LENGTH_SHORT).show()
+            metadataScope.launch {
+                var messageRes = R.string.settings_import_failed
+                try {
+                    val text: String? = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(it)?.bufferedReader()?.use { reader ->
+                            val sb = StringBuilder()
+                            val buf = CharArray(8192)
+                            while (true) {
+                                val read = reader.read(buf)
+                                if (read == -1) break
+                                if (sb.length + read > MAX_METADATA_IMPORT_CHARS) return@use null
+                                sb.append(buf, 0, read)
+                            }
+                            sb.toString()
+                        }
+                    }
+                    messageRes = when {
+                        text == null -> R.string.settings_import_failed_invalid
+                        withContext(Dispatchers.IO) { onImportMetadata(text) } -> R.string.settings_metadata_imported
+                        else -> R.string.settings_import_failed_invalid
+                    }
+                } catch (e: Exception) {
+                    messageRes = R.string.settings_import_failed
+                }
+                Toast.makeText(context, context.getString(messageRes), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -599,12 +637,12 @@ fun SettingsContent(
     if (showCloudBackupsDialog) {
         AlertDialog(
             onDismissRequest = { showCloudBackupsDialog = false },
-            title = { Text("Restore from Cloud") },
+            title = { Text(stringResource(R.string.restore_from_cloud)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (cloudBackups.isEmpty()) {
                         Text(
-                            text = "No cloud backups found",
+                            text = stringResource(R.string.settings_no_cloud_backups),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -612,7 +650,7 @@ fun SettingsContent(
                         val format = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
                         cloudBackups.forEach { backup ->
                             ModernSelectionItem(
-                                title = "${format.format(Date(backup.date))} • ${backup.folderCount} folders",
+                                title = stringResource(R.string.settings_backup_folders_count, format.format(Date(backup.date)), backup.folderCount),
                                 isSelected = false,
                                 onClick = { pendingRestoreBackup = backup }
                             )
@@ -629,8 +667,8 @@ fun SettingsContent(
         val format = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
         AlertDialog(
             onDismissRequest = { pendingRestoreBackup = null },
-            title = { Text("Restore backup?") },
-            text = { Text("Restore the backup from ${format.format(Date(backup.date))}? Your current folders will be replaced.") },
+            title = { Text(stringResource(R.string.settings_restore_backup_title)) },
+            text = { Text(stringResource(R.string.settings_restore_backup_message, format.format(Date(backup.date)))) },
             confirmButton = {
                 TextButton(onClick = {
                     pendingRestoreBackup = null
@@ -638,11 +676,11 @@ fun SettingsContent(
                     onRestoreCloudBackup(backup.messageId) { ok ->
                         Toast.makeText(
                             context,
-                            if (ok) "Backup restored" else "Restore failed",
+                            if (ok) context.getString(R.string.settings_backup_restored) else context.getString(R.string.settings_restore_failed),
                             Toast.LENGTH_SHORT
                         ).show()
                     }
-                }) { Text("Restore") }
+                }) { Text(stringResource(R.string.restore)) }
             },
             dismissButton = {
                 TextButton(onClick = { pendingRestoreBackup = null }) { Text(stringResource(R.string.cancel)) }
@@ -766,7 +804,15 @@ fun SettingsContent(
                 ModernToggleBarItem(
                     icon = Icons.Default.Fingerprint, title = stringResource(R.string.biometric_unlock),
                     accentColor = VioletAccent, checked = isBiometricEnabled,
-                    enabled = isSecurityEnabled, onCheckedChange = onSetBiometricEnabled
+                    // L28: don't let the toggle turn biometric on when the
+                    // device has no usable biometric enrolled.
+                    enabled = isSecurityEnabled, onCheckedChange = { enabled ->
+                        if (enabled && !BiometricHelper.isBiometricAvailable(context)) {
+                            Toast.makeText(context, context.getString(R.string.settings_biometric_not_available), Toast.LENGTH_SHORT).show()
+                        } else {
+                            onSetBiometricEnabled(enabled)
+                        }
+                    }
                 )
             }
 
@@ -853,12 +899,12 @@ fun SettingsContent(
                     onClick = { showLanguageDialog = true }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Article, title = "View Logs",
+                    icon = Icons.Default.Article, title = stringResource(R.string.settings_view_logs),
                     accentColor = Color(0xFFEC4899),
                     onClick = onNavigateToLogs
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Info, title = "About",
+                    icon = Icons.Default.Info, title = stringResource(R.string.settings_about),
                     accentColor = Color(0xFFEC4899),
                     onClick = onNavigateToAbout
                 )
@@ -873,18 +919,18 @@ fun SettingsContent(
             // 6. Data & Backup Bar Section (Teal Accent) — P1-11: wires the
             // manifest backup / restore / export / import functions that already
             // existed in SettingsViewModel but had no UI at all.
-            SettingsSectionBar(title = "Data & Backup", accentColor = Color(0xFF14B8A6), glowAlpha = glowAlpha) {
+            SettingsSectionBar(title = stringResource(R.string.settings_data_backup), accentColor = Color(0xFF14B8A6), glowAlpha = glowAlpha) {
                 ModernActionBarItem(
-                    icon = Icons.Default.CloudUpload, title = "Back Up to Cloud",
+                    icon = Icons.Default.CloudUpload, title = stringResource(R.string.settings_backup_to_cloud),
                     accentColor = Color(0xFF14B8A6),
-                    badgeText = "Saved Messages",
+                    badgeText = stringResource(R.string.settings_saved_messages),
                     onClick = {
                         onTriggerCloudBackup()
-                        Toast.makeText(context, "Cloud backup started", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.settings_cloud_backup_started), Toast.LENGTH_SHORT).show()
                     }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.Restore, title = "Restore from Cloud",
+                    icon = Icons.Default.Restore, title = stringResource(R.string.restore_from_cloud),
                     accentColor = Color(0xFF14B8A6),
                     onClick = {
                         onLoadCloudBackups()
@@ -892,13 +938,13 @@ fun SettingsContent(
                     }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.FileDownload, title = "Export Metadata",
-                    accentColor = Color(0xFF14B8A6), badgeText = "JSON",
+                    icon = Icons.Default.FileDownload, title = stringResource(R.string.settings_export_metadata),
+                    accentColor = Color(0xFF14B8A6), badgeText = stringResource(R.string.settings_json_badge),
                     onClick = { exportMetadataLauncher.launch("mycloud-metadata.json") }
                 )
                 ModernActionBarItem(
-                    icon = Icons.Default.FileUpload, title = "Import Metadata",
-                    accentColor = Color(0xFF14B8A6), badgeText = "JSON",
+                    icon = Icons.Default.FileUpload, title = stringResource(R.string.settings_import_metadata),
+                    accentColor = Color(0xFF14B8A6), badgeText = stringResource(R.string.settings_json_badge),
                     onClick = { importMetadataLauncher.launch(arrayOf("application/json")) }
                 )
             }

@@ -8,6 +8,10 @@
         <exclude domain="database" path="." />
         <exclude domain="sharedpref" path="secure_settings_v2.xml" />
         <exclude domain="sharedpref" path="fallback_settings.xml" />
+    <!-- L7: plaintext prefs (backed-up file paths/names, update state)
+         must not leave the device in a cloud backup either. -->
+    <exclude domain="sharedpref" path="mycloud_custom_prefs.xml" />
+    <exclude domain="sharedpref" path="mycloud_update_prefs.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
         <exclude domain="file" path="tdlib/" />
@@ -16,6 +20,10 @@
         <exclude domain="database" path="." />
         <exclude domain="sharedpref" path="secure_settings_v2.xml" />
         <exclude domain="sharedpref" path="fallback_settings.xml" />
+    <!-- L7: plaintext prefs (backed-up file paths/names, update state)
+         must not leave the device in a cloud backup either. -->
+    <exclude domain="sharedpref" path="mycloud_custom_prefs.xml" />
+    <exclude domain="sharedpref" path="mycloud_update_prefs.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
         <exclude domain="file" path="tdlib/" />

@@ -124,6 +124,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -885,7 +886,7 @@ fun VideoPlayerScreen(
                 BackgroundAudioEngine.updateNotification(context)
                 sleepTimerMinutes = 0
                 sleepTimerEndsAt = 0L
-                Toast.makeText(context, "Sleep timer finished", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.video_sleep_timer_finished), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -904,7 +905,7 @@ fun VideoPlayerScreen(
                 }
                 if (localPath.isNullOrEmpty()) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Snapshot not available yet", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.video_snapshot_not_available), Toast.LENGTH_SHORT).show()
                     }
                     return@launch
                 }
@@ -917,7 +918,7 @@ fun VideoPlayerScreen(
                     )
                     if (frame == null) {
                         withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "Could not capture frame", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.video_snapshot_capture_failed), Toast.LENGTH_SHORT).show()
                         }
                         return@launch
                     }
@@ -929,7 +930,7 @@ fun VideoPlayerScreen(
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
                             context,
-                            if (saved) "Snapshot saved" else "Snapshot failed",
+                            if (saved) context.getString(R.string.video_snapshot_saved) else context.getString(R.string.video_snapshot_failed),
                             Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -938,7 +939,7 @@ fun VideoPlayerScreen(
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "Snapshot failed", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.video_snapshot_failed), Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -1132,7 +1133,7 @@ fun VideoPlayerScreen(
                 }
                 Toast.makeText(
                     context,
-                    if (sleepTimerMinutes == 0) "Sleep timer off" else "Sleep timer: $sleepTimerMinutes min",
+                    if (sleepTimerMinutes == 0) context.getString(R.string.video_sleep_timer_off) else context.getString(R.string.video_sleep_timer_on, sleepTimerMinutes),
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -1466,7 +1467,7 @@ fun VideoPlayerScreen(
                                 .padding(end = 8.dp)
                         ) {
                             Text(
-                                text = "Background play / Play as audio",
+                                text = stringResource(R.string.video_background_play),
                                 color = Color.White,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,

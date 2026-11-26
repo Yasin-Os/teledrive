@@ -196,7 +196,11 @@ fun PinLockScreenContent(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                val errText = localError ?: externalError
+                // L25: while a lockout is running, the ViewModel's lockout
+                // message ("Too many wrong attempts. Try again in Ns") must
+                // win — the stale "Incorrect PIN" from the last failed
+                // attempt used to hide it until the next digit press.
+                val errText = if (lockoutRemainingSeconds > 0) externalError ?: localError else localError ?: externalError
                 Text(
                     text = errText ?: "Protected with MyCloud Security",
                     color = if (errText != null) Color(0xFFEF5350) else Color.White.copy(alpha = 0.6f),

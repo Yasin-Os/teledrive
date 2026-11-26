@@ -130,7 +130,18 @@ fun MediaContent(
     var showCreateAlbumDialog by remember { mutableStateOf(false) }
     var newAlbumName by remember { mutableStateOf("") }
 
-    val topAlbums = remember(mediaItems, folders) {
+    // L4: album titles are UI labels, so they come from string resources
+    // (read here, outside remember, so a language change re-reads them).
+    val allPhotosTitle = stringResource(R.string.media_album_all_photos)
+    val cameraTitle = stringResource(R.string.camera)
+    val videosTitle = stringResource(R.string.media_album_videos)
+    val screenshotsTitle = stringResource(R.string.media_album_screenshots)
+    val screenRecordingsTitle = stringResource(R.string.media_album_screen_recordings)
+    val downloadsTitle = stringResource(R.string.downloads)
+    val facebookTitle = stringResource(R.string.media_album_facebook)
+    val whatsappTitle = stringResource(R.string.media_album_whatsapp)
+
+    val topAlbums = remember(mediaItems, folders, allPhotosTitle, cameraTitle, videosTitle, screenshotsTitle, screenRecordingsTitle) {
         val allPhotos = mediaItems.filter { it.mimeType.startsWith("image/") }
         val videos = mediaItems.filter { it.mimeType.startsWith("video/") }
         // Camera: "Camera"/"DCIM" নামের ফোল্ডারের ফাইল আগে; না পেলে ফাইলের নামের
@@ -155,15 +166,15 @@ fun MediaContent(
         }
 
         listOf(
-            MediaAlbum("all_photos", "All Photos", allPhotos),
-            MediaAlbum("camera", "Camera", camera),
-            MediaAlbum("videos", "Videos", videos, isVideoPlaceholder = true),
-            MediaAlbum("screenshots", "Screenshots", screenshots),
-            MediaAlbum("screen_recordings", "Screen Recordings", screenRecordings, isVideoPlaceholder = true)
+            MediaAlbum("all_photos", allPhotosTitle, allPhotos),
+            MediaAlbum("camera", cameraTitle, camera),
+            MediaAlbum("videos", videosTitle, videos, isVideoPlaceholder = true),
+            MediaAlbum("screenshots", screenshotsTitle, screenshots),
+            MediaAlbum("screen_recordings", screenRecordingsTitle, screenRecordings, isVideoPlaceholder = true)
         )
     }
 
-    val moreAlbums = remember(mediaItems, folders) {
+    val moreAlbums = remember(mediaItems, folders, downloadsTitle, facebookTitle, whatsappTitle) {
         val list = mutableListOf<MediaAlbum>()
         // Facebook/WhatsApp: ফাইলের নামের সাবস্ট্রিং দিয়ে নয় — নামে "facebook"/
         // "whatsapp" থাকা ফোল্ডারের ভেতরের ফাইল দিয়ে মেলাও
@@ -183,9 +194,9 @@ fun MediaContent(
         }
         val dlItems = mediaItems.filter { (it.virtualParentId ?: "0") == "0" }
 
-        list.add(MediaAlbum("downloads", "Downloads", dlItems, isVideoPlaceholder = true))
-        if (fbItems.isNotEmpty()) list.add(MediaAlbum("facebook", "Facebook", fbItems))
-        if (waItems.isNotEmpty()) list.add(MediaAlbum("whatsapp", "WhatsApp Video", waItems))
+        list.add(MediaAlbum("downloads", downloadsTitle, dlItems, isVideoPlaceholder = true))
+        if (fbItems.isNotEmpty()) list.add(MediaAlbum("facebook", facebookTitle, fbItems))
+        if (waItems.isNotEmpty()) list.add(MediaAlbum("whatsapp", whatsappTitle, waItems))
 
         folders.forEach { folder ->
             val vId = folder.virtualId ?: ""
@@ -213,12 +224,12 @@ fun MediaContent(
     if (showCreateAlbumDialog) {
         AlertDialog(
             onDismissRequest = { showCreateAlbumDialog = false },
-            title = { Text("New Album") },
+            title = { Text(stringResource(R.string.media_new_album)) },
             text = {
                 OutlinedTextField(
                     value = newAlbumName,
                     onValueChange = { newAlbumName = it },
-                    label = { Text("Album Name") },
+                    label = { Text(stringResource(R.string.media_album_name)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -296,7 +307,7 @@ fun MediaContent(
                     title = {
                         Column {
                             Text(selectedAlbum!!.title, style = MaterialTheme.typography.titleLarge)
-                            Text("${selectedAlbum!!.items.size} items", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(stringResource(R.string.media_items_count, selectedAlbum!!.items.size), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },
                     modifier = Modifier.statusBarsPadding(),
@@ -319,7 +330,7 @@ fun MediaContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = { showCreateAlbumDialog = true }) {
-                            Icon(Icons.Default.Add, contentDescription = "Create Album")
+                            Icon(Icons.Default.Add, contentDescription = stringResource(R.string.media_create_album))
                         }
                         // M37: "Select" used to open the first album instead
                         // of entering selection mode; MoreVert did nothing.
@@ -327,11 +338,11 @@ fun MediaContent(
                             selectedAlbumId = topAlbums.firstOrNull()?.id
                             selectionMode = true
                         }) {
-                            Icon(Icons.Default.CheckBox, contentDescription = "Select")
+                            Icon(Icons.Default.CheckBox, contentDescription = stringResource(R.string.select))
                         }
                         Box {
                             IconButton(onClick = { showMoreMenu = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "More")
+                                Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.more))
                             }
                             DropdownMenu(
                                 expanded = showMoreMenu,
@@ -357,7 +368,7 @@ fun MediaContent(
                         }
                     }
                     Text(
-                        text = "Albums",
+                        text = stringResource(R.string.media_albums_title),
                         style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
@@ -391,7 +402,7 @@ fun MediaContent(
 
                 item(span = { GridItemSpan(3) }) {
                     Text(
-                        text = "More Albums",
+                        text = stringResource(R.string.media_more_albums),
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)

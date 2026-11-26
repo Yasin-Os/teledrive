@@ -365,10 +365,14 @@ class DriveRepository @Inject constructor(
         offlinePathCache[path]?.let { (cached, cachedAt) ->
             if (now - cachedAt < offlinePathCacheTtlMs) return cached
         }
+        // L13: a genuine 0-byte file is still a real offline file — the
+        // old length check made it look missing. And a negative result
+        // must not be cached: a download finishing a moment later would
+        // keep reading the stale "missing" answer for the whole TTL.
         val f = File(path)
-        val result = if (f.exists() && f.length() > 0L) path else null
+        val result = if (f.exists()) path else null
         if (offlinePathCache.size > 2000) offlinePathCache.clear()
-        offlinePathCache[path] = result to now
+        if (result != null) offlinePathCache[path] = result to now
         return result
     }
 
@@ -383,7 +387,9 @@ class DriveRepository @Inject constructor(
     // currentManifest itself: it is a var that gets reassigned, so the
     // lock object would change under the threads using it.
     private val manifestLock = Any()
-    private var manifestMessageId: Long = 0
+    // L17: written from TDLib callbacks, read from IO scope — without
+    // @Volatile the read could see a stale 0 and re-save the manifest.
+    @Volatile private var manifestMessageId: Long = 0
 
     // Manifest transport limits: a Telegram text message caps at 4096
     // chars. A manifest that no longer fits in one message is saved as
@@ -850,7 +856,7 @@ class DriveRepository @Inject constructor(
             if (dir.exists()) {
                 if (dir.isDirectory) {
                     scanDirFast(dir, dedup, foundFiles, path)
-                } else if (dir.isFile && dir.length() > 0) {
+                } else if (dir.isFile) { // L13: 0-byte files are real files too
                     val key = "${dir.absolutePath}_${dir.length()}"
                     if (!dedup.isBackedUp(key, dir.lastModified()) && !inFlightBackupKeys.contains(key)) {
                         foundFiles[key] = BackupTargetFile(key, dir, dir.name, dir.length(), dir.lastModified(), dir.parent ?: path)
@@ -904,7 +910,7 @@ class DriveRepository @Inject constructor(
                             val filePath = File(Environment.getExternalStorageDirectory(), relDir + displayName).absolutePath
                             if (normalizedPaths.any { folder -> filePath.startsWith("$folder/") || filePath == folder }) {
                                 val f = File(filePath)
-                                if (f.exists() && f.isFile && f.length() > 0 && !f.name.startsWith(".")) {
+                                if (f.exists() && f.isFile && !f.name.startsWith(".")) { // L13: no length gate
                                     val key = "${f.absolutePath}_${f.length()}"
                                     if (!dedup.isBackedUp(key, f.lastModified()) && !inFlightBackupKeys.contains(key)) {
                                         foundFiles[key] = BackupTargetFile(key, f, f.name, f.length(), f.lastModified(), f.parent ?: "")
@@ -937,7 +943,7 @@ class DriveRepository @Inject constructor(
             if (child.name.startsWith(".")) continue
             if (child.isDirectory) {
                 scanDirFast(child, dedup, out, sourceFolder)
-            } else if (child.isFile && child.length() > 0) {
+            } else if (child.isFile) { // L13: 0-byte files are real files too
                 val key = "${child.absolutePath}_${child.length()}"
                 if (!dedup.isBackedUp(key, child.lastModified()) && !inFlightBackupKeys.contains(key)) {
                     out[key] = BackupTargetFile(key, child, child.name, child.length(), child.lastModified(), sourceFolder)
@@ -952,7 +958,7 @@ class DriveRepository @Inject constructor(
             if (name.startsWith(".")) continue
             if (doc.isDirectory) {
                 scanDocumentTreeFallback(doc, dedup, out, materializeCopies, sourceFolder)
-            } else if (doc.isFile && doc.length() > 0) {
+            } else if (doc.isFile) { // L13: 0-byte files are real files too
                 // H14: the scan key is "doc_<uri>_<length>" — the same key
                 // the upload path records, so a backed-up SAF file is not
                 // scanned again (the old code re-derived the key from the
@@ -976,7 +982,7 @@ class DriveRepository @Inject constructor(
                                     input.copyTo(output, bufferSize = 512 * 1024)
                                 }
                             }
-                            if (tempFile.exists() && tempFile.length() > 0) {
+                            if (tempFile.exists()) { // L13: a 0-byte SAF source makes a 0-byte temp
                                 out[key] = BackupTargetFile(key, tempFile, name, doc.length(), mtime, sourceFolder)
                             }
                         } catch (e: Exception) { Log.w("DriveRepo", "scanDocumentTreeFallback failed", e) }
@@ -996,7 +1002,12 @@ class DriveRepository @Inject constructor(
             onFinished?.invoke()
             return
         }
-        if (!isBackupRunning.compareAndSet(false, true)) return
+        // L15: a concurrent call used to return without invoking
+        // onFinished, so its caller waited forever.
+        if (!isBackupRunning.compareAndSet(false, true)) {
+            onFinished?.invoke()
+            return
+        }
         scope.launch {
             try {
                 if (!isBackupNetworkAllowedFor(manual)) return@launch
@@ -1012,10 +1023,14 @@ class DriveRepository @Inject constructor(
                 val filesToUpload = collectTargetBackupFiles(backupFolders)
                 if (filesToUpload.isEmpty()) return@launch
 
+                // L15: remember whether anything really backed up, so the
+                // run's end time is only stamped on real progress (below).
+                val lastSuccessfulBefore = secureSettings.getLong("last_successful_backup_time", 0L)
+
                 for (target in filesToUpload) {
                     if (!isBackupNetworkAllowedFor(manual)) break
                     val file = target.file ?: continue
-                    if (!file.exists() || file.length() <= 0L) continue
+                    if (!file.exists()) continue // L13: 0-byte files are real files too
 
                     // H14: use the scan key — NOT a key re-derived from the
                     // temp file's path (for SAF targets that never matched
@@ -1037,7 +1052,12 @@ class DriveRepository @Inject constructor(
                     cleanupSafTempFile(target)
                     delay(80)
                 }
-                secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
+                // L15: "last backup time" used to be stamped even when the
+                // run broke early on network loss or every upload failed.
+                // Only stamp it when at least one file really backed up.
+                if (secureSettings.getLong("last_successful_backup_time", 0L) != lastSuccessfulBefore) {
+                    secureSettings.saveLong("last_backup_time", System.currentTimeMillis())
+                }
             } catch (e: Exception) {
                 Log.e("DriveRepo", "Sequential backup error: ${e.message}")
             } finally {
@@ -1625,8 +1645,11 @@ class DriveRepository @Inject constructor(
 
     @OptIn(FlowPreview::class)
     fun getItems(chatId: Long?, virtualParentId: String = "0", searchQuery: String = ""): Flow<List<DriveItem>> {
-        val targetChatId = savedMessagesChatId
-        val flow = if (searchQuery.isNotEmpty()) driveDao.searchGlobal(searchQuery)
+        // L14: the caller's chatId used to be ignored (always the Saved
+        // Messages chat), so previews opened from another chat looked the
+        // file up in the wrong place.
+        val targetChatId = if (chatId != null && chatId != 0L) chatId else savedMessagesChatId
+        val flow = if (searchQuery.isNotEmpty()) driveDao.searchGlobal(escapeLike(searchQuery))
         else if (targetChatId != 0L) driveDao.getItemsFlow(targetChatId, virtualParentId)
         else kotlinx.coroutines.flow.flowOf(emptyList())
 
@@ -1656,7 +1679,7 @@ class DriveRepository @Inject constructor(
     }
 
     fun searchGlobalPage(query: String, limit: Int, offset: Int): Flow<List<DriveItem>> {
-        return driveDao.searchGlobalPage(query, limit, offset).map { entities ->
+        return driveDao.searchGlobalPage(escapeLike(query), limit, offset).map { entities ->
             entities.filter { (!it.isFolder || it.isVirtual) && it.virtualParentId != SAFE_SPACE_VIRTUAL_ID }
                 .sortedByDescending { it.createdAt }
                 .map { entity ->
@@ -2852,70 +2875,83 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    /**
+     * L26: the per-chat half of [permanentlyDeleteItems] as a suspend
+     * function. It returns true only when Telegram confirmed the delete
+     * (TdApi.Ok within 30 s) — the local rows, content index and manifest
+     * mappings are cleaned up only on confirmation, exactly as before,
+     * so a refused delete keeps the files visible and retryable.
+     */
+    private suspend fun deleteFilesFromChat(chatId: Long, files: List<DriveItem.File>): Boolean {
+        val deleteResult = CompletableDeferred<Boolean>()
+        val ids = files.map { it.id }.toLongArray()
+        telegramClient.send(TdApi.DeleteMessages(chatId, ids, true)) { result ->
+            if (result is TdApi.Ok) {
+                scope.launch {
+                    files.forEach { f ->
+                        driveDao.deleteItemCompletely(f.id, chatId)
+                        // M9: the content index used to keep rows
+                        // for deleted files, so they stayed
+                        // searchable after deletion.
+                        if (f.remoteUniqueId.isNotBlank()) driveDao.deleteFileContent(f.remoteUniqueId)
+                    }
+                    // Only drop the manifest mappings once Telegram
+                    // confirmed the delete; otherwise the files stay
+                    // mapped and visible, and the delete can be retried.
+                    val metadataIdsToDelete = mutableListOf<Long>()
+                    val partIdsToDelete = mutableListOf<Long>()
+                    synchronized(manifestLock) {
+                        val updatedFileMappings = currentManifest.fileMappings.toMutableMap()
+                        val updatedSplitMasters = currentManifest.splitFileMasters.toMutableMap()
+                        files.forEach { file ->
+                            updatedFileMappings.remove(file.id.toString())
+                            file.splitGroupId?.let { gid ->
+                                // C11: deleting a split file must
+                                // remove every part message, not
+                                // just the master record — the
+                                // parts used to stay orphaned on
+                                // Telegram forever.
+                                updatedSplitMasters.remove(gid)?.let { master ->
+                                    master.metadataMessageId.takeIf { it != 0L }?.let { metadataIdsToDelete.add(it) }
+                                    partIdsToDelete.addAll(master.partMessageIds)
+                                }
+                            }
+                        }
+                        currentManifest = compactManifest(currentManifest.copy(
+                            fileMappings = updatedFileMappings,
+                            splitFileMasters = updatedSplitMasters,
+                            updatedAt = System.currentTimeMillis() / 1000
+                        ))
+                    }
+                    if (metadataIdsToDelete.isNotEmpty() && savedMessagesChatId != 0L) {
+                        telegramClient.send(TdApi.DeleteMessages(savedMessagesChatId, metadataIdsToDelete.toLongArray(), true)) {}
+                    }
+                    val alreadyDeletedIds = files.map { it.id }.toSet()
+                    val remainingPartIds = partIdsToDelete.filter { it != 0L && it !in alreadyDeletedIds }
+                    if (remainingPartIds.isNotEmpty()) {
+                        // Parts live in the same chat as the file
+                        // rows that reference their group.
+                        files.filter { it.splitGroupId != null }.map { it.parentChatId }.toSet().forEach { partChatId ->
+                            telegramClient.send(TdApi.DeleteMessages(partChatId, remainingPartIds.toLongArray(), true)) {}
+                        }
+                    }
+                    saveCloudManifestDebounced()
+                    deleteResult.complete(true)
+                }
+            } else {
+                // Telegram refused the delete: keep the local rows
+                // so the files stay visible and can be retried.
+                Log.w("DriveRepo", "DeleteMessages failed for chat $chatId: $result")
+                deleteResult.complete(false)
+            }
+        }
+        return withTimeoutOrNull(30_000L) { deleteResult.await() } ?: false
+    }
+
     fun permanentlyDeleteItems(items: List<DriveItem>) {
         scope.launch {
             val filesByChat = items.filterIsInstance<DriveItem.File>().groupBy { it.parentChatId }
-            filesByChat.forEach { (chatId, files) ->
-                val ids = files.map { it.id }.toLongArray()
-                telegramClient.send(TdApi.DeleteMessages(chatId, ids, true)) { result ->
-                    if (result is TdApi.Ok) {
-                        scope.launch {
-                            files.forEach { f ->
-                                driveDao.deleteItemCompletely(f.id, chatId)
-                                // M9: the content index used to keep rows
-                                // for deleted files, so they stayed
-                                // searchable after deletion.
-                                if (f.remoteUniqueId.isNotBlank()) driveDao.deleteFileContent(f.remoteUniqueId)
-                            }
-                            // Only drop the manifest mappings once Telegram
-                            // confirmed the delete; otherwise the files stay
-                            // mapped and visible, and the delete can be retried.
-                            val metadataIdsToDelete = mutableListOf<Long>()
-                            val partIdsToDelete = mutableListOf<Long>()
-                            synchronized(manifestLock) {
-                                val updatedFileMappings = currentManifest.fileMappings.toMutableMap()
-                                val updatedSplitMasters = currentManifest.splitFileMasters.toMutableMap()
-                                files.forEach { file ->
-                                    updatedFileMappings.remove(file.id.toString())
-                                    file.splitGroupId?.let { gid ->
-                                        // C11: deleting a split file must
-                                        // remove every part message, not
-                                        // just the master record — the
-                                        // parts used to stay orphaned on
-                                        // Telegram forever.
-                                        updatedSplitMasters.remove(gid)?.let { master ->
-                                            master.metadataMessageId.takeIf { it != 0L }?.let { metadataIdsToDelete.add(it) }
-                                            partIdsToDelete.addAll(master.partMessageIds)
-                                        }
-                                    }
-                                }
-                                currentManifest = compactManifest(currentManifest.copy(
-                                    fileMappings = updatedFileMappings,
-                                    splitFileMasters = updatedSplitMasters,
-                                    updatedAt = System.currentTimeMillis() / 1000
-                                ))
-                            }
-                            if (metadataIdsToDelete.isNotEmpty() && savedMessagesChatId != 0L) {
-                                telegramClient.send(TdApi.DeleteMessages(savedMessagesChatId, metadataIdsToDelete.toLongArray(), true)) {}
-                            }
-                            val alreadyDeletedIds = files.map { it.id }.toSet()
-                            val remainingPartIds = partIdsToDelete.filter { it != 0L && it !in alreadyDeletedIds }
-                            if (remainingPartIds.isNotEmpty()) {
-                                // Parts live in the same chat as the file
-                                // rows that reference their group.
-                                files.filter { it.splitGroupId != null }.map { it.parentChatId }.toSet().forEach { partChatId ->
-                                    telegramClient.send(TdApi.DeleteMessages(partChatId, remainingPartIds.toLongArray(), true)) {}
-                                }
-                            }
-                            saveCloudManifestDebounced()
-                        }
-                    } else {
-                        // Telegram refused the delete: keep the local rows
-                        // so the files stay visible and can be retried.
-                        Log.w("DriveRepo", "DeleteMessages failed for chat $chatId: $result")
-                    }
-                }
-            }
+            filesByChat.forEach { (chatId, files) -> deleteFilesFromChat(chatId, files) }
 
             val virtualFolders = items.filterIsInstance<DriveItem.Folder>().filter { it.isVirtual }
             if (virtualFolders.isNotEmpty()) {
@@ -3281,10 +3317,20 @@ class DriveRepository @Inject constructor(
             hashed
         }
 
-    /** Deletes the given entities (Telegram + local), reusing the normal delete path. */
-    fun deleteDuplicateItems(entities: List<DriveItemEntity>) {
-        if (entities.isEmpty()) return
-        permanentlyDeleteItems(entities.map { entityToFile(it) })
+    /**
+     * L26: deletes the given entities and returns how many Telegram
+     * actually confirmed as deleted. The old version was fire-and-forget,
+     * so the caller reported "Deleted N copies" before Telegram had
+     * confirmed anything (or even when it refused).
+     */
+    suspend fun deleteDuplicateItems(entities: List<DriveItemEntity>): Int {
+        if (entities.isEmpty()) return 0
+        val files = entities.map { entityToFile(it) }.filterIsInstance<DriveItem.File>()
+        var deleted = 0
+        files.groupBy { it.parentChatId }.forEach { (chatId, chatFiles) ->
+            if (deleteFilesFromChat(chatId, chatFiles)) deleted += chatFiles.size
+        }
+        return deleted
     }
 
     fun getBackupFolders(): List<String> = secureSettings.getStringList("backup_folders")

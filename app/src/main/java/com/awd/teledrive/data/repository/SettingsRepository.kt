@@ -194,18 +194,25 @@ class SettingsRepository @Inject constructor(
             }
         }
 
-        val totalRawSize = calculateDirectorySize(context.filesDir) + 
-                          calculateDirectorySize(context.cacheDir) + 
-                          (context.externalCacheDir?.let { calculateDirectorySize(it) } ?: 0L)
+        // L18: the old maths double-counted the cache dirs (they were in
+        // totalSize AND in "thumbnails"), and "database" was really just
+        // "everything in filesDir that isn't TDLib media" — the Room DB
+        // lives in the databases/ dir, which was counted nowhere.
+        val cacheSize = calculateDirectorySize(context.cacheDir) +
+            (context.externalCacheDir?.let { calculateDirectorySize(it) } ?: 0L)
+        val databasesSize = context.getDatabasePath("placeholder").parentFile
+            ?.let { calculateDirectorySize(it) } ?: 0L
+        val totalRawSize = calculateDirectorySize(context.filesDir) + cacheSize + databasesSize
 
         val mediaAndFilesTotal = photos + videos + audio + documents + others
-        val databaseAndSystem = (totalRawSize - (mediaAndFilesTotal + thumbnails + calculateDirectorySize(context.cacheDir) + (context.externalCacheDir?.let { calculateDirectorySize(it) } ?: 0L))).coerceAtLeast(0L)
 
         return CacheStatistics(
             totalSize = totalRawSize,
-            thumbnails = thumbnails + calculateDirectorySize(context.cacheDir) + (context.externalCacheDir?.let { calculateDirectorySize(it) } ?: 0L),
+            // The "Thumbnails" clear button clears TDLib thumbnails plus
+            // the Android cache dirs, so this bucket matches that button.
+            thumbnails = thumbnails + cacheSize,
             mediaAndFiles = mediaAndFilesTotal,
-            database = databaseAndSystem
+            database = databasesSize
         )
     }
 
@@ -232,11 +239,20 @@ class SettingsRepository @Inject constructor(
         if (fileType == null || fileType is TdApi.FileTypeThumbnail || (fileType is TdApi.FileTypeNone && !isMediaAndFiles)) {
             ioScope.launch {
                 try {
+                    // L16: "Clear cache" used to delete in-flight upload
+                    // temps too (upload_parts/, send_/enc_/saf_/decrypt_/
+                    // prev_dec_/thumb_ files), breaking uploads in progress.
+                    val keepUploadTemp: (String) -> Boolean = { name ->
+                        name == "upload_parts" || name == "split_downloads" ||
+                            name.startsWith("send_") || name.startsWith("enc_") ||
+                            name.startsWith("saf_") || name.startsWith("decrypt_") ||
+                            name.startsWith("prev_dec_") || name.startsWith("thumb_")
+                    }
                     context.cacheDir.listFiles()?.forEach {
-                        if (it.name != "updates" && it.name != "image_cache") it.deleteRecursively()
+                        if (it.name != "updates" && it.name != "image_cache" && !keepUploadTemp(it.name)) it.deleteRecursively()
                     }
                     context.externalCacheDir?.listFiles()?.forEach {
-                        if (it.name != "updates" && it.name != "image_cache") it.deleteRecursively()
+                        if (it.name != "updates" && it.name != "image_cache" && !keepUploadTemp(it.name)) it.deleteRecursively()
                     }
                     Log.d("SettingsRepo", "Android cache contents cleared manually")
                 } catch (e: Exception) {

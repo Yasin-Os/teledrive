@@ -29,8 +29,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.awd.teledrive.R
 import com.awd.teledrive.core.logging.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -68,15 +70,15 @@ fun LogsScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Application Logs") },
+                title = { Text(stringResource(R.string.logs_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
                     }
                 },
                 actions = {
                     IconButton(onClick = { refreshKey++ }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh Logs")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.logs_refresh))
                     }
                     IconButton(onClick = {
                         // The system logcat buffer can not be cleared by the
@@ -85,7 +87,7 @@ fun LogsScreen(onBack: () -> Unit) {
                         logLines = emptyList()
                         AppLog.clear()
                     }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Clear Logs")
+                        Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.logs_clear))
                     }
                 }
             )
@@ -100,9 +102,9 @@ fun LogsScreen(onBack: () -> Unit) {
             ) {
                 Text(
                     text = if (logcatFailed) {
-                        "Could not read logs — the in-app log buffer is empty too."
+                        stringResource(R.string.logs_read_failed)
                     } else {
-                        "No logs yet."
+                        stringResource(R.string.logs_empty)
                     },
                     color = Color.Gray,
                     fontSize = 14.sp,
