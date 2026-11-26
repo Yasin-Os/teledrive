@@ -65,6 +65,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -91,16 +93,22 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -112,6 +120,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -127,17 +136,22 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -157,12 +171,15 @@ import com.awd.teledrive.data.remote.TelegramClient
 import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -187,15 +204,23 @@ private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME }
 @AndroidOptIn(UnstableApi::class)
 object BackgroundAudioEngine {
     private const val CHANNEL_ID = "mycloud_media_playback"
-    private const val NOTIF_ID = 2026
+    // M30: distinct from UpdateRepository.UPDATE_NOTIFICATION_ID (2026).
+    private const val NOTIF_ID = 2027
     private const val ACTION_PREV = "com.awd.teledrive.MEDIA_PREV"
     private const val ACTION_PLAY_PAUSE = "com.awd.teledrive.MEDIA_PLAY_PAUSE"
     private const val ACTION_NEXT = "com.awd.teledrive.MEDIA_NEXT"
     private const val ACTION_CLOSE = "com.awd.teledrive.MEDIA_CLOSE"
 
+    private val _activePlayerState = MutableStateFlow<ExoPlayer?>(null)
+    val activePlayerState: StateFlow<ExoPlayer?> = _activePlayerState.asStateFlow()
+
     var activePlayer: ExoPlayer? = null
+        private set
     var activeUrl: String? = null
     var currentTitle: String = "MyCloud Media"
+    // M30: when true (e.g. Safe Folder media), redact the filename from the
+    // notification and MediaSession metadata so it never leaks on the lock screen.
+    var isSensitiveContent: Boolean = false
     var onSkipPrevCallback: (() -> Unit)? = null
     var onSkipNextCallback: (() -> Unit)? = null
 
@@ -253,6 +278,7 @@ object BackgroundAudioEngine {
             .build()
             .also { player ->
                 activePlayer = player
+                _activePlayerState.value = player
                 player.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
                         if (mediaSession?.isActive == true) {
@@ -376,10 +402,15 @@ object BackgroundAudioEngine {
         val isPlaying = player.isPlaying
         val duration = player.duration.takeIf { it > 0 } ?: -1L
         val pos = player.currentPosition.coerceAtLeast(0L)
+        val displayTitle = if (isSensitiveContent) {
+            appCtx.getString(R.string.private_media_title)
+        } else {
+            currentTitle
+        }
 
         // MediaMetadata সেট করা হচ্ছে যাতে নোটিফিকেশনে সিকবার (Seekbar) আসে
         val metadata = MediaMetadata.Builder()
-            .putString(MediaMetadata.METADATA_KEY_TITLE, currentTitle)
+            .putString(MediaMetadata.METADATA_KEY_TITLE, displayTitle)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, "<unknown>")
             .putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
             .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, getVinylArtBitmap())
@@ -440,12 +471,13 @@ object BackgroundAudioEngine {
         val notification = builder
             .setSmallIcon(R.drawable.ic_mycloud_logo)
             .setLargeIcon(getVinylArtBitmap())
-            .setContentTitle(currentTitle)
+            .setContentTitle(displayTitle)
             .setContentText("<unknown>")
             .setContentIntent(openAppIntent)
             .setDeleteIntent(closePi)
             .setOngoing(isPlaying)
-            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            // M30: keep playback notification private on the lock screen.
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
             .addAction(Notification.Action.Builder(android.R.drawable.ic_media_previous, "Previous", prevPi).build())
             .addAction(
                 Notification.Action.Builder(
@@ -472,6 +504,9 @@ object BackgroundAudioEngine {
 
     fun stopAndRelease(context: Context) {
         hideNotification(context)
+        onSkipPrevCallback = null
+        onSkipNextCallback = null
+        isSensitiveContent = false
         try {
             mediaSession?.release()
         } catch (e: Exception) { Log.w("VideoPlayerScreen", "stopAndRelease failed", e) }
@@ -482,6 +517,7 @@ object BackgroundAudioEngine {
         } catch (e: Exception) { Log.w("VideoPlayerScreen", "stopAndRelease failed", e) }
         activePlayer = null
         activeUrl = null
+        _activePlayerState.value = null
     }
 }
 
@@ -503,15 +539,24 @@ class VideoPlayerViewModel @Inject constructor(
     @Volatile
     var cachedTdFile: TdApi.File? = null
 
+    private var watchJob: Job? = null
+
     val playablePlaylist: StateFlow<List<DriveItem.File>> = driveRepository.getAllFiles()
         .map { files ->
             files.filter { !it.isEncrypted && (it.mimeType.startsWith("video/") || it.mimeType.startsWith("audio/")) }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    fun stopWatching() {
+        watchJob?.cancel()
+        watchJob = null
+    }
+
     fun startWatchingAndDownloading(chatId: Long, messageId: Long, initialFileId: Int) {
+        // M30: cancel the previous track's collector before starting a new one.
+        watchJob?.cancel()
         cachedTdFile = null
-        viewModelScope.launch {
+        watchJob = viewModelScope.launch {
             var activeFileId = initialFileId
             if (chatId != 0L && messageId != 0L) {
                 val msgDef = CompletableDeferred<TdApi.Object>()
@@ -537,15 +582,21 @@ class VideoPlayerViewModel @Inject constructor(
             }
 
             telegramClient.fileUpdates.collect { update ->
-                val f = update.file
-                if (f.id == activeFileId) {
-                    cachedTdFile = f
-                    if (f.local.isDownloadingCompleted && f.local.path.isNotEmpty()) {
-                        driveDao.updateLocalPath(f.id, f.local.path)
-                        if (f.remote.uniqueId.isNotEmpty()) {
-                            driveDao.updateLocalPathByUniqueId(f.remote.uniqueId, f.local.path)
+                try {
+                    val f = update.file
+                    if (f.id == activeFileId) {
+                        cachedTdFile = f
+                        if (f.local.isDownloadingCompleted && f.local.path.isNotEmpty()) {
+                            driveDao.updateLocalPath(f.id, f.local.path)
+                            if (f.remote.uniqueId.isNotEmpty()) {
+                                driveDao.updateLocalPathByUniqueId(f.remote.uniqueId, f.local.path)
+                            }
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("VideoPlayerVM", "Error handling file update", e)
                 }
             }
         }
@@ -553,9 +604,13 @@ class VideoPlayerViewModel @Inject constructor(
 
     fun markOfflinePath(fileId: Int, uniqueId: String, path: String) {
         viewModelScope.launch {
-            driveDao.updateLocalPath(fileId, path)
-            if (uniqueId.isNotEmpty()) {
-                driveDao.updateLocalPathByUniqueId(uniqueId, path)
+            try {
+                driveDao.updateLocalPath(fileId, path)
+                if (uniqueId.isNotEmpty()) {
+                    driveDao.updateLocalPathByUniqueId(uniqueId, path)
+                }
+            } catch (e: Exception) {
+                Log.w("VideoPlayerVM", "markOfflinePath failed", e)
             }
         }
     }
@@ -574,13 +629,23 @@ class VideoPlayerViewModel @Inject constructor(
         }
     }
 
+    fun buildMediaUrl(item: DriveItem.File): String {
+        val localFile = item.localPath?.let { File(it) }
+        return if (localFile != null && localFile.exists()) {
+            localFile.absolutePath
+        } else {
+            "tdstream://${item.parentChatId}|${item.id}|${item.telegramFileId}|${item.size}|${item.name}"
+        }
+    }
+
     fun getAdjacentMediaUrl(currentUrl: String, next: Boolean): String? {
         val list = playablePlaylist.value
         if (list.isEmpty()) return null
 
         val currentIdx = list.indexOfFirst { item ->
             if (currentUrl.startsWith("tdstream://")) {
-                val parts = currentUrl.removePrefix("tdstream://").split("|")
+                // H15: limit = 5 keeps '|' inside the filename intact.
+                val parts = currentUrl.removePrefix("tdstream://").split("|", limit = 5)
                 val msgId = parts.getOrNull(1)?.toLongOrNull() ?: -1L
                 val fId = parts.getOrNull(2)?.toIntOrNull() ?: -1
                 item.id == msgId || item.telegramFileId == fId
@@ -593,13 +658,7 @@ class VideoPlayerViewModel @Inject constructor(
         else if (next) (currentIdx + 1) % list.size
         else (currentIdx - 1 + list.size) % list.size
 
-        val target = list[targetIndex]
-        val localFile = target.localPath?.let { File(it) }
-        return if (localFile != null && localFile.exists()) {
-            localFile.absolutePath
-        } else {
-            "tdstream://${target.parentChatId}|${target.id}|${target.telegramFileId}|${target.size}|${target.name}"
-        }
+        return buildMediaUrl(list[targetIndex])
     }
 }
 
@@ -612,10 +671,15 @@ class ZeroLagTdlibDataSource(
     private val expectedSize: Long
 ) : BaseDataSource(true) {
 
+    // M30: synchronize RandomAccessFile access and make opened volatile so
+    // close() can never race read() or leave a waiting read() stuck.
+    private val rafLock = Any()
     private var raf: RandomAccessFile? = null
     private var openedFilePath: String? = null
     private var currentPosition: Long = 0L
     private var bytesRemaining: Long = 0L
+
+    @Volatile
     private var opened = false
 
     // Monitor the loader thread parks on while it waits for more downloaded
@@ -692,6 +756,30 @@ class ZeroLagTdlibDataSource(
         return file
     }
 
+    private fun readFromLocalFileLocked(
+        path: String,
+        buffer: ByteArray,
+        offset: Int,
+        count: Int,
+        markOffline: (() -> Unit)? = null
+    ): Int? {
+        synchronized(rafLock) {
+            if (!opened) return Int.MIN_VALUE
+            if (raf == null || openedFilePath != path) {
+                val f = File(path)
+                if (f.exists()) {
+                    try { raf?.close() } catch (_: Exception) { }
+                    raf = RandomAccessFile(f, "r")
+                    openedFilePath = path
+                    markOffline?.invoke()
+                }
+            }
+            val activeRaf = raf ?: return null
+            activeRaf.seek(currentPosition)
+            return activeRaf.read(buffer, offset, count)
+        }
+    }
+
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
         currentPosition = dataSpec.position
@@ -734,19 +822,15 @@ class ZeroLagTdlibDataSource(
             val local = file.local
 
             if (local.isDownloadingCompleted && local.path.isNotEmpty()) {
-                if (raf == null || openedFilePath != local.path) {
-                    val f = File(local.path)
-                    if (f.exists()) {
-                        raf?.close()
-                        raf = RandomAccessFile(f, "r")
-                        openedFilePath = local.path
-                        viewModel.markOfflinePath(file.id, file.remote.uniqueId, local.path)
-                    }
-                }
-                val activeRaf = raf
-                if (activeRaf != null) {
-                    activeRaf.seek(currentPosition)
-                    val readBytes = activeRaf.read(buffer, offset, toRead)
+                val readBytes = readFromLocalFileLocked(
+                    path = local.path,
+                    buffer = buffer,
+                    offset = offset,
+                    count = toRead,
+                    markOffline = { viewModel.markOfflinePath(file.id, file.remote.uniqueId, local.path) }
+                )
+                if (readBytes == Int.MIN_VALUE) return C.RESULT_END_OF_INPUT
+                if (readBytes != null) {
                     if (readBytes == -1) return C.RESULT_END_OF_INPUT
                     currentPosition += readBytes
                     if (bytesRemaining != C.LENGTH_UNSET.toLong()) bytesRemaining -= readBytes
@@ -759,26 +843,20 @@ class ZeroLagTdlibDataSource(
             val availEnd = local.downloadOffset + local.downloadedPrefixSize
 
             if (local.path.isNotEmpty() && currentPosition >= availStart && currentPosition < availEnd) {
-                if (raf == null || openedFilePath != local.path) {
-                    val f = File(local.path)
-                    if (f.exists()) {
-                        raf?.close()
-                        raf = RandomAccessFile(f, "r")
-                        openedFilePath = local.path
-                    }
-                }
-                val activeRaf = raf
-                if (activeRaf != null) {
-                    val readable = minOf(toRead.toLong(), availEnd - currentPosition).toInt()
-                    if (readable > 0) {
-                        activeRaf.seek(currentPosition)
-                        val readBytes = activeRaf.read(buffer, offset, readable)
-                        if (readBytes > 0) {
-                            currentPosition += readBytes
-                            if (bytesRemaining != C.LENGTH_UNSET.toLong()) bytesRemaining -= readBytes
-                            bytesTransferred(readBytes)
-                            return readBytes
-                        }
+                val readable = minOf(toRead.toLong(), availEnd - currentPosition).toInt()
+                if (readable > 0) {
+                    val readBytes = readFromLocalFileLocked(
+                        path = local.path,
+                        buffer = buffer,
+                        offset = offset,
+                        count = readable
+                    )
+                    if (readBytes == Int.MIN_VALUE) return C.RESULT_END_OF_INPUT
+                    if (readBytes != null && readBytes > 0) {
+                        currentPosition += readBytes
+                        if (bytesRemaining != C.LENGTH_UNSET.toLong()) bytesRemaining -= readBytes
+                        bytesTransferred(readBytes)
+                        return readBytes
                     }
                 }
             }
@@ -790,11 +868,13 @@ class ZeroLagTdlibDataSource(
                 }
             }
 
-            // Wait to be woken by the fileUpdates collector (see init) instead
-            // of sleeping and re-querying in a tight loop. The short timeout
-            // is only a safety net in case a notification was missed.
+            // Wait to be woken by the fileUpdates collector (see init) or close()
+            // instead of sleeping and re-querying in a tight loop.
             try {
-                synchronized(fileUpdateLock) { fileUpdateLock.wait(250) }
+                synchronized(fileUpdateLock) {
+                    if (!opened) return C.RESULT_END_OF_INPUT
+                    fileUpdateLock.wait(250)
+                }
             } catch (e: InterruptedException) {
                 return C.RESULT_END_OF_INPUT
             }
@@ -805,14 +885,23 @@ class ZeroLagTdlibDataSource(
     override fun getUri(): Uri? = Uri.parse("tdstream://file/$fileId")
 
     override fun close() {
+        val wasOpened = opened
         opened = false
         fileUpdatesJob?.cancel()
         fileUpdatesJob = null
-        try {
-            raf?.close()
-        } catch (e: Exception) { Log.w("VideoPlayerScreen", "TdStream close failed", e) }
-        raf = null
-        openedFilePath = null
+        synchronized(fileUpdateLock) {
+            fileUpdateLock.notifyAll()
+        }
+        synchronized(rafLock) {
+            try {
+                raf?.close()
+            } catch (e: Exception) { Log.w("VideoPlayerScreen", "TdStream close failed", e) }
+            raf = null
+            openedFilePath = null
+        }
+        if (wasOpened) {
+            transferEnded()
+        }
     }
 }
 
@@ -825,14 +914,17 @@ fun VideoPlayerScreen(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
+    val lifecycleOwner = LocalLifecycleOwner.current
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val playlist by viewModel.playablePlaylist.collectAsState()
 
     var activeMediaUrl by remember(url) { mutableStateOf(url) }
+    val currentMediaUrlState by rememberUpdatedState(activeMediaUrl)
 
     val isStreamUrl = activeMediaUrl.startsWith("tdstream://")
     val streamParts = remember(activeMediaUrl) {
-        if (isStreamUrl) activeMediaUrl.removePrefix("tdstream://").split("|") else emptyList()
+        // H15: limit = 5 preserves any '|' characters in the filename.
+        if (isStreamUrl) activeMediaUrl.removePrefix("tdstream://").split("|", limit = 5) else emptyList()
     }
     val chatId = streamParts.getOrNull(0)?.toLongOrNull() ?: 0L
     val messageId = streamParts.getOrNull(1)?.toLongOrNull() ?: 0L
@@ -841,6 +933,9 @@ fun VideoPlayerScreen(
     val rawName = if (isStreamUrl) (streamParts.getOrNull(4) ?: "Media") else activeMediaUrl.substringAfterLast('/')
     val fileName = remember(rawName, playlist, messageId, telegramFileId) {
         playlist.find { it.id == messageId || (telegramFileId != 0 && it.telegramFileId == telegramFileId) }?.name ?: rawName
+    }
+    val isSensitiveMedia = remember(activeMediaUrl) {
+        FileSharingHelper.isPrivateVaultTempPath(context, activeMediaUrl)
     }
 
     val isNativeAudioFile = remember(fileName) {
@@ -856,10 +951,13 @@ fun VideoPlayerScreen(
     var showAudioTooltip by remember(activeMediaUrl) { mutableStateOf(!isNativeAudioFile) }
 
     val exoPlayer = remember { BackgroundAudioEngine.getOrCreatePlayer(context) }
+    val activeEnginePlayer by BackgroundAudioEngine.activePlayerState.collectAsState()
     val scope = rememberCoroutineScope()
 
     var isPlaying by remember { mutableStateOf(exoPlayer.isPlaying) }
     var isBuffering by remember { mutableStateOf(false) }
+    var playbackError by remember(activeMediaUrl) { mutableStateOf<String?>(null) }
+    var isUserExiting by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var lastNotificationUpdateMs by remember { mutableLongStateOf(0L) }
@@ -872,6 +970,20 @@ fun VideoPlayerScreen(
     var isRepeatOne by remember { mutableStateOf(false) }
     var isStarred by remember { mutableStateOf(false) }
 
+    val cyclePlaybackSpeed: () -> Unit = {
+        val nextSpeed = when (playbackSpeed) {
+            1.0f -> 1.25f
+            1.25f -> 1.5f
+            1.5f -> 2.0f
+            2.0f -> 0.75f
+            else -> 1.0f
+        }
+        playbackSpeed = nextSpeed
+        if (BackgroundAudioEngine.activePlayer === exoPlayer) {
+            exoPlayer.playbackParameters = PlaybackParameters(nextSpeed)
+        }
+    }
+
     // Sleep timer (audio UI): minutes chosen by the user, 0 = off. When the
     // deadline passes the player is paused for real instead of showing a toast.
     var sleepTimerMinutes by remember { mutableIntStateOf(0) }
@@ -882,8 +994,10 @@ fun VideoPlayerScreen(
             val remaining = sleepTimerEndsAt - System.currentTimeMillis()
             if (remaining > 0) delay(remaining)
             if (sleepTimerEndsAt > 0L) {
-                exoPlayer.pause()
-                BackgroundAudioEngine.updateNotification(context)
+                if (BackgroundAudioEngine.activePlayer === exoPlayer) {
+                    exoPlayer.pause()
+                    BackgroundAudioEngine.updateNotification(context)
+                }
                 sleepTimerMinutes = 0
                 sleepTimerEndsAt = 0L
                 Toast.makeText(context, context.getString(R.string.video_sleep_timer_finished), Toast.LENGTH_SHORT).show()
@@ -897,6 +1011,13 @@ fun VideoPlayerScreen(
     // copy yet it reports that the snapshot is unavailable instead of
     // pretending it saved one.
     val takeSnapshot: () -> Unit = {
+        // H6: read exoPlayer.currentPosition on the Main thread (Media3 enforces
+        // verifyApplicationThread) before moving frame extraction/saving to IO.
+        val positionUs = if (BackgroundAudioEngine.activePlayer === exoPlayer) {
+            exoPlayer.currentPosition.coerceAtLeast(0L) * 1000L
+        } else {
+            currentPosition.coerceAtLeast(0L) * 1000L
+        }
         scope.launch(Dispatchers.IO) {
             try {
                 val localPath = when {
@@ -913,7 +1034,7 @@ fun VideoPlayerScreen(
                 try {
                     retriever.setDataSource(localPath)
                     val frame = retriever.getFrameAtTime(
-                        exoPlayer.currentPosition * 1000,
+                        positionUs,
                         MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                     )
                     if (frame == null) {
@@ -952,13 +1073,13 @@ fun VideoPlayerScreen(
     var doubleTapSkipSeconds by remember { mutableIntStateOf(0) }
     var isSkipForward by remember { mutableStateOf(true) }
 
-    LaunchedEffect(activeMediaUrl, fileName) {
-        BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
-        BackgroundAudioEngine.onSkipPrevCallback = {
-            viewModel.getAdjacentMediaUrl(activeMediaUrl, next = false)?.let { activeMediaUrl = it }
-        }
-        BackgroundAudioEngine.onSkipNextCallback = {
-            viewModel.getAdjacentMediaUrl(activeMediaUrl, next = true)?.let { activeMediaUrl = it }
+    LaunchedEffect(activeMediaUrl, fileName, isSensitiveMedia) {
+        if (BackgroundAudioEngine.activePlayer !== exoPlayer) return@LaunchedEffect
+        BackgroundAudioEngine.isSensitiveContent = isSensitiveMedia
+        BackgroundAudioEngine.currentTitle = if (isSensitiveMedia) {
+            context.getString(R.string.private_media_title)
+        } else {
+            fileName.substringBeforeLast('.')
         }
 
         isStarred = playlist.find { it.id == messageId || it.name == fileName }?.isStarred == true
@@ -988,6 +1109,7 @@ fun VideoPlayerScreen(
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
         } else {
+            viewModel.stopWatching()
             exoPlayer.setMediaItem(MediaItem.fromUri(activeMediaUrl))
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
@@ -997,15 +1119,20 @@ fun VideoPlayerScreen(
     // ব্যাকগ্রাউন্ডে অডিও মোড চালু থাকলে প্রতি সেকেন্ডে মিডিয়া নোটিফিকেশনের সিকবার আপডেট হবে
     // (পজিশন টিকে আর রিবিল্ড হয় না — শুধু মোড/প্লে-স্টেট/ফাইল বদলালে, আর প্লে চলাকালীন
     // সর্বোচ্চ সেকেন্ডে একবার)
-    LaunchedEffect(isAudioPlayerMode, isPlaying, fileName) {
-        if (!isAudioPlayerMode) {
+    LaunchedEffect(isAudioPlayerMode, isPlaying, fileName, isSensitiveMedia) {
+        if (!isAudioPlayerMode || playbackError != null) {
             BackgroundAudioEngine.hideNotification(context)
             return@LaunchedEffect
         }
-        BackgroundAudioEngine.currentTitle = fileName.substringBeforeLast('.')
+        BackgroundAudioEngine.isSensitiveContent = isSensitiveMedia
+        BackgroundAudioEngine.currentTitle = if (isSensitiveMedia) {
+            context.getString(R.string.private_media_title)
+        } else {
+            fileName.substringBeforeLast('.')
+        }
         BackgroundAudioEngine.updateNotification(context)
         lastNotificationUpdateMs = SystemClock.elapsedRealtime()
-        while (isPlaying) {
+        while (isPlaying && BackgroundAudioEngine.activePlayer === exoPlayer) {
             delay(1000)
             val now = SystemClock.elapsedRealtime()
             if (now - lastNotificationUpdateMs >= 1000L) {
@@ -1015,7 +1142,26 @@ fun VideoPlayerScreen(
         }
     }
 
+    // M23: if the shared player is released externally (e.g. notification Close),
+    // show an explicit playback-stopped state instead of silently navigating back.
+    LaunchedEffect(activeEnginePlayer, isUserExiting) {
+        if (activeEnginePlayer !== exoPlayer && !isUserExiting) {
+            isPlaying = false
+            isBuffering = false
+            playbackError = context.getString(R.string.video_playback_stopped)
+        }
+    }
+
     DisposableEffect(Unit) {
+        val prevCb: () -> Unit = {
+            viewModel.getAdjacentMediaUrl(currentMediaUrlState, next = false)?.let { activeMediaUrl = it }
+        }
+        val nextCb: () -> Unit = {
+            viewModel.getAdjacentMediaUrl(currentMediaUrlState, next = true)?.let { activeMediaUrl = it }
+        }
+        BackgroundAudioEngine.onSkipPrevCallback = prevCb
+        BackgroundAudioEngine.onSkipNextCallback = nextCb
+
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 isBuffering = state == Player.STATE_BUFFERING
@@ -1026,35 +1172,45 @@ fun VideoPlayerScreen(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
             }
+            override fun onPlayerError(error: PlaybackException) {
+                isPlaying = false
+                isBuffering = false
+                playbackError = context.getString(
+                    R.string.video_playback_error,
+                    error.localizedMessage ?: error.errorCodeName
+                )
+            }
         }
         exoPlayer.addListener(listener)
         onDispose {
             resetWindowBrightness(activity)
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             exoPlayer.removeListener(listener)
+            // M30: clear global singleton callbacks on dispose so notification
+            // Next/Prev can never mutate disposed composable state.
+            if (BackgroundAudioEngine.onSkipPrevCallback === prevCb) {
+                BackgroundAudioEngine.onSkipPrevCallback = null
+            }
+            if (BackgroundAudioEngine.onSkipNextCallback === nextCb) {
+                BackgroundAudioEngine.onSkipNextCallback = null
+            }
             if (!isAudioPlayerMode) {
                 BackgroundAudioEngine.stopAndRelease(context)
             }
         }
     }
 
-    LaunchedEffect(exoPlayer) {
-        while (true) {
-            val active = BackgroundAudioEngine.activePlayer
-            if (active == null) {
-                onBack()
-                break
-            }
-            isPlaying = active.isPlaying
-            if (active.isPlaying) {
+    // M23: poll playback position only while playing and while the screen is
+    // STARTED — zero background/paused polling.
+    LaunchedEffect(exoPlayer, isPlaying, playbackError, lifecycleOwner) {
+        if (!isPlaying || playbackError != null) return@LaunchedEffect
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isPlaying && BackgroundAudioEngine.activePlayer === exoPlayer) {
                 if (activeGestureMode != GestureMode.SEEK) {
-                    currentPosition = active.currentPosition.coerceAtLeast(0L)
+                    currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
                 }
-                if (active.duration > 0) duration = active.duration
+                if (exoPlayer.duration > 0) duration = exoPlayer.duration
                 delay(250)
-            } else {
-                // পজ অবস্থায় পজিশন পড়ার দরকার নেই — ব্যাটারি বাঁচাতে ধীরে পোল করো
-                delay(1000)
             }
         }
     }
@@ -1074,6 +1230,59 @@ fun VideoPlayerScreen(
         }
     }
 
+    val errorMessage = playbackError
+    if (errorMessage != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .statusBarsPadding()
+        ) {
+            IconButton(
+                onClick = {
+                    isUserExiting = true
+                    resetWindowBrightness(activity)
+                    onBack()
+                },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back), tint = Color.White)
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.75f),
+                    modifier = Modifier.size(56.dp)
+                )
+                Text(
+                    text = errorMessage,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center
+                )
+                OutlinedButton(
+                    onClick = {
+                        isUserExiting = true
+                        resetWindowBrightness(activity)
+                        onBack()
+                    }
+                ) {
+                    Text(stringResource(R.string.back), color = Color.White)
+                }
+            }
+        }
+        return
+    }
+
     if (isAudioPlayerMode) {
         LaunchedEffect(Unit) { resetWindowBrightness(activity) }
         PlayItVinylAudioPlayerUI(
@@ -1084,12 +1293,20 @@ fun VideoPlayerScreen(
             isRepeatOne = isRepeatOne,
             isStarred = isStarred,
             sleepTimerMinutes = sleepTimerMinutes,
+            playbackSpeed = playbackSpeed,
             isVideoSource = !isNativeAudioFile,
+            playlist = playlist,
+            activeMediaUrl = activeMediaUrl,
             onBack = {
+                isUserExiting = true
                 resetWindowBrightness(activity)
                 onBack()
             },
             onSwitchToVideo = { isAudioPlayerMode = false },
+            onCycleSpeed = cyclePlaybackSpeed,
+            onSelectTrack = { item ->
+                activeMediaUrl = viewModel.buildMediaUrl(item)
+            },
             onPlayPause = {
                 if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                 BackgroundAudioEngine.updateNotification(context)
@@ -1141,16 +1358,22 @@ fun VideoPlayerScreen(
         return
     }
 
-    val skipWaveTransition = rememberInfiniteTransition(label = "SkipWave")
-    val skipArrowSlide by skipWaveTransition.animateFloat(
-        initialValue = -8f,
-        targetValue = 8f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(450, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "SkipArrowSlide"
-    )
+    // L20: gate the SkipWave infinite transition on playback and visibility so
+    // it never ticks frames while paused or when the skip overlay is hidden.
+    val skipArrowSlide = if (isPlaying && doubleTapSkipSeconds != 0) {
+        val skipWaveTransition = rememberInfiniteTransition(label = "SkipWave")
+        skipWaveTransition.animateFloat(
+            initialValue = -8f,
+            targetValue = 8f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(450, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "SkipArrowSlide"
+        ).value
+    } else {
+        0f
+    }
 
     Box(
         modifier = Modifier
@@ -1422,6 +1645,7 @@ fun VideoPlayerScreen(
                     ) {
                         IconButton(
                             onClick = {
+                                isUserExiting = true
                                 resetWindowBrightness(activity)
                                 BackgroundAudioEngine.stopAndRelease(context)
                                 onBack()
@@ -1728,9 +1952,14 @@ private fun PlayItVinylAudioPlayerUI(
     isRepeatOne: Boolean,
     isStarred: Boolean,
     sleepTimerMinutes: Int,
+    playbackSpeed: Float,
     isVideoSource: Boolean,
+    playlist: List<DriveItem.File>,
+    activeMediaUrl: String,
     onBack: () -> Unit,
     onSwitchToVideo: () -> Unit,
+    onCycleSpeed: () -> Unit,
+    onSelectTrack: (DriveItem.File) -> Unit,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
     onPrevTrack: () -> Unit,
@@ -1740,6 +1969,56 @@ private fun PlayItVinylAudioPlayerUI(
     onShare: () -> Unit,
     onCycleSleepTimer: () -> Unit
 ) {
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showQueueDialog by remember { mutableStateOf(false) }
+
+    if (showQueueDialog) {
+        AlertDialog(
+            onDismissRequest = { showQueueDialog = false },
+            title = { Text(stringResource(R.string.video_queue_title)) },
+            text = {
+                if (playlist.isEmpty()) {
+                    Text(stringResource(R.string.video_queue_empty))
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp)
+                    ) {
+                        items(playlist, key = { "${it.parentChatId}_${it.id}" }) { item ->
+                            val isCurrent = item.name == fileName ||
+                                (!item.localPath.isNullOrEmpty() && item.localPath == activeMediaUrl)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onSelectTrack(item)
+                                        showQueueDialog = false
+                                    }
+                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = item.name.substringBeforeLast('.'),
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showQueueDialog = false }) {
+                    Text(stringResource(R.string.close))
+                }
+            }
+        )
+    }
+
     // পজ অবস্থায় অ্যানিমেশন পুরোপুরি থামিয়ে দাও: infinite transition শুধু
     // প্লে চলাকালীনই তৈরি হয়, পজ হলে কোণ/ফেজ স্থির 0 থাকে; আবার প্লে করলে
     // ঘূর্ণন শুরু থেকে শুরু হয়
@@ -1936,15 +2215,36 @@ private fun PlayItVinylAudioPlayerUI(
                         )
                     }
                 }
-                IconButton(onClick = {
-                    if (isVideoSource) onSwitchToVideo()
-                }) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Switch to Video",
-                        tint = Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier.size(26.dp)
-                    )
+                Box {
+                    IconButton(onClick = { showMoreMenu = true }) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = stringResource(R.string.more),
+                            tint = Color.White.copy(alpha = 0.8f),
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.video_playback_speed, "${playbackSpeed}x")) },
+                            onClick = {
+                                onCycleSpeed()
+                                showMoreMenu = false
+                            }
+                        )
+                        if (isVideoSource) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.video_switch_to_video)) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onSwitchToVideo()
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
@@ -2030,12 +2330,10 @@ private fun PlayItVinylAudioPlayerUI(
                     )
                 }
 
-                IconButton(onClick = {
-                    if (isVideoSource) onSwitchToVideo()
-                }) {
+                IconButton(onClick = { showQueueDialog = true }) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                        contentDescription = "Queue",
+                        contentDescription = stringResource(R.string.video_queue_title),
                         tint = Color.White.copy(alpha = 0.85f),
                         modifier = Modifier.size(26.dp)
                     )

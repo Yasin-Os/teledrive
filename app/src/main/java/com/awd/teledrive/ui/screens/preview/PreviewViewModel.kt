@@ -45,7 +45,7 @@ class PreviewViewModel @Inject constructor(
     private val isMediaOnly: Boolean = savedStateHandle.get<Boolean>("isMediaOnly") ?: false
     private val virtualParentId: String = savedStateHandle.get<String>("virtualParentId") ?: "0"
 
-    val items: StateFlow<List<DriveItem.File>> = (if (isMediaOnly) {
+    private val rawItemsFlow = if (isMediaOnly) {
         driveRepository.getAllFiles().map { list ->
             // L27: the tapped file must stay in the list even when it is
             // not media — otherwise getInitialIndex() fell back to 0 and
@@ -55,7 +55,16 @@ class PreviewViewModel @Inject constructor(
     } else {
         driveRepository.getItems(if (chatId != 0L) chatId else null, virtualParentId)
             .map { list -> list.filterIsInstance<DriveItem.File>() }
-    }).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }
+
+    // M22: nullable state distinguishes "not yet loaded from DB" (null) from
+    // "loaded empty" (emptyList()), avoiding an infinite loading spinner.
+    val itemsState: StateFlow<List<DriveItem.File>?> = rawItemsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val items: StateFlow<List<DriveItem.File>> = itemsState
+        .map { it.orEmpty() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val folders: StateFlow<List<DriveItem.Folder>> = driveRepository.getItems(null)
         .map { list -> list.filterIsInstance<DriveItem.Folder>() }
@@ -112,9 +121,13 @@ class PreviewViewModel @Inject constructor(
         }
     }
 
-    fun getInitialIndex(): Int {
-        val index = items.value.indexOfFirst { it.id == initialFileId }
+    fun getInitialIndex(list: List<DriveItem.File> = items.value): Int {
+        val index = list.indexOfFirst { it.id == initialFileId }
         return if (index >= 0) index else 0
+    }
+
+    fun hasInitialFile(list: List<DriveItem.File>): Boolean {
+        return list.any { it.id == initialFileId }
     }
 
     fun downloadForPreview(file: DriveItem.File) {

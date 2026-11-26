@@ -65,9 +65,8 @@ import com.awd.teledrive.ui.screens.insights.DuplicateFinderScreen
 import com.awd.teledrive.ui.screens.insights.StorageAnalyzerScreen
 import com.awd.teledrive.ui.screens.starred.StarredScreen
 import com.awd.teledrive.ui.screens.transfers.TransfersScreen
+import android.net.Uri
 import java.io.File
-import java.net.URLDecoder
-import java.net.URLEncoder
 
 sealed class Screen(val route: String, val icon: ImageVector? = null, val labelRes: Int? = null) {
     object Security : Screen("security")
@@ -90,14 +89,17 @@ sealed class Screen(val route: String, val icon: ImageVector? = null, val labelR
         fun createRoute(chatId: Long, fileId: Long, isMediaOnly: Boolean = false, virtualParentId: String = "0") = 
             "preview/$chatId/$fileId?isMediaOnly=$isMediaOnly&virtualParentId=$virtualParentId"
     }
+    // H15: use RFC 3986 percent-encoding (Uri.encode) rather than form-urlencoded
+    // URLEncoder.encode, and let Navigation Compose decode once on extraction.
+    // This preserves literal '+', '%', spaces, and '|' in file names and tdstream URIs.
     object VideoPlayer : Screen("video_player/{path}") {
-        fun createRoute(path: String) = "video_player/${URLEncoder.encode(path, "UTF-8")}"
+        fun createRoute(path: String) = "video_player/${Uri.encode(path)}"
     }
     object PdfViewer : Screen("pdf_viewer/{path}") {
-        fun createRoute(path: String) = "pdf_viewer/${URLEncoder.encode(path, "UTF-8")}"
+        fun createRoute(path: String) = "pdf_viewer/${Uri.encode(path)}"
     }
     object TextViewer : Screen("text_viewer/{path}") {
-        fun createRoute(path: String) = "text_viewer/${URLEncoder.encode(path, "UTF-8")}"
+        fun createRoute(path: String) = "text_viewer/${Uri.encode(path)}"
     }
 }
 
@@ -418,21 +420,21 @@ fun NavGraph(
                 route = Screen.VideoPlayer.route,
                 arguments = listOf(navArgument("path") { type = NavType.StringType })
             ) { backStackEntry ->
-                val path = backStackEntry.arguments?.getString("path")?.let { URLDecoder.decode(it, "UTF-8") } ?: ""
+                val path = backStackEntry.arguments?.getString("path") ?: ""
                 VideoPlayerScreen(url = path, onBack = { navController.popBackStack() })
             }
             composable(
                 route = Screen.PdfViewer.route,
                 arguments = listOf(navArgument("path") { type = NavType.StringType })
             ) { backStackEntry ->
-                val path = backStackEntry.arguments?.getString("path")?.let { URLDecoder.decode(it, "UTF-8") } ?: ""
+                val path = backStackEntry.arguments?.getString("path") ?: ""
                 PdfViewerScreen(filePath = path, onBack = { navController.popBackStack() })
             }
             composable(
                 route = Screen.TextViewer.route,
                 arguments = listOf(navArgument("path") { type = NavType.StringType })
             ) { backStackEntry ->
-                val path = backStackEntry.arguments?.getString("path")?.let { URLDecoder.decode(it, "UTF-8") } ?: ""
+                val path = backStackEntry.arguments?.getString("path") ?: ""
                 TextViewerScreen(filePath = path, onBack = { navController.popBackStack() })
             }
         }

@@ -501,11 +501,14 @@ class HomeViewModel @Inject constructor(
     fun fetchItems() {
         viewModelScope.launch {
             _isRefreshing.value = true
-            driveRepository.fetchFiles(null)
-            delay(250)
-            _isSyncingMetadata.value = false
-            _isInitialLoading.value = false
-            _isRefreshing.value = false
+            try {
+                driveRepository.fetchFiles(null)
+                delay(250)
+            } finally {
+                _isSyncingMetadata.value = false
+                _isInitialLoading.value = false
+                _isRefreshing.value = false
+            }
         }
     }
 

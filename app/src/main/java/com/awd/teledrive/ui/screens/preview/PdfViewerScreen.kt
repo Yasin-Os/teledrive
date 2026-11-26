@@ -52,11 +52,47 @@ import androidx.compose.ui.unit.dp
 import com.awd.teledrive.R
 import com.awd.teledrive.core.FileSharingHelper
 import com.awd.teledrive.ui.theme.TeledriveTheme
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
 // How many rendered pages the LRU cache keeps (visible pages + lookahead).
 private const val PDF_PAGE_CACHE_SIZE = 4
+
+/**
+ * H17: owns a [PdfRenderer] and its backing [ParcelFileDescriptor] behind a
+ * shared lock so closing on dispose can never race an in-flight render on
+ * Dispatchers.IO ("Current page not closed" / native use-after-close).
+ */
+class PdfDocumentHolder(
+    val renderer: PdfRenderer,
+    private val pfd: ParcelFileDescriptor
+) {
+    val lock = Any()
+
+    @Volatile
+    var isClosed: Boolean = false
+        private set
+
+    fun closeAsync() {
+        if (isClosed) return
+        isClosed = true
+        CoroutineScope(Dispatchers.IO).launch {
+            closeLocked()
+        }
+    }
+
+    fun closeLocked() {
+        isClosed = true
+        synchronized(lock) {
+            try { renderer.close() } catch (_: Exception) { }
+            try { pfd.close() } catch (_: Exception) { }
+        }
+    }
+}
 
 /**
  * Small LRU cache of rendered PDF pages. Bitmaps are recycled when evicted
@@ -104,58 +140,77 @@ fun PdfViewerScreen(
     filePath: String,
     onBack: () -> Unit
 ) {
-    val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
 
     var pageCount by remember { mutableStateOf(0) }
-    var pdfRenderer by remember { mutableStateOf<PdfRenderer?>(null) }
-    var pdfPfd by remember { mutableStateOf<ParcelFileDescriptor?>(null) }
+    var documentHolder by remember { mutableStateOf<PdfDocumentHolder?>(null) }
+    var isLoading by remember(filePath) { mutableStateOf(!isPreview) }
 
     LaunchedEffect(filePath) {
         if (!isPreview) {
-            val file = File(filePath)
-            if (file.exists()) {
-                try {
-                    // Close any previous document first (e.g. the file changed).
-                    pdfRenderer?.close()
-                    pdfPfd?.close()
-                    pdfRenderer = null
-                    pdfPfd = null
-                    val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-                    val renderer = PdfRenderer(pfd)
-                    pdfPfd = pfd
-                    pdfRenderer = renderer
-                    pageCount = renderer.pageCount
-                } catch (e: Exception) {
-                    e.printStackTrace()
+            isLoading = true
+            // Close any previous document safely off the main thread.
+            val previous = documentHolder
+            documentHolder = null
+            pageCount = 0
+            previous?.closeAsync()
+
+            var opened: PdfDocumentHolder? = null
+            try {
+                // H17: open the PDF descriptor and renderer on Dispatchers.IO.
+                opened = withContext(Dispatchers.IO) {
+                    val file = File(filePath)
+                    if (!file.exists()) return@withContext null
+                    var pfd: ParcelFileDescriptor? = null
+                    try {
+                        pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                        val renderer = PdfRenderer(pfd)
+                        PdfDocumentHolder(renderer, pfd)
+                    } catch (e: Exception) {
+                        Log.e("PdfViewer", "Error opening PDF", e)
+                        try { pfd?.close() } catch (_: Exception) { }
+                        null
+                    }
                 }
+                if (opened != null) {
+                    val count = synchronized(opened.lock) {
+                        if (opened.isClosed) 0 else opened.renderer.pageCount
+                    }
+                    documentHolder = opened
+                    pageCount = count
+                    opened = null
+                }
+            } catch (e: CancellationException) {
+                opened?.closeAsync()
+                throw e
+            } finally {
+                isLoading = false
             }
         }
     }
 
-    // Ensure resources are closed when leaving. PdfRenderer.close() does NOT
-    // close the ParcelFileDescriptor it was created from, so close both —
-    // the descriptor leaked before.
+    // Ensure resources are closed safely under the renderer lock when leaving.
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
-            try { pdfRenderer?.close() } catch (e: Exception) { }
-            try { pdfPfd?.close() } catch (e: Exception) { }
+            val current = documentHolder
+            documentHolder = null
+            current?.closeAsync()
         }
     }
 
     PdfViewerContent(
-        pdfRenderer = pdfRenderer,
+        documentHolder = documentHolder,
         pageCount = pageCount,
         filePath = filePath,
         onBack = onBack,
-        isLoading = pdfRenderer == null && !isPreview
+        isLoading = isLoading
     )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PdfViewerContent(
-    pdfRenderer: PdfRenderer?,
+    documentHolder: PdfDocumentHolder?,
     pageCount: Int,
     filePath: String,
     onBack: () -> Unit,
@@ -209,7 +264,7 @@ fun PdfViewerContent(
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Color.White)
             }
-        } else if (pdfRenderer == null && !isLoading) {
+        } else if (documentHolder == null || pageCount <= 0) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(stringResource(R.string.err_load_pdf), color = Color.White)
             }
@@ -243,7 +298,7 @@ fun PdfViewerContent(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     items(pageCount, key = { it }, contentType = { "pdf_page" }) { index ->
-                        PdfPageItem(pdfRenderer, index, pageCache)
+                        PdfPageItem(documentHolder, index, pageCache)
                     }
                 }
             }
@@ -252,8 +307,8 @@ fun PdfViewerContent(
 }
 
 @Composable
-private fun PdfPageItem(renderer: PdfRenderer?, index: Int, pageCache: PdfPageCache) {
-    var bitmap by remember(renderer, index) { mutableStateOf<Bitmap?>(null) }
+private fun PdfPageItem(holder: PdfDocumentHolder?, index: Int, pageCache: PdfPageCache) {
+    var bitmap by remember(holder, index) { mutableStateOf<Bitmap?>(null) }
     val context = LocalContext.current
 
     // This page is composed (visible or in the lazy layout's window): the
@@ -263,41 +318,54 @@ private fun PdfPageItem(renderer: PdfRenderer?, index: Int, pageCache: PdfPageCa
         onDispose { pageCache.markUnused(index) }
     }
 
-    LaunchedEffect(renderer, index) {
-        if (renderer != null) {
+    LaunchedEffect(holder, index) {
+        if (holder != null) {
             pageCache.get(index)?.let {
                 bitmap = it
                 return@LaunchedEffect
             }
-            withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val rendered = withContext(Dispatchers.IO) {
                 try {
-                    synchronized(renderer) {
-                        val page = renderer.openPage(index)
+                    synchronized(holder.lock) {
+                        if (holder.isClosed) return@synchronized null
+                        val page = holder.renderer.openPage(index)
+                        try {
+                            // H17: guard against malformed PDFs with 0/negative page dimensions.
+                            if (page.width <= 0 || page.height <= 0) return@synchronized null
 
-                        // Optimized memory: Limit resolution to device screen width
-                        val displayMetrics = context.resources.displayMetrics
-                        val screenWidth = displayMetrics.widthPixels
-                        val scaleFactor = screenWidth.toFloat() / page.width.toFloat()
+                            // Optimized memory: Limit resolution to device screen width
+                            val displayMetrics = context.resources.displayMetrics
+                            val screenWidth = displayMetrics.widthPixels.coerceAtLeast(1)
+                            val scaleFactor = screenWidth.toFloat() / page.width.toFloat()
 
-                        // L19: capping width and height independently
-                        // stretched/squashed pages that hit both caps.
-                        // One uniform scale keeps the aspect ratio.
-                        val fitWidth = (page.width * scaleFactor).toInt().coerceAtLeast(1)
-                        val fitHeight = (page.height * scaleFactor).toInt().coerceAtLeast(1)
-                        val extraScale = minOf(2000f / fitWidth, 3000f / fitHeight, 1f)
-                        val width = (fitWidth * extraScale).toInt().coerceAtLeast(1)
-                        val height = (fitHeight * extraScale).toInt().coerceAtLeast(1)
+                            // L19: capping width and height independently
+                            // stretched/squashed pages that hit both caps.
+                            // One uniform scale keeps the aspect ratio.
+                            val fitWidth = (page.width * scaleFactor).toInt().coerceAtLeast(1)
+                            val fitHeight = (page.height * scaleFactor).toInt().coerceAtLeast(1)
+                            val extraScale = minOf(2000f / fitWidth, 3000f / fitHeight, 1f)
+                            val width = (fitWidth * extraScale).toInt()
+                            val height = (fitHeight * extraScale).toInt()
+                            if (width <= 0 || height <= 0) return@synchronized null
 
-                        val newBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                        newBitmap.eraseColor(android.graphics.Color.WHITE)
-                        page.render(newBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        page.close()
-                        pageCache.put(index, newBitmap)
-                        bitmap = newBitmap
+                            val newBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                            newBitmap.eraseColor(android.graphics.Color.WHITE)
+                            page.render(newBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            pageCache.put(index, newBitmap)
+                            newBitmap
+                        } finally {
+                            page.close()
+                        }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.e("PdfViewer", "Error rendering page $index", e)
+                    null
                 }
+            }
+            if (rendered != null && !rendered.isRecycled) {
+                bitmap = rendered
             }
         }
     }
@@ -333,6 +401,6 @@ private fun PdfPageItem(renderer: PdfRenderer?, index: Int, pageCache: PdfPageCa
 @Composable
 fun PdfViewerPreview() {
     TeledriveTheme {
-        PdfViewerContent(pdfRenderer = null, pageCount = 0, filePath = "Sample.pdf", onBack = {}, isLoading = false)
+        PdfViewerContent(documentHolder = null, pageCount = 0, filePath = "Sample.pdf", onBack = {}, isLoading = false)
     }
 }

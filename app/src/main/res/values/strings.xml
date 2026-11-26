@@ -569,4 +569,12 @@
     <string name="video_sleep_timer_off">Sleep timer off</string>
     <string name="video_sleep_timer_on">Sleep timer: %1$d min</string>
     <string name="video_background_play">Background play / Play as audio</string>
+    <string name="preview_unavailable">File is no longer available</string>
+    <string name="video_playback_stopped">Playback stopped</string>
+    <string name="video_playback_error">Playback error: %s</string>
+    <string name="video_switch_to_video">Switch to video</string>
+    <string name="video_playback_speed">Speed (%s)</string>
+    <string name="video_queue_title">Queue</string>
+    <string name="video_queue_empty">No other tracks in queue</string>
+    <string name="private_media_title">MyCloud Media</string>
 </resources>

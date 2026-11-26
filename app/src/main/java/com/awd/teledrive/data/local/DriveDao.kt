@@ -35,7 +35,21 @@ interface DriveDao {
     suspend fun getItemById(id: Long, chatId: Long): DriveItemEntity?
 
     @Query("SELECT * FROM drive_items WHERE parentChatId = :chatId AND id IN (:ids)")
-    suspend fun getItemsByIds(ids: List<Long>, chatId: Long): List<DriveItemEntity>
+    suspend fun getItemsByIdsChunk(ids: List<Long>, chatId: Long): List<DriveItemEntity>
+
+    /**
+     * H18: loads items in chunks of 400 so large syncs/moves never exceed
+     * SQLite's SQLITE_MAX_VARIABLE_NUMBER (999 on Android API <30).
+     */
+    @Transaction
+    suspend fun getItemsByIds(ids: List<Long>, chatId: Long): List<DriveItemEntity> {
+        if (ids.isEmpty()) return emptyList()
+        val result = mutableListOf<DriveItemEntity>()
+        ids.distinct().chunked(400).forEach { chunk ->
+            result.addAll(getItemsByIdsChunk(chunk, chatId))
+        }
+        return result
+    }
 
     @Query("SELECT * FROM drive_items WHERE remoteUniqueId = :uniqueId LIMIT 1")
     suspend fun getItemByUniqueId(uniqueId: String): DriveItemEntity?
@@ -46,8 +60,24 @@ interface DriveDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertItems(items: List<DriveItemEntity>)
 
-    @Query("DELETE FROM drive_items WHERE isVirtual = 1 AND virtualId NOT IN (:ids)")
-    suspend fun deleteVirtualFoldersNotInList(ids: List<String>)
+    @Query("SELECT virtualId FROM drive_items WHERE isVirtual = 1 AND virtualId IS NOT NULL")
+    suspend fun getVirtualFolderIds(): List<String>
+
+    @Query("DELETE FROM drive_items WHERE isVirtual = 1 AND virtualId IN (:ids)")
+    suspend fun deleteVirtualFoldersByIdsChunk(ids: List<String>)
+
+    @Transaction
+    suspend fun deleteVirtualFoldersNotInList(ids: List<String>) {
+        if (ids.isEmpty()) {
+            deleteAllVirtualFolders()
+            return
+        }
+        val keepSet = ids.toHashSet()
+        val toDelete = getVirtualFolderIds().filter { it !in keepSet }
+        toDelete.chunked(400).forEach { chunk ->
+            deleteVirtualFoldersByIdsChunk(chunk)
+        }
+    }
 
     @Query("DELETE FROM drive_items WHERE isVirtual = 1")
     suspend fun deleteAllVirtualFolders()
@@ -134,7 +164,19 @@ interface DriveDao {
     suspend fun getItemsByVirtualParentSync(virtualId: String): List<DriveItemEntity>
 
     @Query("DELETE FROM drive_items WHERE parentChatId = :chatId AND id IN (:ids)")
-    suspend fun deleteItemsByIds(chatId: Long, ids: List<Long>)
+    suspend fun deleteItemsByIdsChunk(chatId: Long, ids: List<Long>)
+
+    /**
+     * H18: deletes items in chunks of 400 so large prunes never exceed
+     * SQLite's SQLITE_MAX_VARIABLE_NUMBER (999 on Android API <30).
+     */
+    @Transaction
+    suspend fun deleteItemsByIds(chatId: Long, ids: List<Long>) {
+        if (ids.isEmpty()) return
+        ids.distinct().chunked(400).forEach { chunk ->
+            deleteItemsByIdsChunk(chatId, chunk)
+        }
+    }
 
     @Query("UPDATE drive_items SET localPath = :path WHERE remoteUniqueId = :uniqueId")
     suspend fun updateLocalPathByUniqueId(uniqueId: String, path: String?)
@@ -175,8 +217,26 @@ interface DriveDao {
     @Query("DELETE FROM drive_items WHERE id = :id AND parentChatId = :chatId")
     suspend fun deleteItemCompletely(id: Long, chatId: Long)
 
-    @Query("DELETE FROM drive_items WHERE parentChatId = :chatId AND id NOT IN (:ids) AND isFolder = 0 AND isVirtual = 0")
-    suspend fun deleteFilesByChatNotInList(chatId: Long, ids: List<Long>)
+    @Query("SELECT id FROM drive_items WHERE parentChatId = :chatId AND isFolder = 0 AND isVirtual = 0")
+    suspend fun getNonFolderFileIdsByChat(chatId: Long): List<Long>
+
+    @Query("DELETE FROM drive_items WHERE parentChatId = :chatId AND id IN (:ids) AND isFolder = 0 AND isVirtual = 0")
+    suspend fun deleteFilesByIdsChunk(chatId: Long, ids: List<Long>)
+
+    /**
+     * H18: prunes non-folder, non-virtual files in [chatId] whose id is not
+     * in [ids], using 400-id chunks so history syncs with >999 files never
+     * hit SQLite's SQLITE_MAX_VARIABLE_NUMBER limit on Android API <30.
+     */
+    @Transaction
+    suspend fun deleteFilesByChatNotInList(chatId: Long, ids: List<Long>) {
+        val keepSet = ids.toHashSet()
+        val toDelete = getNonFolderFileIdsByChat(chatId).filter { it !in keepSet }
+        if (toDelete.isEmpty()) return
+        toDelete.chunked(400).forEach { chunk ->
+            deleteFilesByIdsChunk(chatId, chunk)
+        }
+    }
 
     @Query("DELETE FROM drive_items WHERE id < 0")
     suspend fun deletePendingItems()

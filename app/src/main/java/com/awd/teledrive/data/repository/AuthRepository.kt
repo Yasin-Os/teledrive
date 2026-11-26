@@ -62,8 +62,14 @@ class AuthRepository @Inject constructor(
     init {
         scope.launch {
             telegramClient.updates.collect { update ->
-                if (update is TdApi.UpdateAuthorizationState) {
-                    handleAuthorizationState(update.authorizationState)
+                try {
+                    if (update is TdApi.UpdateAuthorizationState) {
+                        handleAuthorizationState(update.authorizationState)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e("AuthRepository", "Error handling TDLib update", e)
                 }
             }
         }
